@@ -294,7 +294,7 @@ impl GenshinArtifactScanner {
 
                     let list_image = if self.is_page_first_artifact(artifact_index) {
                         let origin = self.game_info.window;
-                        let margin = self.window_info.scan_margin_pos;
+                        let margin = self.window_info.scan_margin_pos + self.window_info.artifact_panel_offset;
                         let gap = self.window_info.item_gap_size;
                         let size = self.window_info.item_size;
 

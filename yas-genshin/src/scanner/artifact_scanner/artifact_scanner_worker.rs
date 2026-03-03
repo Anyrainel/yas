@@ -386,6 +386,12 @@ impl ArtifactScannerWorker {
         let size = self.window_info.item_size;
         let lock_pos = self.window_info.lock_pos;
 
+        if self.config.save_images {
+            if let Err(e) = save_debug_image(list_image, 0, "list_page") {
+                warn!("Failed to save list page debug image: {}", e);
+            }
+        }
+
         for r in 0..row {
             if ((gap.height + size.height) * (r as f64)) as u32 > list_image.height() {
                 break;

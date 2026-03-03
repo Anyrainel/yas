@@ -61,6 +61,9 @@ pub struct ArtifactScannerWindowInfo {
     #[window_info(rename = "genshin_repository_scan_margin_pos")]
     pub scan_margin_pos: Pos<f64>,
 
+    #[window_info(rename = "genshin_artifact_offset")]
+    pub artifact_panel_offset: Size<f64>,
+
     #[window_info(rename = "genshin_repository_lock_pos")]
     pub lock_pos: Pos<f64>,
 }
