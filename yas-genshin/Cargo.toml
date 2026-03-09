@@ -7,38 +7,20 @@ repository = "https://github.com/wormtql/yas"
 keywords = ["GenshinImpact", "artifacts", "scanner", "ocr"]
 license = "GPL-2.0-or-later"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-yas = { path = "../yas",  package="yas_core", features = ["ort", "capturer_screenshots"] }
-yas_derive = { path = "../yas-derive", package = "yas_derive" }
+yas = { path = "../yas", package = "yas_core", features = ["ort", "capturer_screenshots"] }
 anyhow = "1.0"
 log = "0.4"
 clap = { version = "4.4", features = ["derive", "cargo"] }
 image = "0.24"
 serde_json = "1.0"
-edit-distance = "2.1"
 regex = "1.5"
-strum = "0.26"
-strum_macros = "0.26"
 lazy_static = "1.4"
 serde = { version = "1.0", features = ["derive"] }
 env_logger = "0.11"
-serde_yaml = "0.9"
-csv = "1.3.0"
-indicatif = "0.18"
-rayon = "1.8"
 enigo = "0.1"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
+edit-distance = "2.1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-capture = "=1.0.65"
-
-# [profile.release]
-# lto = true
-# panic = "abort"
-# strip = true
-
-[[bin]]
-name = "yas_genshin_playground"
-path = "src/bin/playground.rs"

@@ -25,15 +25,17 @@ impl<T> Display for Size<T> where T: Display {
     }
 }
 
-macro impl_int_size($t:ty) {
-    impl Scalable for Size<$t> {
-        fn scale(&self, factor: f64) -> Self {
-            Size {
-                height: ((self.height as f64) * factor) as $t,
-                width: ((self.width as f64) * factor) as $t,
+macro_rules! impl_int_size {
+    ($t:ty) => {
+        impl Scalable for Size<$t> {
+            fn scale(&self, factor: f64) -> Self {
+                Size {
+                    height: ((self.height as f64) * factor) as $t,
+                    width: ((self.width as f64) * factor) as $t,
+                }
             }
         }
-    }
+    };
 }
 
 impl Scalable for Size<f64> {
@@ -49,13 +51,15 @@ impl_int_size!(i32);
 impl_int_size!(usize);
 impl_int_size!(u32);
 
-macro impl_int_hash($t:ty) {
-    impl Hash for Size<$t> {
-        fn hash<H: Hasher>(&self, state: &mut H) {
-            self.width.hash(state);
-            self.height.hash(state);
+macro_rules! impl_int_hash {
+    ($t:ty) => {
+        impl Hash for Size<$t> {
+            fn hash<H: Hasher>(&self, state: &mut H) {
+                self.width.hash(state);
+                self.height.hash(state);
+            }
         }
-    }
+    };
 }
 
 impl_int_hash!(i32);

@@ -1,16 +1,5 @@
-use clap::{command, Command};
 use yas::utils::press_any_key_to_continue;
-use yas_genshin::application::{CombinedScannerApplication, GoodScannerApplication};
-
-fn get_genshin_command() -> Command {
-    let cmd = CombinedScannerApplication::build_command();
-    cmd.name("genshin")
-}
-
-fn get_good_command() -> Command {
-    let cmd = GoodScannerApplication::build_command();
-    cmd.name("good")
-}
+use yas_genshin::application::GoodScannerApplication;
 
 fn init() {
     env_logger::Builder::new()
@@ -20,42 +9,24 @@ fn init() {
 
 pub fn main() {
     init();
-    let cmd = command!()
-        .subcommand(get_genshin_command())
-        .subcommand(get_good_command());
-    let arg_matches = cmd.get_matches();
-
-    let res = if let Some((subcommand_name, matches)) = arg_matches.subcommand() {
-        match subcommand_name {
-            "genshin" => {
-                let application = CombinedScannerApplication::new(matches.clone());
-                application.run()
-            }
-            "good" => {
-                let application = GoodScannerApplication::new(matches.clone());
-                application.run()
-            }
-            _ => {
-                // Default: run good scanner when no subcommand is given
-                println!("[yas] No subcommand specified, defaulting to 'good' scanner.");
-                let application = GoodScannerApplication::new(arg_matches.clone());
-                application.run()
-            }
+    let command = GoodScannerApplication::build_command();
+    let matches = match command.try_get_matches() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{}", e);
+            press_any_key_to_continue();
+            std::process::exit(if e.use_stderr() { 1 } else { 0 });
         }
-    } else {
-        // No subcommand at all (e.g. double-clicked the exe) — run good scanner
-        println!("[yas] No subcommand specified, defaulting to 'good' scanner.");
-        let application = GoodScannerApplication::new(arg_matches.clone());
-        application.run()
     };
 
-    match res {
+    let application = GoodScannerApplication::new(matches);
+    match application.run() {
         Ok(_) => {
             press_any_key_to_continue();
         },
         Err(e) => {
             log::error!("error: {}", e);
             press_any_key_to_continue();
-        }
+        },
     }
 }

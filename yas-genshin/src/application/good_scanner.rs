@@ -284,6 +284,10 @@ impl GoodScannerApplication {
         // Create shared game controller
         let mut ctrl = GenshinGameController::new(game_info)?;
 
+        // Focus the game window before any keyboard/mouse input.
+        // Without this, keys (Escape, B, C) may go to the terminal instead.
+        ctrl.focus_game_window();
+
         let mut characters = None;
         let mut weapons = None;
         let mut artifacts = None;
@@ -430,6 +434,7 @@ impl GoodScannerApplication {
         let overrides = user_config.to_overrides(config);
         let mappings = Rc::new(MappingManager::new(&overrides)?);
         let mut ctrl = GenshinGameController::new(game_info)?;
+        ctrl.focus_game_window();
 
         let ocr_backend = config.ocr_backend.as_deref().unwrap_or("ppocrv5");
 

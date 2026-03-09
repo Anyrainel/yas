@@ -63,9 +63,12 @@ impl GoodCharacterScanner {
             return (None, None);
         }
 
-        if let Some(idx) = text.find('/') {
+        // Handle both regular slash '/' and full-width slash '／' (U+FF0F)
+        let slash_char = if text.contains('/') { Some('/') } else if text.contains('\u{FF0F}') { Some('\u{FF0F}') } else { None };
+        if let Some(slash) = slash_char {
+            let idx = text.find(slash).unwrap();
             let element = text[..idx].trim().to_string();
-            let raw_name: String = text[idx + 1..]
+            let raw_name: String = text[idx + slash.len_utf8()..]
                 .chars()
                 .filter(|c| {
                     matches!(*c, '\u{4E00}'..='\u{9FFF}' | '\u{300C}' | '\u{300D}' | 'a'..='z' | 'A'..='Z' | '0'..='9')

@@ -8,3 +8,4 @@ dumps/
 **tmp**
 **/.DS_Store
 data/
+scan_output/

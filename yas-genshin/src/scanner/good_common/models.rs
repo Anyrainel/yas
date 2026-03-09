@@ -24,6 +24,7 @@ pub struct GoodWeapon {
     pub level: i32,
     pub ascension: i32,
     pub refinement: i32,
+    #[serde(default)]
     pub rarity: i32,
     pub location: String,
     pub lock: bool,
@@ -45,12 +46,13 @@ pub struct GoodArtifact {
     pub lock: bool,
     #[serde(default, rename = "astralMark")]
     pub astral_mark: bool,
-    #[serde(default, rename = "elixirCrafted")]
+    #[serde(default, alias = "elixerCrafted", rename = "elixirCrafted")]
     pub elixir_crafted: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "unactivatedSubstats")]
     pub unactivated_substats: Vec<GoodSubStat>,
 }
 
+/// Substat in GOOD v3 format. Extra fields (e.g. initialValue) are ignored.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GoodSubStat {
     pub key: String,

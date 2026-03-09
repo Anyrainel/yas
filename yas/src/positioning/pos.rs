@@ -67,15 +67,17 @@ impl Scalable for Pos<f64> {
     }
 }
 
-macro impl_int_pos($t:ty) {
-    impl Scalable for Pos<$t> {
-        fn scale(&self, factor: f64) -> Pos<$t> {
-            Pos {
-                x: ((self.x as f64) * factor) as $t,
-                y: ((self.y as f64) * factor) as $t
+macro_rules! impl_int_pos {
+    ($t:ty) => {
+        impl Scalable for Pos<$t> {
+            fn scale(&self, factor: f64) -> Pos<$t> {
+                Pos {
+                    x: ((self.x as f64) * factor) as $t,
+                    y: ((self.y as f64) * factor) as $t
+                }
             }
         }
-    }
+    };
 }
 
 impl_int_pos!(i32);

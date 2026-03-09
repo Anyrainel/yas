@@ -247,21 +247,24 @@ impl ImageToText<RgbImage> for PPOCRModel {
     }
 }
 
-pub macro ppocr_model($onnx:literal, $index_to_word:literal) {
-    {
-        let model_bytes = include_bytes!($onnx);
-        let index_to_word_str = include_str!($index_to_word);
+#[macro_export]
+macro_rules! ppocr_model {
+    ($onnx:literal, $index_to_word:literal) => {
+        {
+            let model_bytes = include_bytes!($onnx);
+            let index_to_word_str = include_str!($index_to_word);
 
-        let mut index_to_word_vec: Vec<String> = Vec::new();
-        for line in index_to_word_str.lines() {
-            index_to_word_vec.push(String::from(line));
+            let mut index_to_word_vec: Vec<String> = Vec::new();
+            for line in index_to_word_str.lines() {
+                index_to_word_vec.push(String::from(line));
+            }
+            index_to_word_vec.push(String::from(" "));
+
+            $crate::ocr::PPOCRModel::new(
+                model_bytes, index_to_word_vec,
+            )
         }
-        index_to_word_vec.push(String::from(" "));
-
-        PPOCRModel::new(
-            model_bytes, index_to_word_vec,
-        )
-    }
+    };
 }
 
 pub struct PPOCRChV4RecInfer {

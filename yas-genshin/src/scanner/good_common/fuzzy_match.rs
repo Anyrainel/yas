@@ -68,11 +68,14 @@ pub fn fuzzy_match_map(text: &str, map: &HashMap<String, String>) -> Option<Stri
         return best_match;
     }
 
-    // Levenshtein distance fallback
+    // Levenshtein distance fallback — character-level comparison for CJK
+    let cleaned_chars: Vec<char> = cleaned.chars().collect();
     let mut min_dist = usize::MAX;
     for (cn, val) in map.iter() {
-        let dist = edit_distance::edit_distance(&cleaned, cn);
-        let threshold = std::cmp::max(1, cn.chars().count() * 3 / 10); // 30% of char count
+        let cn_chars: Vec<char> = cn.chars().collect();
+        let dist = edit_distance_chars(&cleaned_chars, &cn_chars);
+        // 30% threshold, min 1 for short strings
+        let threshold = std::cmp::max(1, cn_chars.len() * 3 / 10);
         if dist < min_dist && dist <= threshold {
             min_dist = dist;
             best_match = Some(val.clone());
@@ -80,6 +83,25 @@ pub fn fuzzy_match_map(text: &str, map: &HashMap<String, String>) -> Option<Stri
     }
 
     best_match
+}
+
+/// Character-level Levenshtein distance (important for CJK where
+/// byte-level distance gives misleading results).
+fn edit_distance_chars(a: &[char], b: &[char]) -> usize {
+    let m = a.len();
+    let n = b.len();
+    let mut dp = vec![vec![0usize; n + 1]; m + 1];
+    for i in 0..=m { dp[i][0] = i; }
+    for j in 0..=n { dp[0][j] = j; }
+    for i in 1..=m {
+        for j in 1..=n {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            dp[i][j] = (dp[i - 1][j] + 1)
+                .min(dp[i][j - 1] + 1)
+                .min(dp[i - 1][j - 1] + cost);
+        }
+    }
+    dp[m][n]
 }
 
 #[cfg(test)]

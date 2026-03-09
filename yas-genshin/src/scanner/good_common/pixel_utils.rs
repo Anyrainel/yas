@@ -96,6 +96,68 @@ pub fn detect_artifact_rarity(image: &RgbImage, scaler: &CoordScaler) -> i32 {
     }
 }
 
+/// Detect if a substat line region appears dimmed (inactive/unactivated).
+///
+/// Active substats have bright white text (brightness > 200).
+/// Inactive substats have dimmed grey text (brightness ~120-160).
+/// We count the fraction of pixels above a "bright text" threshold.
+/// Active lines have many bright text pixels; inactive lines have fewer.
+///
+/// Only samples the right 2/3 of the region to avoid the stat icon.
+pub fn is_substat_dimmed(
+    image: &RgbImage,
+    scaler: &CoordScaler,
+    rect: (f64, f64, f64, f64),
+    y_shift: f64,
+) -> bool {
+    let (bx, by, bw, bh) = rect;
+    let x = scaler.x(bx) as u32;
+    let y = scaler.y(by + y_shift) as u32;
+    let w = scaler.x(bw) as u32;
+    let h = scaler.y(bh) as u32;
+
+    let x = x.min(image.width().saturating_sub(1));
+    let y = y.min(image.height().saturating_sub(1));
+    let w = w.min(image.width().saturating_sub(x));
+    let h = h.min(image.height().saturating_sub(y));
+
+    if w == 0 || h == 0 {
+        return false;
+    }
+
+    // Skip left 1/3 (icon area), sample right 2/3
+    let start_x = w / 3;
+    let mut bright_count: u32 = 0;
+    let mut mid_count: u32 = 0;
+    let mut total_count: u32 = 0;
+
+    for py in (0..h).step_by(2) {
+        for px in (start_x..w).step_by(2) {
+            let p = image.get_pixel(x + px, y + py);
+            let brightness = (p[0] as u32 + p[1] as u32 + p[2] as u32) / 3;
+            total_count += 1;
+            if brightness > 200 {
+                bright_count += 1;
+            } else if brightness > 130 {
+                mid_count += 1;
+            }
+        }
+    }
+
+    if total_count == 0 {
+        return false;
+    }
+
+    let bright_pct = bright_count * 100 / total_count;
+    let mid_pct = mid_count * 100 / total_count;
+    // Active substats: bright ~85-95%, mid ~2-5%
+    // Inactive substats: bright ~72-80%, mid ~19-23%
+    // Threshold: mid > 15% indicates dimmed/inactive text.
+    // Combined with bright < 82% to avoid false positives on active lines
+    // that happen to have slightly more mid-range pixels.
+    mid_pct > 20 && bright_pct < 78
+}
+
 /// Detect weapon lock state via dual-pixel verification.
 ///
 /// Port of `detectWeaponLock()` from GOODScanner/lib/ocr_utils.js

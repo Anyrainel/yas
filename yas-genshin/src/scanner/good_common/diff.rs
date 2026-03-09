@@ -226,53 +226,89 @@ fn diff_character_fields(actual: &GoodCharacter, expected: &GoodCharacter) -> Ve
     diffs
 }
 
-/// Compare weapons by position in array.
+/// Compare weapons using identity-based matching.
+///
+/// Groups weapons by key (name), then within each group finds the best match
+/// (fewest field diffs) using greedy matching. This handles different sort orders
+/// between actual and expected.
 fn diff_weapons(
     actual: &[GoodWeapon],
     expected: &[GoodWeapon],
     summary: &mut DiffSummary,
 ) -> Vec<WeaponDiff> {
     let mut diffs = Vec::new();
-    let max_len = actual.len().max(expected.len());
 
-    for i in 0..max_len {
-        match (actual.get(i), expected.get(i)) {
-            (Some(act), Some(exp)) => {
-                let field_diffs = diff_weapon_fields(act, exp);
+    // Group expected weapons by key
+    let mut expected_by_key: HashMap<&str, Vec<(usize, &GoodWeapon)>> = HashMap::new();
+    for (i, w) in expected.iter().enumerate() {
+        expected_by_key.entry(w.key.as_str()).or_default().push((i, w));
+    }
+
+    // Group actual weapons by key
+    let mut actual_by_key: HashMap<&str, Vec<(usize, &GoodWeapon)>> = HashMap::new();
+    for (i, w) in actual.iter().enumerate() {
+        actual_by_key.entry(w.key.as_str()).or_default().push((i, w));
+    }
+
+    // For each weapon key, match expected to actual greedily by fewest diffs
+    let all_keys: std::collections::BTreeSet<&str> = expected_by_key
+        .keys()
+        .chain(actual_by_key.keys())
+        .copied()
+        .collect();
+
+    for key in all_keys {
+        let exp_list = expected_by_key.remove(key).unwrap_or_default();
+        let mut act_list = actual_by_key.remove(key).unwrap_or_default();
+
+        for (exp_idx, exp) in &exp_list {
+            // Find best match in act_list (fewest diffs)
+            let best = act_list
+                .iter()
+                .enumerate()
+                .map(|(pos, (act_idx, act))| {
+                    let fd = diff_weapon_fields(act, exp);
+                    (pos, *act_idx, fd)
+                })
+                .min_by_key(|(_, _, fd)| fd.len());
+
+            if let Some((pos, act_idx, field_diffs)) = best {
+                act_list.remove(pos);
                 if field_diffs.is_empty() {
                     summary.weapons_matched += 1;
                 } else {
                     summary.weapons_mismatched += 1;
                     diffs.push(WeaponDiff {
-                        index: i,
+                        index: *exp_idx,
                         key_expected: exp.key.clone(),
-                        key_actual: act.key.clone(),
+                        key_actual: exp.key.clone(),
                         status: DiffStatus::Compared,
                         field_diffs,
                     });
                 }
-            }
-            (None, Some(exp)) => {
+            } else {
+                // No actual weapon with this key left
                 summary.weapons_missing += 1;
                 diffs.push(WeaponDiff {
-                    index: i,
+                    index: *exp_idx,
                     key_expected: exp.key.clone(),
                     key_actual: String::new(),
                     status: DiffStatus::Missing,
                     field_diffs: Vec::new(),
                 });
             }
-            (Some(act), None) => {
-                summary.weapons_extra += 1;
-                diffs.push(WeaponDiff {
-                    index: i,
-                    key_expected: String::new(),
-                    key_actual: act.key.clone(),
-                    status: DiffStatus::Extra,
-                    field_diffs: Vec::new(),
-                });
-            }
-            (None, None) => unreachable!(),
+        }
+
+        // Remaining unmatched actual weapons
+        for (act_idx, act) in act_list {
+            summary.weapons_extra += 1;
+            diffs.push(WeaponDiff {
+                index: act_idx,
+                key_expected: String::new(),
+                key_actual: act.key.clone(),
+                status: DiffStatus::Extra,
+                field_diffs: Vec::new(),
+            });
         }
     }
 
@@ -310,7 +346,8 @@ fn diff_weapon_fields(actual: &GoodWeapon, expected: &GoodWeapon) -> Vec<FieldDi
             actual: actual.refinement.to_string(),
         });
     }
-    if actual.rarity != expected.rarity {
+    // Skip rarity comparison when expected is 0 (not provided in groundtruth)
+    if expected.rarity != 0 && actual.rarity != expected.rarity {
         diffs.push(FieldDiff {
             field: "rarity".into(),
             expected: expected.rarity.to_string(),
@@ -335,53 +372,95 @@ fn diff_weapon_fields(actual: &GoodWeapon, expected: &GoodWeapon) -> Vec<FieldDi
     diffs
 }
 
-/// Compare artifacts by position in array.
+/// Compare artifacts using identity-based matching.
+///
+/// Groups artifacts by (setKey, slotKey) then finds the best match within each
+/// group by fewest field diffs. This handles different sort orders.
 fn diff_artifacts(
     actual: &[GoodArtifact],
     expected: &[GoodArtifact],
     summary: &mut DiffSummary,
 ) -> Vec<ArtifactDiff> {
     let mut diffs = Vec::new();
-    let max_len = actual.len().max(expected.len());
 
-    for i in 0..max_len {
-        match (actual.get(i), expected.get(i)) {
-            (Some(act), Some(exp)) => {
-                let field_diffs = diff_artifact_fields(act, exp);
+    type ArtKey = (String, String);
+    fn art_group_key(a: &GoodArtifact) -> ArtKey {
+        (a.set_key.clone(), a.slot_key.clone())
+    }
+
+    let mut expected_by_key: HashMap<ArtKey, Vec<(usize, &GoodArtifact)>> = HashMap::new();
+    for (i, a) in expected.iter().enumerate() {
+        expected_by_key.entry(art_group_key(a)).or_default().push((i, a));
+    }
+
+    let mut actual_by_key: HashMap<ArtKey, Vec<(usize, &GoodArtifact)>> = HashMap::new();
+    for (i, a) in actual.iter().enumerate() {
+        actual_by_key.entry(art_group_key(a)).or_default().push((i, a));
+    }
+
+    let all_keys: std::collections::BTreeSet<ArtKey> = expected_by_key
+        .keys()
+        .chain(actual_by_key.keys())
+        .cloned()
+        .collect();
+
+    for key in all_keys {
+        let exp_list = expected_by_key.remove(&key).unwrap_or_default();
+        let mut act_list = actual_by_key.remove(&key).unwrap_or_default();
+
+        for (exp_idx, exp) in &exp_list {
+            let best = act_list
+                .iter()
+                .enumerate()
+                .map(|(pos, (_, act))| {
+                    let fd = diff_artifact_fields(act, exp);
+                    // Score: prefer matches with same level and main stat.
+                    // Each critical field mismatch adds 10 to the score, regular adds 1.
+                    let score: usize = fd.iter().map(|f| {
+                        match f.field.as_str() {
+                            "level" | "mainStatKey" => 10,
+                            _ => 1,
+                        }
+                    }).sum();
+                    (pos, fd, score)
+                })
+                .min_by_key(|(_, _, score)| *score);
+
+            if let Some((pos, field_diffs, _)) = best {
+                act_list.remove(pos);
                 if field_diffs.is_empty() {
                     summary.artifacts_matched += 1;
                 } else {
                     summary.artifacts_mismatched += 1;
                     diffs.push(ArtifactDiff {
-                        index: i,
+                        index: *exp_idx,
                         set_expected: exp.set_key.clone(),
-                        set_actual: act.set_key.clone(),
+                        set_actual: exp.set_key.clone(),
                         status: DiffStatus::Compared,
                         field_diffs,
                     });
                 }
-            }
-            (None, Some(exp)) => {
+            } else {
                 summary.artifacts_missing += 1;
                 diffs.push(ArtifactDiff {
-                    index: i,
+                    index: *exp_idx,
                     set_expected: exp.set_key.clone(),
                     set_actual: String::new(),
                     status: DiffStatus::Missing,
                     field_diffs: Vec::new(),
                 });
             }
-            (Some(act), None) => {
-                summary.artifacts_extra += 1;
-                diffs.push(ArtifactDiff {
-                    index: i,
-                    set_expected: String::new(),
-                    set_actual: act.set_key.clone(),
-                    status: DiffStatus::Extra,
-                    field_diffs: Vec::new(),
-                });
-            }
-            (None, None) => unreachable!(),
+        }
+
+        for (act_idx, act) in act_list {
+            summary.artifacts_extra += 1;
+            diffs.push(ArtifactDiff {
+                index: act_idx,
+                set_expected: String::new(),
+                set_actual: act.set_key.clone(),
+                status: DiffStatus::Extra,
+                field_diffs: Vec::new(),
+            });
         }
     }
 
@@ -412,7 +491,8 @@ fn diff_artifact_fields(actual: &GoodArtifact, expected: &GoodArtifact) -> Vec<F
             actual: actual.level.to_string(),
         });
     }
-    if actual.rarity != expected.rarity {
+    // Skip rarity comparison when expected is 0 (not provided in groundtruth)
+    if expected.rarity != 0 && actual.rarity != expected.rarity {
         diffs.push(FieldDiff {
             field: "rarity".into(),
             expected: expected.rarity.to_string(),
@@ -444,9 +524,9 @@ fn diff_artifact_fields(actual: &GoodArtifact, expected: &GoodArtifact) -> Vec<F
     // Compare substats (order-independent)
     diff_substats(&actual.substats, &expected.substats, "substats", &mut diffs);
 
-    // Compare unactivated substats
+    // Compare unactivated substats (keys only — values can't be OCR'd from game)
     if !expected.unactivated_substats.is_empty() || !actual.unactivated_substats.is_empty() {
-        diff_substats(
+        diff_substats_keys_only(
             &actual.unactivated_substats,
             &expected.unactivated_substats,
             "unactivatedSubstats",
@@ -470,7 +550,7 @@ fn diff_substats(
             expected: expected.len().to_string(),
             actual: actual.len().to_string(),
         });
-        return;
+        // Don't return early — still compare individual substats for diagnostics
     }
 
     // Build maps by key for order-independent comparison
@@ -501,6 +581,47 @@ fn diff_substats(
                 field: format!("{}.{}", prefix, act.key),
                 expected: "(missing)".into(),
                 actual: format!("{}", act.value),
+            });
+        }
+    }
+}
+
+/// Compare unactivated substat lists by key only (ignore values).
+/// Unactivated substat values can't be OCR'd from the game (they show "待激活"),
+/// so we only check whether the correct keys are present.
+fn diff_substats_keys_only(
+    actual: &[GoodSubStat],
+    expected: &[GoodSubStat],
+    prefix: &str,
+    diffs: &mut Vec<FieldDiff>,
+) {
+    if actual.len() != expected.len() {
+        diffs.push(FieldDiff {
+            field: format!("{}.count", prefix),
+            expected: expected.len().to_string(),
+            actual: actual.len().to_string(),
+        });
+    }
+
+    let act_keys: std::collections::HashSet<&str> = actual.iter().map(|s| s.key.as_str()).collect();
+    let exp_keys: std::collections::HashSet<&str> = expected.iter().map(|s| s.key.as_str()).collect();
+
+    for exp in expected {
+        if !act_keys.contains(exp.key.as_str()) {
+            diffs.push(FieldDiff {
+                field: format!("{}.{}", prefix, exp.key),
+                expected: "present".into(),
+                actual: "(missing)".into(),
+            });
+        }
+    }
+
+    for act in actual {
+        if !exp_keys.contains(act.key.as_str()) {
+            diffs.push(FieldDiff {
+                field: format!("{}.{}", prefix, act.key),
+                expected: "(missing)".into(),
+                actual: "present".into(),
             });
         }
     }

@@ -314,44 +314,113 @@ impl GoodWeaponScanner {
         // Clone the scaler so the callback can use it without borrowing ctrl
         let scaler = bp.scaler().clone();
 
+        // Row-level duplicate detection: if the same row of items appears again
+        // (and is not all lv1), scrolling has failed and we should stop.
+        let mut seen_rows: Vec<String> = Vec::new();
+        let mut current_row: Vec<String> = Vec::new();
+        let mut pending_row: Vec<GoodWeapon> = Vec::new();
+        let mut row_has_leveled = false;
+
         bp.scan_grid(
             total_count as usize,
             &scan_config,
             start_at,
             |event| {
-                let image = match event {
-                    GridEvent::Item(_, img) => img,
-                    GridEvent::PageScrolled => return ScanAction::Continue,
-                };
-
-                match self.scan_single_weapon(image, &scaler) {
-                    Ok(WeaponScanResult::Weapon(weapon)) => {
-                        if weapon.rarity >= self.config.min_rarity {
-                            if self.config.log_progress {
-                                info!(
-                                    "[weapon] {} Lv.{} R{} {}{}",
-                                    weapon.key, weapon.level, weapon.refinement,
-                                    if weapon.location.is_empty() { "-" } else { &weapon.location },
-                                    if weapon.lock { " locked" } else { "" }
-                                );
-                            }
-                            weapons.push(weapon);
-                        }
-                        ScanAction::Continue
+                match event {
+                    GridEvent::PageScrolled => {
+                        seen_rows.clear();
+                        current_row.clear();
+                        pending_row.clear();
+                        row_has_leveled = false;
+                        return ScanAction::Continue;
                     }
-                    Ok(WeaponScanResult::Stop) => ScanAction::Stop,
-                    Ok(WeaponScanResult::Skip) => ScanAction::Continue,
-                    Err(e) => {
-                        error!("[weapon] scan error: {}", e);
-                        if self.config.continue_on_failure {
-                            ScanAction::Continue
-                        } else {
-                            ScanAction::Stop
+                    GridEvent::Item(_, image) => {
+                        match self.scan_single_weapon(image, &scaler) {
+                            Ok(WeaponScanResult::Weapon(weapon)) => {
+                                let fp = format!("{}|{}|R{}", weapon.key, weapon.level, weapon.refinement);
+                                if weapon.level > 1 {
+                                    row_has_leveled = true;
+                                }
+                                current_row.push(fp);
+                                if weapon.rarity >= self.config.min_rarity {
+                                    pending_row.push(weapon);
+                                }
+                            }
+                            Ok(WeaponScanResult::Stop) => {
+                                // Flush pending row before stopping
+                                for w in pending_row.drain(..) {
+                                    if self.config.log_progress {
+                                        info!(
+                                            "[weapon] {} Lv.{} R{} {}{}",
+                                            w.key, w.level, w.refinement,
+                                            if w.location.is_empty() { "-" } else { &w.location },
+                                            if w.lock { " locked" } else { "" }
+                                        );
+                                    }
+                                    weapons.push(w);
+                                }
+                                return ScanAction::Stop;
+                            }
+                            Ok(WeaponScanResult::Skip) => {
+                                current_row.push("skip".to_string());
+                            }
+                            Err(e) => {
+                                error!("[weapon] scan error: {}", e);
+                                current_row.push("error".to_string());
+                                if !self.config.continue_on_failure {
+                                    return ScanAction::Stop;
+                                }
+                            }
                         }
+
+                        // Check row when full
+                        if current_row.len() >= GRID_COLS {
+                            let row_str = current_row.join(",");
+                            let is_dup = row_has_leveled && seen_rows.iter().any(|s| s == &row_str);
+
+                            if is_dup {
+                                warn!(
+                                    "[weapon] duplicate row detected (scroll failed?), stopping. Row: {}",
+                                    row_str
+                                );
+                                return ScanAction::Stop;
+                            }
+
+                            seen_rows.push(row_str);
+                            for w in pending_row.drain(..) {
+                                if self.config.log_progress {
+                                    info!(
+                                        "[weapon] {} Lv.{} R{} {}{}",
+                                        w.key, w.level, w.refinement,
+                                        if w.location.is_empty() { "-" } else { &w.location },
+                                        if w.lock { " locked" } else { "" }
+                                    );
+                                }
+                                weapons.push(w);
+                            }
+                            current_row.clear();
+                            pending_row.clear();
+                            row_has_leveled = false;
+                        }
+
+                        ScanAction::Continue
                     }
                 }
             },
         );
+
+        // Flush remaining partial row
+        for w in pending_row.drain(..) {
+            if self.config.log_progress {
+                info!(
+                    "[weapon] {} Lv.{} R{} {}{}",
+                    w.key, w.level, w.refinement,
+                    if w.location.is_empty() { "-" } else { &w.location },
+                    if w.lock { " locked" } else { "" }
+                );
+            }
+            weapons.push(w);
+        }
 
         info!(
             "[weapon] complete, {} weapons scanned in {:?}",

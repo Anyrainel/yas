@@ -23,7 +23,7 @@ pub const NO_CONSTELLATION_CHARACTERS: &[&str] = &["Aloy", "Manekin", "Manekina"
 // Default delay values (in milliseconds), matching GOODScanner settings.json
 // ================================================================
 
-pub const DEFAULT_DELAY_OPEN_SCREEN: u64 = 1000;
+pub const DEFAULT_DELAY_OPEN_SCREEN: u64 = 2000;
 pub const DEFAULT_DELAY_CHAR_TAB_SWITCH: u64 = 500;
 pub const DEFAULT_DELAY_INV_TAB_SWITCH: u64 = 500;
 pub const DEFAULT_DELAY_SCROLL: u64 = 200;

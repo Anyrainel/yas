@@ -195,13 +195,16 @@ impl ImageToText<GrayImage> for YasOCRModel {
     }
 }
 
-pub macro yas_ocr_model($model_name:literal, $index_to_word:literal) {
-    {
-        let model_bytes = include_bytes!($model_name);
-        let index_to_word = include_str!($index_to_word);
+#[macro_export]
+macro_rules! yas_ocr_model {
+    ($model_name:literal, $index_to_word:literal) => {
+        {
+            let model_bytes = include_bytes!($model_name);
+            let index_to_word = include_str!($index_to_word);
 
-        YasOCRModel::new(
-            model_bytes, index_to_word,
-        )
-    }
+            $crate::ocr::YasOCRModel::new(
+                model_bytes, index_to_word,
+            )
+        }
+    };
 }

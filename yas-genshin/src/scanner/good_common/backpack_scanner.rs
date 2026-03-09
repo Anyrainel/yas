@@ -1,13 +1,13 @@
 use anyhow::Result;
 use image::RgbImage;
-use log::{error, info};
+use log::{error, info, warn};
 use regex::Regex;
 
 use yas::ocr::ImageToText;
 use yas::utils;
 
 use super::constants::*;
-use super::game_controller::{color_distance, GenshinGameController};
+use super::game_controller::GenshinGameController;
 
 /// What the scan callback should do after processing an item.
 pub enum ScanAction {
@@ -31,70 +31,36 @@ pub struct BackpackScanConfig {
     pub delay_scroll: u64,
 }
 
-/// Result of a single-row scroll attempt.
-#[derive(Debug)]
-enum ScrollResult {
-    /// Scroll completed: flag pixel changed and returned to initial.
-    Success,
-    /// Scroll exceeded time/tick limit without completing.
-    TimeLimitExceeded,
-    /// Used bulk estimation instead of per-row detection.
-    Estimated,
-    /// User interrupted (RMB down).
-    Interrupted,
-}
-
 /// Panel pool rect — region of the detail panel whose pixel sum changes
 /// when a different item is selected.
-/// Located in the center-right area where item stats are displayed.
 const PANEL_POOL_RECT: (f64, f64, f64, f64) = (1400.0, 300.0, 300.0, 200.0);
 
 /// Default timeout for panel-load detection (milliseconds).
-const PANEL_LOAD_TIMEOUT_MS: u64 = 800;
+const PANEL_LOAD_TIMEOUT_MS: u64 = 400;
 
-/// Flag pixel position — a point in the grid area whose color changes when
-/// the grid scrolls (top-left of the first grid item).
-const SCROLL_FLAG_POS: (f64, f64) = (GRID_FIRST_X, GRID_FIRST_Y);
+/// Delay between scroll ticks (milliseconds).
+const SCROLL_TICK_DELAY_MS: u32 = 10;
 
-/// Color distance threshold for detecting flag pixel changes.
-const FLAG_COLOR_THRESHOLD: usize = 10;
-
-/// Maximum scroll ticks to attempt for a single row before giving up.
-const MAX_SCROLL_TICKS: i32 = 25;
-
-/// After this many successful scroll measurements, switch to bulk estimation.
-const SCROLL_ESTIMATION_THRESHOLD: u32 = 5;
+/// Wait time after all scroll ticks are sent, for animation to settle.
+const SCROLL_SETTLE_MS: u32 = 200;
 
 /// Reusable backpack grid scanner.
 ///
-/// Encapsulates the shared pattern of navigating a backpack grid (used by
-/// weapon and artifact scanners). Provides panel-load detection and adaptive
-/// scrolling ported from YAS's `GenshinRepositoryScanController`.
-///
-/// Usage:
-/// ```ignore
-/// let mut bp = BackpackScanner::new(&mut controller);
-/// bp.open_backpack(1000);
-/// bp.select_tab("weapon", 500);
-/// let (_, total) = bp.read_item_count(ocr)?;
-/// bp.scan_grid(total, &config, |event| { match event { ... } });
-/// ```
+/// Uses pre-calibrated scroll constants (SCROLL_TICKS_PER_PAGE) for reliable
+/// page-level scrolling. Each page scroll sends exactly SCROLL_TICKS_PER_PAGE
+/// ticks, with a correction tick subtracted every SCROLL_CORRECTION_INTERVAL
+/// pages to prevent drift.
 pub struct BackpackScanner<'a> {
     ctrl: &'a mut GenshinGameController,
-
-    // Adaptive scroll state (ported from YAS controller)
-    scrolled_rows: u32,
-    avg_scroll_one_row: f64,
-    initial_flag_color: image::Rgb<u8>,
+    /// Number of pages scrolled so far (for correction tracking).
+    pages_scrolled: u32,
 }
 
 impl<'a> BackpackScanner<'a> {
     pub fn new(ctrl: &'a mut GenshinGameController) -> Self {
         Self {
             ctrl,
-            scrolled_rows: 0,
-            avg_scroll_one_row: 0.0,
-            initial_flag_color: image::Rgb([0, 0, 0]),
+            pages_scrolled: 0,
         }
     }
 
@@ -104,6 +70,7 @@ impl<'a> BackpackScanner<'a> {
     }
 
     /// Open the backpack by pressing B.
+    /// Assumes the game is on the main overworld UI.
     pub fn open_backpack(&mut self, delay: u64) {
         self.ctrl.key_press(enigo::Key::Layout('b'));
         utils::sleep(delay as u32);
@@ -139,208 +106,140 @@ impl<'a> BackpackScanner<'a> {
         }
     }
 
-    /// Sample the flag pixel color (used as baseline for scroll detection).
-    fn sample_flag_color(&mut self) {
-        if let Ok(color) = self.ctrl.get_flag_color(SCROLL_FLAG_POS.0, SCROLL_FLAG_POS.1) {
-            self.initial_flag_color = color;
-        }
-    }
-
-    /// Scroll one row using adaptive flag-pixel detection.
+    /// Scroll down by a given number of rows using calibrated tick counts.
     ///
-    /// Port of `scroll_one_row` from YAS controller.rs:291-322.
-    /// Monitors the flag pixel: detects color change (state=1) then
-    /// return to initial color (scroll complete).
-    fn scroll_one_row_adaptive(&mut self, delay: u64) -> ScrollResult {
-        let mut state = 0;
-        let mut tick_count = 0;
+    /// Uses SCROLL_TICKS_PER_PAGE (49 ticks for 5 rows) as the base ratio.
+    /// Applies correction every SCROLL_CORRECTION_INTERVAL pages.
+    fn scroll_rows(&mut self, row_count: usize) -> bool {
+        if row_count == 0 {
+            return true;
+        }
 
-        while tick_count < MAX_SCROLL_TICKS {
-            if utils::is_rmb_down() {
-                return ScrollResult::Interrupted;
-            }
+        // Move mouse to grid center for consistent scroll behavior
+        let center_x = GRID_FIRST_X + 3.0 * GRID_OFFSET_X;
+        let center_y = GRID_FIRST_Y + 2.0 * GRID_OFFSET_Y;
+        self.ctrl.move_to(center_x, center_y);
+        utils::sleep(30);
 
-            self.ctrl.mouse_scroll(-1);
-            utils::sleep(delay.min(200) as u32);
-            tick_count += 1;
+        // Calculate ticks: SCROLL_TICKS_PER_PAGE ticks per GRID_ROWS rows
+        let ticks_per_row = SCROLL_TICKS_PER_PAGE as f64 / GRID_ROWS as f64;
+        let mut ticks = (ticks_per_row * row_count as f64).round() as i32;
 
-            let color = match self.ctrl.get_flag_color(SCROLL_FLAG_POS.0, SCROLL_FLAG_POS.1) {
-                Ok(c) => c,
-                Err(_) => return ScrollResult::TimeLimitExceeded,
-            };
-
-            if state == 0 && color_distance(&self.initial_flag_color, &color) > FLAG_COLOR_THRESHOLD {
-                state = 1;
-            } else if state == 1 && color_distance(&self.initial_flag_color, &color) <= FLAG_COLOR_THRESHOLD {
-                self.update_avg_scroll(tick_count);
-                return ScrollResult::Success;
+        // Apply correction for full-page scrolls
+        if row_count == GRID_ROWS {
+            self.pages_scrolled += 1;
+            if SCROLL_CORRECTION_INTERVAL > 0
+                && self.pages_scrolled % SCROLL_CORRECTION_INTERVAL as u32 == 0
+            {
+                ticks -= 1;
+                info!(
+                    "[backpack] scroll correction at page {} (-1 tick)",
+                    self.pages_scrolled
+                );
             }
         }
 
-        ScrollResult::TimeLimitExceeded
-    }
-
-    /// Scroll multiple rows, using estimation after enough measurements.
-    ///
-    /// Port of `scroll_rows` from YAS controller.rs:324-353.
-    fn scroll_rows_adaptive(&mut self, count: usize, delay: u64) -> ScrollResult {
-        // After enough measurements, use bulk estimation
-        if self.scrolled_rows >= SCROLL_ESTIMATION_THRESHOLD {
-            let estimated_ticks = self.estimate_scroll_ticks(count as i32);
-            for _ in 0..estimated_ticks {
-                self.ctrl.mouse_scroll(-1);
-            }
-            utils::sleep(delay as u32);
-            self.align_after_scroll(delay);
-            return ScrollResult::Estimated;
-        }
-
-        // Otherwise, scroll row-by-row with detection
-        for _ in 0..count {
-            match self.scroll_one_row_adaptive(delay) {
-                ScrollResult::Success | ScrollResult::Estimated => continue,
-                ScrollResult::Interrupted => return ScrollResult::Interrupted,
-                other => {
-                    error!("[backpack] scroll failed: {:?}", other);
-                    return other;
-                }
-            }
-        }
-
-        ScrollResult::Success
-    }
-
-    /// Try to realign after bulk scrolling by checking the flag pixel.
-    fn align_after_scroll(&mut self, delay: u64) {
-        for _ in 0..10 {
-            let color = match self.ctrl.get_flag_color(SCROLL_FLAG_POS.0, SCROLL_FLAG_POS.1) {
-                Ok(c) => c,
-                Err(_) => return,
-            };
-
-            if color_distance(&self.initial_flag_color, &color) > FLAG_COLOR_THRESHOLD {
-                self.ctrl.mouse_scroll(-1);
-                utils::sleep(delay.min(200) as u32);
-            } else {
-                break;
-            }
-        }
-    }
-
-    /// Update running average of scroll ticks per row.
-    fn update_avg_scroll(&mut self, tick_count: i32) {
-        let total = self.avg_scroll_one_row * self.scrolled_rows as f64 + tick_count as f64;
-        self.scrolled_rows += 1;
-        self.avg_scroll_one_row = total / self.scrolled_rows as f64;
         info!(
-            "[backpack] avg scroll per row: {:.1} ({} measurements)",
-            self.avg_scroll_one_row, self.scrolled_rows
+            "[backpack] scroll {} rows ({} ticks, page {})",
+            row_count, ticks, self.pages_scrolled
         );
+
+        // Send scroll ticks with small delays to avoid overwhelming the game
+        for i in 0..ticks {
+            if utils::is_rmb_down() {
+                return false;
+            }
+            self.ctrl.mouse_scroll(1);
+            // Small delay between ticks
+            if (i + 1) % 5 == 0 {
+                utils::sleep(SCROLL_TICK_DELAY_MS);
+            }
+        }
+
+        // Wait for scroll animation to settle
+        utils::sleep(SCROLL_SETTLE_MS);
+        true
     }
 
-    /// Estimate scroll ticks for a given number of rows.
-    fn estimate_scroll_ticks(&self, row_count: i32) -> i32 {
-        ((self.avg_scroll_one_row * row_count as f64) - 2.0)
-            .round()
-            .max(0.0) as i32
-    }
-
-    /// Main grid traversal with panel-load detection and adaptive scrolling.
+    /// Main grid traversal with panel-load detection.
     ///
     /// For each item: clicks the grid position, waits for panel to load
     /// (pixel pool detection), captures the game screen, and delivers a
     /// `GridEvent::Item` to the callback.
     ///
-    /// After each page scroll, delivers `GridEvent::PageScrolled` (useful for
-    /// clearing per-page state like row dedup caches).
+    /// After each page scroll, delivers `GridEvent::PageScrolled`.
     ///
     /// The callback returns `ScanAction::Continue` or `ScanAction::Stop`.
-    /// For `GridEvent::PageScrolled`, the return value is ignored.
-    ///
-    /// If `start_at > 0`, skips to that item index by scrolling pages
-    /// and starting from the correct grid position.
     pub fn scan_grid<F>(
         &mut self,
         total: usize,
-        config: &BackpackScanConfig,
+        _config: &BackpackScanConfig,
         start_at: usize,
         mut callback: F,
     ) where
         F: FnMut(GridEvent) -> ScanAction,
     {
-        let items_per_page = GRID_COLS * GRID_ROWS;
-        let page_count = (total + items_per_page - 1) / items_per_page;
+        let total_row = (total + GRID_COLS - 1) / GRID_COLS;
+        let last_row_col = if total % GRID_COLS == 0 { GRID_COLS } else { total % GRID_COLS };
 
-        // Calculate which page and position to start from
-        let start_page = start_at / items_per_page;
-        let start_offset_in_page = start_at % items_per_page;
-        let start_row_in_page = start_offset_in_page / GRID_COLS;
-        let start_col_in_page = start_offset_in_page % GRID_COLS;
+        info!(
+            "[backpack] total={} items, {} rows, last row has {} items",
+            total, total_row, last_row_col
+        );
 
-        let mut item_index = start_at;
+        // Click the first grid position to ensure focus
+        self.ctrl.click_at(GRID_FIRST_X, GRID_FIRST_Y);
+        utils::sleep(500);
 
-        // Sample initial flag color for scroll detection
-        self.sample_flag_color();
+        let row = GRID_ROWS.min(total_row);
+        let mut scanned_row: usize = 0;
+        let mut scanned_count: usize = 0;
+        let mut start_row: usize = 0;
 
         // Skip pages by scrolling
-        if start_page > 0 {
-            info!(
-                "[backpack] jumping to item {} (page {}, row {}, col {})",
-                start_at, start_page, start_row_in_page, start_col_in_page
-            );
-
-            self.ctrl.move_to(GRID_FIRST_X, GRID_FIRST_Y);
-            utils::sleep(100);
-
-            let rows_to_skip = start_page * GRID_ROWS;
-            match self.scroll_rows_adaptive(rows_to_skip, config.delay_scroll) {
-                ScrollResult::Interrupted => return,
-                ScrollResult::TimeLimitExceeded => {
-                    error!("[backpack] scroll timeout while skipping pages");
-                    return;
+        if start_at > 0 {
+            let skip_rows = start_at / GRID_COLS;
+            let full_pages = skip_rows / GRID_ROWS;
+            if full_pages > 0 {
+                info!(
+                    "[backpack] jumping to item {} ({} rows to skip)",
+                    start_at, skip_rows
+                );
+                let rows_to_scroll = full_pages * GRID_ROWS;
+                if !self.scroll_rows(rows_to_scroll) {
+                    return; // interrupted
                 }
-                _ => {}
+                scanned_row = rows_to_scroll;
+                scanned_count = rows_to_scroll * GRID_COLS;
+                utils::sleep(200);
             }
-
-            self.sample_flag_color();
-            utils::sleep(300);
         }
 
-        'outer: for page in start_page..page_count {
-            let mut start_row = 0;
-            let remaining = total.saturating_sub(page * items_per_page);
+        'outer: while scanned_count < total {
+            for cur_row in start_row..row {
+                let row_item_count = if scanned_row == total_row - 1 {
+                    last_row_col
+                } else {
+                    GRID_COLS
+                };
 
-            if remaining < items_per_page {
-                let row_count = (remaining + GRID_COLS - 1) / GRID_COLS;
-                start_row = GRID_ROWS.saturating_sub(row_count);
-                info!(
-                    "[backpack] last page: remaining={} rows={} startRow={} page={}/{}",
-                    remaining, row_count, start_row, page, page_count
-                );
-            }
-
-            for row in start_row..GRID_ROWS {
-                for col in 0..GRID_COLS {
-                    if item_index >= total || utils::is_rmb_down() {
+                for col in 0..row_item_count {
+                    if utils::is_rmb_down() || scanned_count >= total {
                         break 'outer;
                     }
 
-                    // On the first page after skipping, start from the right position
-                    if page == start_page && (row < start_row_in_page
-                        || (row == start_row_in_page && col < start_col_in_page))
-                    {
-                        item_index += 1;
+                    // Skip items before start_at
+                    if scanned_count < start_at {
+                        scanned_count += 1;
                         continue;
                     }
 
                     // Click the grid item
                     let x = GRID_FIRST_X + col as f64 * GRID_OFFSET_X;
-                    let y = GRID_FIRST_Y + row as f64 * GRID_OFFSET_Y;
-                    self.ctrl.move_to(x, y);
-                    utils::sleep((config.delay_grid_item / 3).max(1) as u32);
+                    let y = GRID_FIRST_Y + cur_row as f64 * GRID_OFFSET_Y;
                     self.ctrl.click_at(x, y);
 
-                    // Wait for panel to load (YAS-style pixel pool detection)
+                    // Wait for panel to load
                     let _ = self.ctrl.wait_until_panel_loaded(
                         PANEL_POOL_RECT,
                         PANEL_LOAD_TIMEOUT_MS,
@@ -351,40 +250,36 @@ impl<'a> BackpackScanner<'a> {
                         Ok(img) => img,
                         Err(e) => {
                             error!("[backpack] capture failed: {}", e);
-                            item_index += 1;
+                            scanned_count += 1;
                             continue;
                         }
                     };
 
-                    match callback(GridEvent::Item(item_index, &image)) {
+                    match callback(GridEvent::Item(scanned_count, &image)) {
                         ScanAction::Continue => {}
                         ScanAction::Stop => break 'outer,
                     }
 
-                    item_index += 1;
-                }
-            }
-
-            // Scroll to next page (unless this is the last page)
-            if page < page_count - 1 {
-                self.ctrl.move_to(GRID_FIRST_X, GRID_FIRST_Y);
-                utils::sleep(100);
-
-                let scroll_rows = GRID_ROWS;
-                match self.scroll_rows_adaptive(scroll_rows, config.delay_scroll) {
-                    ScrollResult::Interrupted => break 'outer,
-                    ScrollResult::TimeLimitExceeded => {
-                        error!("[backpack] scroll timeout, stopping");
-                        break 'outer;
-                    }
-                    _ => {}
+                    scanned_count += 1;
                 }
 
-                // Re-sample flag color after scroll
-                self.sample_flag_color();
-
-                callback(GridEvent::PageScrolled);
+                scanned_row += 1;
             }
+
+            // Calculate how many rows remain and scroll
+            let remain = total - scanned_count;
+            if remain == 0 {
+                break;
+            }
+            let remain_row = (remain + GRID_COLS - 1) / GRID_COLS;
+            let scroll_row = remain_row.min(GRID_ROWS);
+            start_row = GRID_ROWS - scroll_row;
+
+            if !self.scroll_rows(scroll_row) {
+                break 'outer;
+            }
+
+            callback(GridEvent::PageScrolled);
         }
     }
 }

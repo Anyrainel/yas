@@ -66,6 +66,35 @@ impl GenshinGameController {
     }
 }
 
+// Focus methods.
+impl GenshinGameController {
+    /// Focus the game window using Win32 SetForegroundWindow.
+    /// Ensures subsequent keyboard events go to Genshin, not the terminal.
+    pub fn focus_game_window(&mut self) {
+        #[cfg(target_os = "windows")]
+        {
+            // Re-find the window handle and bring it to front
+            let window_names = ["\u{539F}\u{795E}", "Genshin Impact"]; // 原神
+            let handles = utils::iterate_window();
+            for hwnd in &handles {
+                if let Some(title) = utils::get_window_title(*hwnd) {
+                    let trimmed = title.trim();
+                    if window_names.iter().any(|n| trimmed == *n) {
+                        utils::show_window_and_set_foreground(*hwnd);
+                        utils::sleep(500);
+                        return;
+                    }
+                }
+            }
+        }
+        // Fallback: just move mouse to game area
+        let center_x = self.game_info.window.left + self.game_info.window.width / 2;
+        let center_y = self.game_info.window.top + self.game_info.window.height / 2;
+        self.system_control.mouse_move_to(center_x, center_y).unwrap();
+        utils::sleep(300);
+    }
+}
+
 // Navigation methods — all coordinates at 1920x1080 base, scaled by CoordScaler.
 impl GenshinGameController {
     /// Click at a position specified in base 1920x1080 coordinates.
@@ -184,6 +213,7 @@ impl GenshinGameController {
 
         let mut consecutive_stable = 0;
         let mut change_detected = false;
+        let mut no_change_count = 0;
 
         while now.elapsed().unwrap().as_millis() < timeout_ms as u128 {
             let im = self
@@ -197,10 +227,19 @@ impl GenshinGameController {
                 self.pool = pool;
                 change_detected = true;
                 consecutive_stable = 0;
+                no_change_count = 0;
             } else if change_detected {
                 // Pool stabilized after a change — panel is ready
                 consecutive_stable += 1;
                 if consecutive_stable >= 1 {
+                    return Ok(());
+                }
+            } else {
+                // No change at all — same item type or panel already loaded.
+                // After a few checks with no change, assume panel is ready
+                // (avoids 800ms timeout on duplicate items).
+                no_change_count += 1;
+                if no_change_count >= 2 {
                     return Ok(());
                 }
             }

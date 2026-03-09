@@ -21,12 +21,15 @@ use crate::scanner::good_common::pixel_utils;
 use crate::scanner::good_common::stat_parser;
 
 /// Computed OCR regions for artifact card (at 1920x1080 base).
-/// Port of the ARTIFACT_OCR calculation from GOODScanner/lib/artifact_scanner.js
+///
+/// Coordinates derived from the old window_info JSON at 2560x1440, scaled by 0.75.
 struct ArtifactOcrRegions {
     part_name: (f64, f64, f64, f64),
     main_stat: (f64, f64, f64, f64),
     level: (f64, f64, f64, f64),
-    substats: (f64, f64, f64, f64),
+    /// Per-line substat regions: (x, y, w, h) for each of the 4 possible substats.
+    /// Heights increase for lower lines to match the game's actual layout.
+    substat_lines: [(f64, f64, f64, f64); 4],
     set_name_x: f64,
     set_name_w: f64,
     set_name_base_y: f64,
@@ -41,6 +44,15 @@ impl ArtifactOcrRegions {
         let card_y: f64 = 119.0;
         let card_w: f64 = 494.0;
         let card_h: f64 = 841.0;
+
+        // Substat regions derived from old window_info (2560x1440 * 0.75):
+        //   left=1356, width=255
+        //   line 1: top=478, h=35
+        //   line 2: top=513, h=37
+        //   line 3: top=550, h=39
+        //   line 4: top=589, h=39
+        let sub_x = 1356.0;
+        let sub_w = 255.0;
 
         Self {
             part_name: (
@@ -61,11 +73,16 @@ impl ArtifactOcrRegions {
                 (card_w * 0.1417).round(),
                 (card_h * 0.0416).round(),
             ),
-            substats: (1353.0, 475.0, 247.0, 150.0),
+            substat_lines: [
+                (sub_x, 478.0, sub_w, 35.0),
+                (sub_x, 513.0, sub_w, 37.0),
+                (sub_x, 550.0, sub_w, 39.0),
+                (sub_x, 589.0, sub_w, 39.0),
+            ],
             set_name_x: 1330.0,
-            set_name_w: 200.0,
-            set_name_base_y: 630.0,
-            set_name_h: 30.0,
+            set_name_w: 280.0,
+            set_name_base_y: 625.0,
+            set_name_h: 45.0,
             equip: (
                 card_x + (card_w * 0.10).round(),
                 card_y + (card_h * 0.935).round(),
@@ -143,6 +160,168 @@ impl GoodArtifactScanner {
         Ok(text.trim().to_string())
     }
 
+    /// OCR a sub-region after converting to high-contrast grayscale.
+    /// Uses Otsu-like adaptive thresholding to produce clear black text on
+    /// white background, which helps with colored text (green set names).
+    fn ocr_image_region_grayscale(
+        &self,
+        image: &RgbImage,
+        rect: (f64, f64, f64, f64),
+        scaler: &CoordScaler,
+    ) -> Result<String> {
+        let (bx, by, bw, bh) = rect;
+        let x = scaler.x(bx) as u32;
+        let y = scaler.y(by) as u32;
+        let w = scaler.x(bw) as u32;
+        let h = scaler.y(bh) as u32;
+
+        let x = x.min(image.width().saturating_sub(1));
+        let y = y.min(image.height().saturating_sub(1));
+        let w = w.min(image.width().saturating_sub(x));
+        let h = h.min(image.height().saturating_sub(y));
+
+        if w == 0 || h == 0 {
+            return Ok(String::new());
+        }
+
+        let sub = image.view(x, y, w, h).to_image();
+
+        // Convert to grayscale and compute min/max for adaptive threshold
+        let mut gray_vals: Vec<u8> = Vec::with_capacity((sub.width() * sub.height()) as usize);
+        let gray_img = RgbImage::from_fn(sub.width(), sub.height(), |px, py| {
+            let p = sub.get_pixel(px, py);
+            let g = (0.299 * p[0] as f64 + 0.587 * p[1] as f64 + 0.114 * p[2] as f64) as u8;
+            gray_vals.push(g);
+            image::Rgb([g, g, g])
+        });
+
+        // Try simple grayscale first
+        let text_gray = self.ocr_model.image_to_text(&gray_img, false)?;
+        let text_gray = text_gray.trim().to_string();
+        if self.find_set_key_in_text(&text_gray).is_some() {
+            return Ok(text_gray);
+        }
+
+        // Green-channel extraction: the set name text is green (high G, low R/B).
+        // Extract green saturation: G - max(R, B). Text pixels will have high values.
+        // Then invert to get dark text on white background.
+        let green_extracted = RgbImage::from_fn(sub.width(), sub.height(), |px, py| {
+            let p = sub.get_pixel(px, py);
+            let r = p[0] as i32;
+            let g = p[1] as i32;
+            let b = p[2] as i32;
+            let green_excess = (g - r.max(b)).max(0);
+            // Invert: high green_excess (text) → dark, low → light
+            let v = (255 - (green_excess * 4).min(255)) as u8;
+            image::Rgb([v, v, v])
+        });
+        let text_green = self.ocr_model.image_to_text(&green_extracted, false)?;
+        let text_green = text_green.trim().to_string();
+        if self.find_set_key_in_text(&text_green).is_some() {
+            return Ok(text_green);
+        }
+
+        // Return whichever has more Chinese characters
+        let cn = |s: &str| s.chars().filter(|c| *c >= '\u{4E00}' && *c <= '\u{9FFF}').count();
+        let best = [text_gray, text_green].into_iter()
+            .max_by_key(|s| cn(s))
+            .unwrap_or_default();
+        Ok(best)
+    }
+
+    /// OCR a sub-region with Y-offset and left-side icon masking.
+    /// Replaces the leftmost ~18 pixels of the cropped image with the
+    /// average background color to remove stat icons that confuse OCR.
+    fn ocr_image_region_shifted_masked(
+        &self,
+        image: &RgbImage,
+        rect: (f64, f64, f64, f64),
+        y_shift: f64,
+        scaler: &CoordScaler,
+    ) -> Result<String> {
+        let (bx, by, bw, bh) = rect;
+        let x = scaler.x(bx) as u32;
+        let y = scaler.y(by + y_shift) as u32;
+        let w = scaler.x(bw) as u32;
+        let h = scaler.y(bh) as u32;
+
+        let x = x.min(image.width().saturating_sub(1));
+        let y = y.min(image.height().saturating_sub(1));
+        let w = w.min(image.width().saturating_sub(x));
+        let h = h.min(image.height().saturating_sub(y));
+
+        if w == 0 || h == 0 {
+            return Ok(String::new());
+        }
+
+        let mut sub = image.view(x, y, w, h).to_image();
+
+        // Mask the first ~18 pixels (stat icon area) with background color.
+        // Sample background color from the right side of the image.
+        let mask_width = 18u32.min(w);
+        let sample_x = (w * 3 / 4).min(w.saturating_sub(1));
+        let bg_color = if h > 0 {
+            // Average a few pixels from the right side
+            let mut r_sum = 0u32;
+            let mut g_sum = 0u32;
+            let mut b_sum = 0u32;
+            let mut count = 0u32;
+            for sy in [0, h / 2, h.saturating_sub(1)] {
+                let p = sub.get_pixel(sample_x, sy);
+                r_sum += p[0] as u32;
+                g_sum += p[1] as u32;
+                b_sum += p[2] as u32;
+                count += 1;
+            }
+            image::Rgb([(r_sum / count) as u8, (g_sum / count) as u8, (b_sum / count) as u8])
+        } else {
+            image::Rgb([0, 0, 0])
+        };
+
+        for px in 0..mask_width {
+            for py in 0..h {
+                sub.put_pixel(px, py, bg_color);
+            }
+        }
+
+        let text = self.ocr_model.image_to_text(&sub, false)?;
+        Ok(text.trim().to_string())
+    }
+
+    /// OCR just the right portion (number area) of a substat line.
+    /// Used as a retry when the full line OCR truncates the decimal value.
+    /// By cropping to just the number, each character gets more pixels in the
+    /// model's fixed-width input, improving decimal point recognition.
+    fn ocr_substat_number_retry(
+        &self,
+        image: &RgbImage,
+        rect: (f64, f64, f64, f64),
+        y_shift: f64,
+        scaler: &CoordScaler,
+    ) -> Result<String> {
+        let (bx, by, bw, bh) = rect;
+        // Crop to right 60% of the line (stat value + % area)
+        let num_x = bx + bw * 0.40;
+        let num_w = bw * 0.60;
+        let x = scaler.x(num_x) as u32;
+        let y = scaler.y(by + y_shift) as u32;
+        let w = scaler.x(num_w) as u32;
+        let h = scaler.y(bh) as u32;
+
+        let x = x.min(image.width().saturating_sub(1));
+        let y = y.min(image.height().saturating_sub(1));
+        let w = w.min(image.width().saturating_sub(x));
+        let h = h.min(image.height().saturating_sub(y));
+
+        if w == 0 || h == 0 {
+            return Ok(String::new());
+        }
+
+        let sub = image.view(x, y, w, h).to_image();
+        let text = self.ocr_model.image_to_text(&sub, false)?;
+        Ok(text.trim().to_string())
+    }
+
     /// OCR a sub-region with Y-offset for elixir artifacts.
     fn ocr_image_region_shifted(
         &self,
@@ -163,14 +342,34 @@ impl GoodArtifactScanner {
             return None;
         }
 
-        // Try full text first
-        if let Some(key) = fuzzy_match_map(text, &self.mappings.artifact_set_map) {
+        // Strip trailing punctuation that the OCR picks up from the set description
+        // (e.g., "风起之日：" → "风起之日")
+        let cleaned = text
+            .trim()
+            .trim_end_matches('：')
+            .trim_end_matches(':')
+            .trim_end_matches('；')
+            .trim_end_matches(';')
+            .trim();
+
+        // Try cleaned text first
+        if let Some(key) = fuzzy_match_map(cleaned, &self.mappings.artifact_set_map) {
             return Some(key);
         }
 
-        // Try each line
+        // Try full text (in case cleaning removed something needed)
+        if cleaned != text.trim() {
+            if let Some(key) = fuzzy_match_map(text.trim(), &self.mappings.artifact_set_map) {
+                return Some(key);
+            }
+        }
+
+        // Try each line (for multi-line OCR results)
         for line in text.split('\n') {
-            let line = line.trim();
+            let line = line.trim()
+                .trim_end_matches('：')
+                .trim_end_matches(':')
+                .trim();
             if line.len() < 2 {
                 continue;
             }
@@ -252,7 +451,11 @@ impl GoodArtifactScanner {
         } else if slot_key == "plume" {
             Some("atk".to_string())
         } else {
-            stat_parser::parse_stat_from_text(&main_stat_text).map(|s| s.key)
+            // For sands/goblet/circlet, HP/ATK/DEF are always percent.
+            // The main stat OCR region only captures the name (not the value with "%"),
+            // so we need to fix up flat→percent.
+            stat_parser::parse_stat_from_text(&main_stat_text)
+                .map(|s| stat_parser::main_stat_key_fixup(&s.key))
         };
 
         let main_stat_key = match main_stat_key {
@@ -279,57 +482,151 @@ impl GoodArtifactScanner {
                 .unwrap_or(0)
         };
 
-        // 5. Substats
-        let subs_text = self.ocr_image_region_shifted(
-            image,
-            self.ocr_regions.substats,
-            y_shift,
-            scaler,
-        )?;
+        // 5. Substats — read each line individually (PaddleOCR is single-line)
         let mut substats: Vec<GoodSubStat> = Vec::new();
         let mut unactivated_substats: Vec<GoodSubStat> = Vec::new();
-
-        if !subs_text.is_empty() {
-            // Cut at "2件套" marker if present
-            let subs_text = if let Some(idx) = subs_text.find("2\u{4EF6}\u{5957}") {
-                &subs_text[..idx]
-            } else {
-                &subs_text
-            };
-
-            for line in subs_text.split('\n') {
-                let line = line.trim();
-                if line.len() < 2 {
-                    continue;
-                }
-                if let Some(parsed) = stat_parser::parse_stat_from_text(line) {
-                    let sub = GoodSubStat {
-                        key: parsed.key,
-                        value: parsed.value,
-                    };
-                    if parsed.inactive {
-                        unactivated_substats.push(sub);
+        for i in 0..4 {
+            let (sub_x, sub_y, sub_w, sub_h) = self.ocr_regions.substat_lines[i];
+            // Try regular OCR first; if unparseable, retry with icon masking.
+            let line_text = {
+                let text = self.ocr_image_region_shifted(
+                    image, (sub_x, sub_y, sub_w, sub_h), y_shift, scaler,
+                )?;
+                if stat_parser::parse_stat_from_text(&text).is_some() {
+                    text
+                } else {
+                    // Regular OCR failed — try with left-side icon masking
+                    let masked = self.ocr_image_region_shifted_masked(
+                        image, (sub_x, sub_y, sub_w, sub_h), y_shift, scaler,
+                    )?;
+                    if stat_parser::parse_stat_from_text(&masked).is_some() {
+                        masked
                     } else {
-                        substats.push(sub);
+                        // Neither worked — return the one with more Chinese chars
+                        let cn = |s: &str| s.chars().filter(|c| *c >= '\u{4E00}' && *c <= '\u{9FFF}').count();
+                        if cn(&masked) > cn(&text) { masked } else { text }
                     }
                 }
+            };
+            let line = line_text.trim();
+            if self.config.verbose {
+                info!("[artifact] sub[{}] y={:.0} text=「{}」", i, sub_y + y_shift, line);
+            }
+            if line.len() < 2 {
+                continue;
+            }
+            // Stop at "2件套" marker
+            if line.contains("2\u{4EF6}\u{5957}") {
+                break;
+            }
+            if let Some(mut parsed) = stat_parser::parse_stat_from_text(line) {
+                // Retry on truncated percent values: OCR often drops digit after decimal.
+                // Only retry when there's evidence of truncation: "X.%" (dot directly before %)
+                // or "X.letter%" (OCR-corrupted digit after dot).
+                let has_truncation_evidence = line.contains(".%")
+                    || Regex::new(r"\.\D%").map_or(false, |re| re.is_match(line));
+                if parsed.key.ends_with('_') && has_truncation_evidence {
+                    // OCR just the number portion for better decimal recognition
+                    if let Ok(num_text) = self.ocr_substat_number_retry(
+                        image, (sub_x, sub_y, sub_w, sub_h), y_shift, scaler,
+                    ) {
+                        let num_text = num_text.trim();
+                        // Extract number from the retry text
+                        if let Some(retry_val) = stat_parser::extract_number(num_text) {
+                            // Accept retry if: has decimal part, within same magnitude as original,
+                            // and the integer part is close (within ±1 or same).
+                            let has_decimal = retry_val != (retry_val as i64) as f64;
+                            let orig_int = parsed.value as i64;
+                            let retry_int = retry_val as i64;
+                            // The retry crops the right portion, so it might see "1.7" from "11.7"
+                            // Accept if retry integer part matches original, or if original was
+                            // wrong and retry captures the last digit(s).
+                            let close_enough = (retry_int - orig_int).abs() <= 1
+                                || retry_val > (parsed.value * 0.8) && retry_val < (parsed.value * 1.3);
+                            if has_decimal && retry_val > 0.5 && retry_val < 100.0 && close_enough {
+                                info!("[artifact] sub[{}] decimal recovered: {} → {} (retry=「{}」)", i, parsed.value, retry_val, num_text);
+                                parsed.value = retry_val;
+                            }
+                        }
+                    }
+                    if parsed.value == (parsed.value as i64) as f64 {
+                        warn!("[artifact] sub[{}] truncation? key={} val={} raw=「{}」", i, parsed.key, parsed.value, line);
+                    }
+                }
+                let sub = GoodSubStat {
+                    key: parsed.key,
+                    value: parsed.value,
+                };
+                // Check if inactive: rely on OCR detecting "待激活" text.
+                // Pixel brightness detection was too unreliable (326+ false positives),
+                // so we use only the OCR text and level-0 inference (below).
+                let is_inactive = parsed.inactive;
+                if is_inactive {
+                    unactivated_substats.push(sub);
+                } else {
+                    substats.push(sub);
+                }
+            } else {
+                warn!("[artifact] sub[{}] unparseable: 「{}」", i, line);
             }
         }
 
-        // 6. Set name — position adjusted for number of substats
+        // Note: level-0 inference was removed. The groundtruth treats level-0
+        // artifacts with 4 substats as all-active, so we shouldn't infer
+        // unactivated status from level alone.
+
+        // 6. Set name — try multiple Y positions since OCR may miss some substats.
+        //    The set name line is below the substats, so its Y depends on how many
+        //    substats exist. Rather than relying on the parsed count (which may
+        //    undercount due to OCR errors), try the 4-substat position first,
+        //    then fall back to 3, 2, 1 positions.
         let stat_count = (substats.len() + unactivated_substats.len()).clamp(1, 4);
-        if stat_count < 4 && rarity == 5 {
+        if stat_count < 4 && rarity == 5 && self.config.verbose {
             warn!("[artifact] 5* only identified {} substats", stat_count);
         }
-        let missing_stats = 4 - stat_count as i32;
-        let set_y = self.ocr_regions.set_name_base_y + y_shift - (missing_stats as f64 * 40.0);
-        let set_name_text = self.ocr_image_region(
-            image,
-            (self.ocr_regions.set_name_x, set_y, self.ocr_regions.set_name_w, self.ocr_regions.set_name_h),
-            scaler,
-        )?;
 
-        let set_key = self.find_set_key_in_text(&set_name_text);
+        let mut set_key: Option<String> = None;
+        let mut set_name_text = String::new();
+        let mut tried_y = 0.0;
+
+        // Try from 4 substats down to 1 (most common case first)
+        for assumed_count in (1..=4).rev() {
+            let missing = 4 - assumed_count;
+            let set_y = self.ocr_regions.set_name_base_y + y_shift - (missing as f64 * 40.0);
+            let set_rect = (self.ocr_regions.set_name_x, set_y, self.ocr_regions.set_name_w, self.ocr_regions.set_name_h);
+            // Try regular OCR first, then grayscale fallback.
+            // Some set names work better with one or the other.
+            let text_rgb = self.ocr_image_region(image, set_rect, scaler)?;
+            let text = if self.find_set_key_in_text(&text_rgb).is_some() {
+                text_rgb
+            } else {
+                let text_gray = self.ocr_image_region_grayscale(image, set_rect, scaler)?;
+                if self.find_set_key_in_text(&text_gray).is_some() {
+                    text_gray
+                } else {
+                    // Neither matched — use whichever has more Chinese characters
+                    let cn_count = |s: &str| s.chars().filter(|c| *c >= '\u{4E00}' && *c <= '\u{9FFF}').count();
+                    if cn_count(&text_rgb) >= cn_count(&text_gray) { text_rgb } else { text_gray }
+                }
+            };
+            if self.config.verbose {
+                info!(
+                    "[artifact] set probe: assumed_count={} set_y={:.0} text=「{}」",
+                    assumed_count, set_y, text
+                );
+            }
+            if let Some(key) = self.find_set_key_in_text(&text) {
+                set_key = Some(key);
+                set_name_text = text;
+                tried_y = set_y;
+                break;
+            }
+            if set_name_text.is_empty() {
+                set_name_text = text;
+                tried_y = set_y;
+            }
+        }
+
         let set_key = match set_key {
             Some(k) => k,
             None => {
@@ -340,7 +637,7 @@ impl GoodArtifactScanner {
                     .collect();
                 warn!(
                     "[artifact] cannot identify set: setY={} stats=[{}] text=\u{300C}{}\u{300D}",
-                    set_y,
+                    tried_y,
                     stat_keys.join(", "),
                     set_name_text
                 );
@@ -413,6 +710,13 @@ impl GoodArtifactScanner {
     ) -> Result<Vec<GoodArtifact>> {
         info!("[artifact] starting scan...");
         let now = SystemTime::now();
+
+        // Focus the game window before doing anything
+        ctrl.focus_game_window();
+
+        // Press Escape to close any open menus before starting
+        ctrl.key_press(enigo::Key::Escape);
+        yas::utils::sleep(500);
 
         let mut bp = BackpackScanner::new(ctrl);
 
@@ -622,7 +926,7 @@ impl GoodArtifactScanner {
             "atk".to_string()
         } else {
             stat_parser::parse_stat_from_text(&main_stat_text)
-                .map(|s| s.key)
+                .map(|s| stat_parser::main_stat_key_fixup(&s.key))
                 .unwrap_or_default()
         };
         fields.push(DebugOcrField {
@@ -663,41 +967,39 @@ impl GoodArtifactScanner {
             duration_ms: t.elapsed().as_millis() as u64,
         });
 
-        // Substats
+        // Substats — read each line individually
         let t = Instant::now();
-        let subs_text = self.ocr_image_region_shifted(
-            image, self.ocr_regions.substats, y_shift, scaler,
-        ).unwrap_or_default();
         let mut substats: Vec<GoodSubStat> = Vec::new();
         let mut unactivated_substats: Vec<GoodSubStat> = Vec::new();
-        if !subs_text.is_empty() {
-            let subs_cut = if let Some(idx) = subs_text.find("2\u{4EF6}\u{5957}") {
-                &subs_text[..idx]
-            } else {
-                &subs_text
-            };
-            for line in subs_cut.split('\n') {
-                let line = line.trim();
-                if line.len() < 2 { continue; }
-                if let Some(parsed) = stat_parser::parse_stat_from_text(line) {
-                    let sub = GoodSubStat { key: parsed.key, value: parsed.value };
-                    if parsed.inactive {
-                        unactivated_substats.push(sub);
-                    } else {
-                        substats.push(sub);
-                    }
+        let mut subs_raw_lines = Vec::new();
+        for i in 0..4 {
+            let (sub_x, sub_y, sub_w, sub_h) = self.ocr_regions.substat_lines[i];
+            let line_text = self.ocr_image_region_shifted(
+                image, (sub_x, sub_y, sub_w, sub_h), y_shift, scaler,
+            ).unwrap_or_default();
+            let line = line_text.trim().to_string();
+            if line.len() < 2 { subs_raw_lines.push(line); continue; }
+            if line.contains("2\u{4EF6}\u{5957}") { break; }
+            if let Some(parsed) = stat_parser::parse_stat_from_text(&line) {
+                let sub = GoodSubStat { key: parsed.key, value: parsed.value };
+                if parsed.inactive {
+                    unactivated_substats.push(sub);
+                } else {
+                    substats.push(sub);
                 }
             }
+            subs_raw_lines.push(line);
         }
+        // Level-0 inference removed — groundtruth treats all as active
         let subs_summary: Vec<String> = substats.iter()
             .map(|s| format!("{}={}", s.key, s.value))
             .chain(unactivated_substats.iter().map(|s| format!("{}={}(inactive)", s.key, s.value)))
             .collect();
         fields.push(DebugOcrField {
             field_name: "substats".into(),
-            raw_text: subs_text.replace('\n', " | "),
+            raw_text: subs_raw_lines.join(" | "),
             parsed_value: subs_summary.join(", "),
-            region: self.ocr_regions.substats,
+            region: self.ocr_regions.substat_lines[0],
             duration_ms: t.elapsed().as_millis() as u64,
         });
 
@@ -707,8 +1009,15 @@ impl GoodArtifactScanner {
         let missing_stats = 4 - stat_count as i32;
         let set_y = self.ocr_regions.set_name_base_y + y_shift - (missing_stats as f64 * 40.0);
         let set_rect = (self.ocr_regions.set_name_x, set_y, self.ocr_regions.set_name_w, self.ocr_regions.set_name_h);
-        let set_name_text = self.ocr_image_region(image, set_rect, scaler)
-            .unwrap_or_default();
+        let set_name_text = {
+            let rgb = self.ocr_image_region(image, set_rect, scaler).unwrap_or_default();
+            if self.find_set_key_in_text(&rgb).is_some() {
+                rgb
+            } else {
+                let gray = self.ocr_image_region_grayscale(image, set_rect, scaler).unwrap_or_default();
+                if self.find_set_key_in_text(&gray).is_some() { gray } else { rgb }
+            }
+        };
         let set_key = self.find_set_key_in_text(&set_name_text).unwrap_or_default();
         fields.push(DebugOcrField {
             field_name: "setName".into(),
