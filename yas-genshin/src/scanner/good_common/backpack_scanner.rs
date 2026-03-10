@@ -18,9 +18,9 @@ pub enum ScanAction {
 }
 
 /// Events delivered to the scan callback.
-pub enum GridEvent<'a> {
+pub enum GridEvent {
     /// An item was clicked and captured: (item_index, captured_image).
-    Item(usize, &'a RgbImage),
+    Item(usize, RgbImage),
     /// A page scroll just completed (useful for clearing per-page state).
     PageScrolled,
 }
@@ -255,7 +255,7 @@ impl<'a> BackpackScanner<'a> {
                         }
                     };
 
-                    match callback(GridEvent::Item(scanned_count, &image)) {
+                    match callback(GridEvent::Item(scanned_count, image)) {
                         ScanAction::Continue => {}
                         ScanAction::Stop => break 'outer,
                     }

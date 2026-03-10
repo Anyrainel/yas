@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{anyhow, Result};
@@ -17,6 +17,7 @@ use crate::scanner::good_common::diff;
 use crate::scanner::good_common::game_controller::GenshinGameController;
 use crate::scanner::good_common::mappings::{MappingManager, NameOverrides};
 use crate::scanner::good_common::models::{DebugScanResult, GoodExport};
+use crate::scanner::good_common::ocr_factory;
 use crate::scanner::good_weapon_scanner::{GoodWeaponScanner, GoodWeaponScannerConfig};
 
 /// Config file name — looked up next to the executable.
@@ -273,7 +274,7 @@ impl GoodScannerApplication {
         if let Some(ref n) = overrides.wanderer_name { info!("Wanderer name: {}", n); }
         if let Some(ref n) = overrides.manekin_name { info!("Manekin name: {}", n); }
         if let Some(ref n) = overrides.manekina_name { info!("Manekina name: {}", n); }
-        let mappings = Rc::new(MappingManager::new(&overrides)?);
+        let mappings = Arc::new(MappingManager::new(&overrides)?);
         info!(
             "Loaded {} characters, {} weapons, {} artifact sets",
             mappings.character_name_map.len(),
@@ -432,7 +433,7 @@ impl GoodScannerApplication {
         }
 
         let overrides = user_config.to_overrides(config);
-        let mappings = Rc::new(MappingManager::new(&overrides)?);
+        let mappings = Arc::new(MappingManager::new(&overrides)?);
         let mut ctrl = GenshinGameController::new(game_info)?;
         ctrl.focus_game_window();
 
@@ -443,6 +444,7 @@ impl GoodScannerApplication {
                 // Character re-scan: open character screen, jump to index, scan
                 let mut char_config = GoodCharacterScannerConfig::from_arg_matches(arg_matches)?;
                 char_config.ocr_backend = ocr_backend.to_string();
+                let debug_ocr = ocr_factory::create_ocr_model(&char_config.ocr_backend)?;
                 let scanner = GoodCharacterScanner::new(char_config, mappings.clone())?;
 
                 ctrl.key_press(enigo::Key::Layout('c'));
@@ -464,7 +466,7 @@ impl GoodScannerApplication {
                         break;
                     }
                     println!("\n--- Re-scan iteration {} ---", i + 1);
-                    let result = scanner.debug_scan_current(&mut ctrl);
+                    let result = scanner.debug_scan_current(debug_ocr.as_ref(), &mut ctrl);
                     print_debug_result(&result);
                 }
 
@@ -512,6 +514,7 @@ impl GoodScannerApplication {
                     "weapon" => {
                         let mut weapon_config = GoodWeaponScannerConfig::from_arg_matches(arg_matches)?;
                         weapon_config.ocr_backend = ocr_backend.to_string();
+                        let debug_ocr = ocr_factory::create_ocr_model(&weapon_config.ocr_backend)?;
                         let scanner = GoodWeaponScanner::new(weapon_config, mappings.clone())?;
 
                         for i in 0..max_iter {
@@ -527,13 +530,14 @@ impl GoodScannerApplication {
                             yas::utils::sleep(500);
 
                             let image = ctrl.capture_game()?;
-                            let result = scanner.debug_scan_single(&image, &scaler);
+                            let result = scanner.debug_scan_single(debug_ocr.as_ref(), &image, &scaler);
                             print_debug_result(&result);
                         }
                     }
                     "artifact" => {
                         let mut artifact_config = GoodArtifactScannerConfig::from_arg_matches(arg_matches)?;
                         artifact_config.ocr_backend = ocr_backend.to_string();
+                        let debug_ocr = ocr_factory::create_ocr_model(&artifact_config.ocr_backend)?;
                         let scanner = GoodArtifactScanner::new(artifact_config, mappings.clone())?;
 
                         for i in 0..max_iter {
@@ -549,7 +553,7 @@ impl GoodScannerApplication {
                             yas::utils::sleep(500);
 
                             let image = ctrl.capture_game()?;
-                            let result = scanner.debug_scan_single(&image, &scaler);
+                            let result = scanner.debug_scan_single(debug_ocr.as_ref(), &image, &scaler);
                             print_debug_result(&result);
                         }
                     }

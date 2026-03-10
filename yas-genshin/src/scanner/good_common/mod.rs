@@ -9,4 +9,6 @@ pub mod navigation;
 pub mod game_controller;
 pub mod backpack_scanner;
 pub mod ocr_factory;
+pub mod ocr_pool;
+pub mod scan_worker;
 pub mod diff;

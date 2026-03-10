@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use anyhow::{bail, Result};
@@ -18,7 +18,9 @@ use crate::scanner::good_common::mappings::MappingManager;
 use crate::scanner::good_common::models::{DebugOcrField, DebugScanResult, GoodWeapon};
 use crate::scanner::good_common::navigation;
 use crate::scanner::good_common::ocr_factory;
+use crate::scanner::good_common::ocr_pool::OcrPool;
 use crate::scanner::good_common::pixel_utils;
+use crate::scanner::good_common::scan_worker::{self, WorkItem};
 use crate::scanner::good_common::stat_parser::level_to_ascension;
 
 /// Computed OCR regions for weapon card (at 1920x1080 base).
@@ -71,8 +73,7 @@ impl WeaponOcrRegions {
 /// with `BackpackScanner`.
 pub struct GoodWeaponScanner {
     config: GoodWeaponScannerConfig,
-    ocr_model: Box<dyn ImageToText<RgbImage> + Send>,
-    mappings: Rc<MappingManager>,
+    mappings: Arc<MappingManager>,
     ocr_regions: WeaponOcrRegions,
 }
 
@@ -93,13 +94,10 @@ enum WeaponScanResult {
 impl GoodWeaponScanner {
     pub fn new(
         config: GoodWeaponScannerConfig,
-        mappings: Rc<MappingManager>,
+        mappings: Arc<MappingManager>,
     ) -> Result<Self> {
-        let ocr_model = ocr_factory::create_ocr_model(&config.ocr_backend)?;
-
         Ok(Self {
             config,
-            ocr_model,
             mappings,
             ocr_regions: WeaponOcrRegions::new(),
         })
@@ -108,9 +106,8 @@ impl GoodWeaponScanner {
 
 impl GoodWeaponScanner {
     /// OCR a sub-region of a captured game image.
-    /// Crops the sub-region, converts to RgbImage, and runs OCR.
     fn ocr_image_region(
-        &self,
+        ocr: &dyn ImageToText<RgbImage>,
         image: &RgbImage,
         rect: (f64, f64, f64, f64),
         scaler: &CoordScaler,
@@ -121,7 +118,6 @@ impl GoodWeaponScanner {
         let w = scaler.x(bw) as u32;
         let h = scaler.y(bh) as u32;
 
-        // Clamp to image bounds
         let x = x.min(image.width().saturating_sub(1));
         let y = y.min(image.height().saturating_sub(1));
         let w = w.min(image.width().saturating_sub(x));
@@ -132,17 +128,24 @@ impl GoodWeaponScanner {
         }
 
         let sub = image.view(x, y, w, h).to_image();
-        let text = self.ocr_model.image_to_text(&sub, false)?;
+        let text = ocr.image_to_text(&sub, false)?;
         Ok(text.trim().to_string())
     }
 
     /// Scan a single weapon from a captured game image.
     ///
-    /// Port of `scanSingleWeapon()` from GOODScanner/lib/weapon_scanner.js
-    fn scan_single_weapon(&self, image: &RgbImage, scaler: &CoordScaler) -> Result<WeaponScanResult> {
+    /// Called from the worker thread with a checked-out OCR model.
+    fn scan_single_weapon(
+        ocr: &dyn ImageToText<RgbImage>,
+        image: &RgbImage,
+        scaler: &CoordScaler,
+        ocr_regions: &WeaponOcrRegions,
+        mappings: &MappingManager,
+        config: &GoodWeaponScannerConfig,
+    ) -> Result<WeaponScanResult> {
         // OCR weapon name
-        let name_text = self.ocr_image_region(image, self.ocr_regions.name, scaler)?;
-        let weapon_key = fuzzy_match_map(&name_text, &self.mappings.weapon_name_map);
+        let name_text = Self::ocr_image_region(ocr, image, ocr_regions.name, scaler)?;
+        let weapon_key = fuzzy_match_map(&name_text, &mappings.weapon_name_map);
 
         if weapon_key.is_none() {
             // Check if it's a stop-signal weapon/material
@@ -158,7 +161,7 @@ impl GoodWeaponScanner {
                 return Ok(WeaponScanResult::Stop);
             }
 
-            if self.config.continue_on_failure {
+            if config.continue_on_failure {
                 warn!("[weapon] cannot match: \u{300C}{}\u{300D}, skipping", name_text);
                 return Ok(WeaponScanResult::Skip);
             }
@@ -168,16 +171,16 @@ impl GoodWeaponScanner {
         let weapon_key = weapon_key.unwrap();
 
         // OCR level
-        let level_text = self.ocr_image_region(image, self.ocr_regions.level, scaler)?;
+        let level_text = Self::ocr_image_region(ocr, image, ocr_regions.level, scaler)?;
         let (level, ascended) = Self::parse_weapon_level(&level_text);
 
         // OCR refinement
-        let ref_text = self.ocr_image_region(image, self.ocr_regions.refinement, scaler)?;
+        let ref_text = Self::ocr_image_region(ocr, image, ocr_regions.refinement, scaler)?;
         let refinement = Self::parse_refinement(&ref_text);
 
         // OCR equip status
-        let equip_text = self.ocr_image_region(image, self.ocr_regions.equip, scaler)?;
-        let location = self.parse_equip_location(&equip_text);
+        let equip_text = Self::ocr_image_region(ocr, image, ocr_regions.equip, scaler)?;
+        let location = Self::parse_equip_location(&equip_text, mappings);
 
         // Pixel-based detections
         let rarity = pixel_utils::detect_weapon_rarity(image, scaler);
@@ -255,9 +258,7 @@ impl GoodWeaponScanner {
     }
 
     /// Parse equipped character from equip text.
-    /// Text format: "已装备: CharacterName" or similar.
-    fn parse_equip_location(&self, text: &str) -> String {
-        // "已装备" = "Equipped"
+    fn parse_equip_location(text: &str, mappings: &MappingManager) -> String {
         if text.contains("\u{5DF2}\u{88C5}\u{5907}") {
             let char_name = text
                 .replace("\u{5DF2}\u{88C5}\u{5907}", "")
@@ -265,7 +266,7 @@ impl GoodWeaponScanner {
                 .trim()
                 .to_string();
             if !char_name.is_empty() {
-                return fuzzy_match_map(&char_name, &self.mappings.character_name_map)
+                return fuzzy_match_map(&char_name, &mappings.character_name_map)
                     .unwrap_or_default();
             }
         }
@@ -274,9 +275,8 @@ impl GoodWeaponScanner {
 
     /// Scan all weapons from the backpack.
     ///
-    /// Uses `BackpackScanner` for grid traversal with panel-load detection
-    /// and adaptive scrolling. The controller is passed in to avoid borrow
-    /// conflicts between BackpackScanner and the scan callback.
+    /// Uses pipelined architecture: the main thread navigates the grid and
+    /// captures screenshots, while a worker pool OCRs them in parallel.
     ///
     /// If `start_at > 0`, skips directly to that item index.
     pub fn scan(
@@ -295,8 +295,9 @@ impl GoodWeaponScanner {
         }
         bp.select_tab("weapon", self.config.delay_tab);
 
-        // Read item count
-        let (_, total_count) = bp.read_item_count(self.ocr_model.as_ref())?;
+        // Create a temporary OCR model just for reading item count
+        let count_ocr = ocr_factory::create_ocr_model(&self.config.ocr_backend)?;
+        let (_, total_count) = bp.read_item_count(count_ocr.as_ref())?;
 
         if total_count == 0 {
             warn!("[weapon] no weapons in backpack");
@@ -304,22 +305,56 @@ impl GoodWeaponScanner {
         }
         info!("[weapon] total: {}", total_count);
 
-        let mut weapons: Vec<GoodWeapon> = Vec::new();
+        let scaler = bp.scaler().clone();
+
+        // Create OCR pool
+        let pool_size = std::thread::available_parallelism()
+            .map(|n| n.get().min(8))
+            .unwrap_or(4);
+        let ocr_backend = self.config.ocr_backend.clone();
+        let ocr_pool = Arc::new(OcrPool::new(
+            move || ocr_factory::create_ocr_model(&ocr_backend),
+            pool_size,
+        )?);
+        info!("[weapon] OCR pool: {} instances", pool_size);
+
+        // Shared context for worker threads
+        let worker_mappings = self.mappings.clone();
+        let worker_config = self.config.clone();
+        let worker_scaler = scaler.clone();
+        let worker_ocr_pool = ocr_pool.clone();
+        let worker_ocr_regions = WeaponOcrRegions::new();
+
+        let (item_tx, worker_handle) = scan_worker::start_worker::<(), GoodWeapon, _>(
+            total_count as usize,
+            move |work_item: WorkItem<()>| {
+                let ocr_guard = worker_ocr_pool.get();
+
+                match Self::scan_single_weapon(
+                    &ocr_guard,
+                    &work_item.image,
+                    &worker_scaler,
+                    &worker_ocr_regions,
+                    &worker_mappings,
+                    &worker_config,
+                )? {
+                    WeaponScanResult::Weapon(weapon) => {
+                        if weapon.rarity >= worker_config.min_rarity {
+                            Ok(Some(weapon))
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                    WeaponScanResult::Stop => Ok(None),
+                    WeaponScanResult::Skip => Ok(None),
+                }
+            },
+        );
 
         let scan_config = BackpackScanConfig {
             delay_grid_item: self.config.delay_grid_item,
             delay_scroll: self.config.delay_scroll,
         };
-
-        // Clone the scaler so the callback can use it without borrowing ctrl
-        let scaler = bp.scaler().clone();
-
-        // Row-level duplicate detection: if the same row of items appears again
-        // (and is not all lv1), scrolling has failed and we should stop.
-        let mut seen_rows: Vec<String> = Vec::new();
-        let mut current_row: Vec<String> = Vec::new();
-        let mut pending_row: Vec<GoodWeapon> = Vec::new();
-        let mut row_has_leveled = false;
 
         bp.scan_grid(
             total_count as usize,
@@ -327,80 +362,22 @@ impl GoodWeaponScanner {
             start_at,
             |event| {
                 match event {
-                    GridEvent::PageScrolled => {
-                        seen_rows.clear();
-                        current_row.clear();
-                        pending_row.clear();
-                        row_has_leveled = false;
-                        return ScanAction::Continue;
-                    }
-                    GridEvent::Item(_, image) => {
-                        match self.scan_single_weapon(image, &scaler) {
-                            Ok(WeaponScanResult::Weapon(weapon)) => {
-                                let fp = format!("{}|{}|R{}", weapon.key, weapon.level, weapon.refinement);
-                                if weapon.level > 1 {
-                                    row_has_leveled = true;
-                                }
-                                current_row.push(fp);
-                                if weapon.rarity >= self.config.min_rarity {
-                                    pending_row.push(weapon);
-                                }
-                            }
-                            Ok(WeaponScanResult::Stop) => {
-                                // Flush pending row before stopping
-                                for w in pending_row.drain(..) {
-                                    if self.config.log_progress {
-                                        info!(
-                                            "[weapon] {} Lv.{} R{} {}{}",
-                                            w.key, w.level, w.refinement,
-                                            if w.location.is_empty() { "-" } else { &w.location },
-                                            if w.lock { " locked" } else { "" }
-                                        );
-                                    }
-                                    weapons.push(w);
-                                }
-                                return ScanAction::Stop;
-                            }
-                            Ok(WeaponScanResult::Skip) => {
-                                current_row.push("skip".to_string());
-                            }
-                            Err(e) => {
-                                error!("[weapon] scan error: {}", e);
-                                current_row.push("error".to_string());
-                                if !self.config.continue_on_failure {
-                                    return ScanAction::Stop;
-                                }
-                            }
+                    GridEvent::PageScrolled => ScanAction::Continue,
+                    GridEvent::Item(idx, image) => {
+                        if worker_handle.stop_requested() {
+                            return ScanAction::Stop;
                         }
 
-                        // Check row when full
-                        if current_row.len() >= GRID_COLS {
-                            let row_str = current_row.join(",");
-                            let is_dup = row_has_leveled && seen_rows.iter().any(|s| s == &row_str);
+                        // Quick rarity check on main thread
+                        let rarity = pixel_utils::detect_weapon_rarity(&image, &scaler);
+                        if rarity <= 2 {
+                            info!("[weapon] detected {}* item, stopping capture", rarity);
+                            return ScanAction::Stop;
+                        }
 
-                            if is_dup {
-                                warn!(
-                                    "[weapon] duplicate row detected (scroll failed?), stopping. Row: {}",
-                                    row_str
-                                );
-                                return ScanAction::Stop;
-                            }
-
-                            seen_rows.push(row_str);
-                            for w in pending_row.drain(..) {
-                                if self.config.log_progress {
-                                    info!(
-                                        "[weapon] {} Lv.{} R{} {}{}",
-                                        w.key, w.level, w.refinement,
-                                        if w.location.is_empty() { "-" } else { &w.location },
-                                        if w.lock { " locked" } else { "" }
-                                    );
-                                }
-                                weapons.push(w);
-                            }
-                            current_row.clear();
-                            pending_row.clear();
-                            row_has_leveled = false;
+                        if item_tx.send(WorkItem { index: idx, image, metadata: () }).is_err() {
+                            error!("[weapon] worker channel closed");
+                            return ScanAction::Stop;
                         }
 
                         ScanAction::Continue
@@ -409,18 +386,8 @@ impl GoodWeaponScanner {
             },
         );
 
-        // Flush remaining partial row
-        for w in pending_row.drain(..) {
-            if self.config.log_progress {
-                info!(
-                    "[weapon] {} Lv.{} R{} {}{}",
-                    w.key, w.level, w.refinement,
-                    if w.location.is_empty() { "-" } else { &w.location },
-                    if w.lock { " locked" } else { "" }
-                );
-            }
-            weapons.push(w);
-        }
+        drop(item_tx);
+        let weapons = worker_handle.join();
 
         info!(
             "[weapon] complete, {} weapons scanned in {:?}",
@@ -437,6 +404,7 @@ impl GoodWeaponScanner {
     /// and timing information. Used by the re-scan debug mode.
     pub fn debug_scan_single(
         &self,
+        ocr: &dyn ImageToText<RgbImage>,
         image: &RgbImage,
         scaler: &CoordScaler,
     ) -> DebugScanResult {
@@ -447,7 +415,7 @@ impl GoodWeaponScanner {
 
         // Name
         let t = Instant::now();
-        let name_text = self.ocr_image_region(image, self.ocr_regions.name, scaler)
+        let name_text = Self::ocr_image_region(ocr, image, self.ocr_regions.name, scaler)
             .unwrap_or_default();
         let name_key = fuzzy_match_map(&name_text, &self.mappings.weapon_name_map)
             .unwrap_or_default();
@@ -461,7 +429,7 @@ impl GoodWeaponScanner {
 
         // Level
         let t = Instant::now();
-        let level_text = self.ocr_image_region(image, self.ocr_regions.level, scaler)
+        let level_text = Self::ocr_image_region(ocr, image, self.ocr_regions.level, scaler)
             .unwrap_or_default();
         let (level, ascended) = Self::parse_weapon_level(&level_text);
         fields.push(DebugOcrField {
@@ -474,7 +442,7 @@ impl GoodWeaponScanner {
 
         // Refinement
         let t = Instant::now();
-        let ref_text = self.ocr_image_region(image, self.ocr_regions.refinement, scaler)
+        let ref_text = Self::ocr_image_region(ocr, image, self.ocr_regions.refinement, scaler)
             .unwrap_or_default();
         let refinement = Self::parse_refinement(&ref_text);
         fields.push(DebugOcrField {
@@ -487,9 +455,9 @@ impl GoodWeaponScanner {
 
         // Equip
         let t = Instant::now();
-        let equip_text = self.ocr_image_region(image, self.ocr_regions.equip, scaler)
+        let equip_text = Self::ocr_image_region(ocr, image, self.ocr_regions.equip, scaler)
             .unwrap_or_default();
-        let location = self.parse_equip_location(&equip_text);
+        let location = Self::parse_equip_location(&equip_text, &self.mappings);
         fields.push(DebugOcrField {
             field_name: "equip".into(),
             raw_text: equip_text,

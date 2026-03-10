@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use anyhow::{bail, Result};
@@ -17,7 +17,9 @@ use crate::scanner::good_common::game_controller::GenshinGameController;
 use crate::scanner::good_common::mappings::MappingManager;
 use crate::scanner::good_common::models::{DebugOcrField, DebugScanResult, GoodArtifact, GoodSubStat};
 use crate::scanner::good_common::ocr_factory;
+use crate::scanner::good_common::ocr_pool::OcrPool;
 use crate::scanner::good_common::pixel_utils;
+use crate::scanner::good_common::scan_worker::{self, WorkItem};
 use crate::scanner::good_common::stat_parser;
 
 /// Computed OCR regions for artifact card (at 1920x1080 base).
@@ -106,26 +108,21 @@ enum ArtifactScanResult {
 /// Features elixir detection with Y-shift, astral marks, unactivated substats,
 /// row-level deduplication, and post-processing filters.
 ///
-/// The scanner holds only business logic (OCR model, mappings, config).
-/// The game controller is passed to `scan()` to avoid borrow checker conflicts
-/// with `BackpackScanner`.
+/// Uses pipelined architecture: the main thread captures screenshots while
+/// a worker pool OCRs them in parallel using `OcrPool` + `scan_worker`.
 pub struct GoodArtifactScanner {
     config: GoodArtifactScannerConfig,
-    ocr_model: Box<dyn ImageToText<RgbImage> + Send>,
-    mappings: Rc<MappingManager>,
+    mappings: Arc<MappingManager>,
     ocr_regions: ArtifactOcrRegions,
 }
 
 impl GoodArtifactScanner {
     pub fn new(
         config: GoodArtifactScannerConfig,
-        mappings: Rc<MappingManager>,
+        mappings: Arc<MappingManager>,
     ) -> Result<Self> {
-        let ocr_model = ocr_factory::create_ocr_model(&config.ocr_backend)?;
-
         Ok(Self {
             config,
-            ocr_model,
             mappings,
             ocr_regions: ArtifactOcrRegions::new(),
         })
@@ -135,7 +132,7 @@ impl GoodArtifactScanner {
 impl GoodArtifactScanner {
     /// OCR a sub-region of a captured game image.
     fn ocr_image_region(
-        &self,
+        ocr: &dyn ImageToText<RgbImage>,
         image: &RgbImage,
         rect: (f64, f64, f64, f64),
         scaler: &CoordScaler,
@@ -156,7 +153,7 @@ impl GoodArtifactScanner {
         }
 
         let sub = image.view(x, y, w, h).to_image();
-        let text = self.ocr_model.image_to_text(&sub, false)?;
+        let text = ocr.image_to_text(&sub, false)?;
         Ok(text.trim().to_string())
     }
 
@@ -164,10 +161,11 @@ impl GoodArtifactScanner {
     /// Uses Otsu-like adaptive thresholding to produce clear black text on
     /// white background, which helps with colored text (green set names).
     fn ocr_image_region_grayscale(
-        &self,
+        ocr: &dyn ImageToText<RgbImage>,
         image: &RgbImage,
         rect: (f64, f64, f64, f64),
         scaler: &CoordScaler,
+        mappings: &MappingManager,
     ) -> Result<String> {
         let (bx, by, bw, bh) = rect;
         let x = scaler.x(bx) as u32;
@@ -196,9 +194,9 @@ impl GoodArtifactScanner {
         });
 
         // Try simple grayscale first
-        let text_gray = self.ocr_model.image_to_text(&gray_img, false)?;
+        let text_gray = ocr.image_to_text(&gray_img, false)?;
         let text_gray = text_gray.trim().to_string();
-        if self.find_set_key_in_text(&text_gray).is_some() {
+        if Self::find_set_key_in_text(&text_gray, mappings).is_some() {
             return Ok(text_gray);
         }
 
@@ -215,9 +213,9 @@ impl GoodArtifactScanner {
             let v = (255 - (green_excess * 4).min(255)) as u8;
             image::Rgb([v, v, v])
         });
-        let text_green = self.ocr_model.image_to_text(&green_extracted, false)?;
+        let text_green = ocr.image_to_text(&green_extracted, false)?;
         let text_green = text_green.trim().to_string();
-        if self.find_set_key_in_text(&text_green).is_some() {
+        if Self::find_set_key_in_text(&text_green, mappings).is_some() {
             return Ok(text_green);
         }
 
@@ -233,7 +231,7 @@ impl GoodArtifactScanner {
     /// Replaces the leftmost ~18 pixels of the cropped image with the
     /// average background color to remove stat icons that confuse OCR.
     fn ocr_image_region_shifted_masked(
-        &self,
+        ocr: &dyn ImageToText<RgbImage>,
         image: &RgbImage,
         rect: (f64, f64, f64, f64),
         y_shift: f64,
@@ -284,7 +282,7 @@ impl GoodArtifactScanner {
             }
         }
 
-        let text = self.ocr_model.image_to_text(&sub, false)?;
+        let text = ocr.image_to_text(&sub, false)?;
         Ok(text.trim().to_string())
     }
 
@@ -293,7 +291,7 @@ impl GoodArtifactScanner {
     /// By cropping to just the number, each character gets more pixels in the
     /// model's fixed-width input, improving decimal point recognition.
     fn ocr_substat_number_retry(
-        &self,
+        ocr: &dyn ImageToText<RgbImage>,
         image: &RgbImage,
         rect: (f64, f64, f64, f64),
         y_shift: f64,
@@ -318,26 +316,26 @@ impl GoodArtifactScanner {
         }
 
         let sub = image.view(x, y, w, h).to_image();
-        let text = self.ocr_model.image_to_text(&sub, false)?;
+        let text = ocr.image_to_text(&sub, false)?;
         Ok(text.trim().to_string())
     }
 
     /// OCR a sub-region with Y-offset for elixir artifacts.
     fn ocr_image_region_shifted(
-        &self,
+        ocr: &dyn ImageToText<RgbImage>,
         image: &RgbImage,
         rect: (f64, f64, f64, f64),
         y_shift: f64,
         scaler: &CoordScaler,
     ) -> Result<String> {
         let (x, y, w, h) = rect;
-        self.ocr_image_region(image, (x, y + y_shift, w, h), scaler)
+        Self::ocr_image_region(ocr, image, (x, y + y_shift, w, h), scaler)
     }
 
     /// Find artifact set key in OCR text (with multi-line fallback).
     ///
     /// Port of `findSetKeyInText()` from artifact_scanner.js
-    fn find_set_key_in_text(&self, text: &str) -> Option<String> {
+    fn find_set_key_in_text(text: &str, mappings: &MappingManager) -> Option<String> {
         if text.is_empty() {
             return None;
         }
@@ -353,13 +351,13 @@ impl GoodArtifactScanner {
             .trim();
 
         // Try cleaned text first
-        if let Some(key) = fuzzy_match_map(cleaned, &self.mappings.artifact_set_map) {
+        if let Some(key) = fuzzy_match_map(cleaned, &mappings.artifact_set_map) {
             return Some(key);
         }
 
         // Try full text (in case cleaning removed something needed)
         if cleaned != text.trim() {
-            if let Some(key) = fuzzy_match_map(text.trim(), &self.mappings.artifact_set_map) {
+            if let Some(key) = fuzzy_match_map(text.trim(), &mappings.artifact_set_map) {
                 return Some(key);
             }
         }
@@ -373,7 +371,7 @@ impl GoodArtifactScanner {
             if line.len() < 2 {
                 continue;
             }
-            if let Some(key) = fuzzy_match_map(line, &self.mappings.artifact_set_map) {
+            if let Some(key) = fuzzy_match_map(line, &mappings.artifact_set_map) {
                 return Some(key);
             }
         }
@@ -383,17 +381,18 @@ impl GoodArtifactScanner {
 
     /// Detect elixir crafted status from OCR.
     fn detect_elixir_crafted(
-        &self,
+        ocr: &dyn ImageToText<RgbImage>,
         image: &RgbImage,
+        elixir_rect: (f64, f64, f64, f64),
         scaler: &CoordScaler,
     ) -> Result<bool> {
-        let text = self.ocr_image_region(image, self.ocr_regions.elixir, scaler)?;
+        let text = Self::ocr_image_region(ocr, image, elixir_rect, scaler)?;
         // "祝圣" = elixir
         Ok(text.contains("\u{795D}\u{5723}"))
     }
 
     /// Parse equipped character from equip text.
-    fn parse_equip_location(&self, text: &str) -> String {
+    fn parse_equip_location(text: &str, mappings: &MappingManager) -> String {
         if text.contains("\u{5DF2}\u{88C5}\u{5907}") {
             // "已装备"
             let char_name = text
@@ -402,7 +401,7 @@ impl GoodArtifactScanner {
                 .trim()
                 .to_string();
             if !char_name.is_empty() {
-                return fuzzy_match_map(&char_name, &self.mappings.character_name_map)
+                return fuzzy_match_map(&char_name, &mappings.character_name_map)
                     .unwrap_or_default();
             }
         }
@@ -411,11 +410,14 @@ impl GoodArtifactScanner {
 
     /// Scan a single artifact from a captured game image.
     ///
-    /// Port of `scanSingleArtifact()` from GOODScanner/lib/artifact_scanner.js
+    /// This is called from the worker thread with a checked-out OCR model.
     fn scan_single_artifact(
-        &self,
+        ocr: &dyn ImageToText<RgbImage>,
         image: &RgbImage,
         scaler: &CoordScaler,
+        ocr_regions: &ArtifactOcrRegions,
+        mappings: &MappingManager,
+        config: &GoodArtifactScannerConfig,
     ) -> Result<ArtifactScanResult> {
         // 0. Detect rarity — stop on 3-star or below
         let rarity = pixel_utils::detect_artifact_rarity(image, scaler);
@@ -425,7 +427,7 @@ impl GoodArtifactScanner {
         }
 
         // 1. Part name → slot key
-        let part_text = self.ocr_image_region(image, self.ocr_regions.part_name, scaler)?;
+        let part_text = Self::ocr_image_region(ocr, image, ocr_regions.part_name, scaler)?;
         let slot_key = stat_parser::match_slot_key(&part_text);
 
         let slot_key = match slot_key {
@@ -436,7 +438,7 @@ impl GoodArtifactScanner {
                     info!("[artifact] 4* unrecognizable slot (possibly elixir essence), skipping");
                     return Ok(ArtifactScanResult::Skip);
                 }
-                if self.config.continue_on_failure {
+                if config.continue_on_failure {
                     warn!("[artifact] cannot identify slot: \u{300C}{}\u{300D}, skipping", part_text);
                     return Ok(ArtifactScanResult::Skip);
                 }
@@ -445,7 +447,7 @@ impl GoodArtifactScanner {
         };
 
         // 2. Main stat
-        let main_stat_text = self.ocr_image_region(image, self.ocr_regions.main_stat, scaler)?;
+        let main_stat_text = Self::ocr_image_region(ocr, image, ocr_regions.main_stat, scaler)?;
         let main_stat_key = if slot_key == "flower" {
             Some("hp".to_string())
         } else if slot_key == "plume" {
@@ -461,7 +463,7 @@ impl GoodArtifactScanner {
         let main_stat_key = match main_stat_key {
             Some(k) => k,
             None => {
-                if self.config.continue_on_failure {
+                if config.continue_on_failure {
                     warn!("[artifact] cannot identify main stat: \u{300C}{}\u{300D}, skipping", main_stat_text);
                     return Ok(ArtifactScanResult::Skip);
                 }
@@ -470,11 +472,11 @@ impl GoodArtifactScanner {
         };
 
         // 3. Detect elixir crafted
-        let elixir_crafted = self.detect_elixir_crafted(image, scaler)?;
+        let elixir_crafted = Self::detect_elixir_crafted(ocr, image, ocr_regions.elixir, scaler)?;
         let y_shift = if elixir_crafted { ELIXIR_SHIFT } else { 0.0 };
 
         // 4. Level
-        let level_text = self.ocr_image_region_shifted(image, self.ocr_regions.level, y_shift, scaler)?;
+        let level_text = Self::ocr_image_region_shifted(ocr, image, ocr_regions.level, y_shift, scaler)?;
         let level = {
             let re = Regex::new(r"\+?\s*(\d+)").unwrap();
             re.captures(&level_text)
@@ -486,18 +488,18 @@ impl GoodArtifactScanner {
         let mut substats: Vec<GoodSubStat> = Vec::new();
         let mut unactivated_substats: Vec<GoodSubStat> = Vec::new();
         for i in 0..4 {
-            let (sub_x, sub_y, sub_w, sub_h) = self.ocr_regions.substat_lines[i];
+            let (sub_x, sub_y, sub_w, sub_h) = ocr_regions.substat_lines[i];
             // Try regular OCR first; if unparseable, retry with icon masking.
             let line_text = {
-                let text = self.ocr_image_region_shifted(
-                    image, (sub_x, sub_y, sub_w, sub_h), y_shift, scaler,
+                let text = Self::ocr_image_region_shifted(
+                    ocr, image, (sub_x, sub_y, sub_w, sub_h), y_shift, scaler,
                 )?;
                 if stat_parser::parse_stat_from_text(&text).is_some() {
                     text
                 } else {
                     // Regular OCR failed — try with left-side icon masking
-                    let masked = self.ocr_image_region_shifted_masked(
-                        image, (sub_x, sub_y, sub_w, sub_h), y_shift, scaler,
+                    let masked = Self::ocr_image_region_shifted_masked(
+                        ocr, image, (sub_x, sub_y, sub_w, sub_h), y_shift, scaler,
                     )?;
                     if stat_parser::parse_stat_from_text(&masked).is_some() {
                         masked
@@ -509,7 +511,7 @@ impl GoodArtifactScanner {
                 }
             };
             let line = line_text.trim();
-            if self.config.verbose {
+            if config.verbose {
                 info!("[artifact] sub[{}] y={:.0} text=「{}」", i, sub_y + y_shift, line);
             }
             if line.len() < 2 {
@@ -527,8 +529,8 @@ impl GoodArtifactScanner {
                     || Regex::new(r"\.\D%").map_or(false, |re| re.is_match(line));
                 if parsed.key.ends_with('_') && has_truncation_evidence {
                     // OCR just the number portion for better decimal recognition
-                    if let Ok(num_text) = self.ocr_substat_number_retry(
-                        image, (sub_x, sub_y, sub_w, sub_h), y_shift, scaler,
+                    if let Ok(num_text) = Self::ocr_substat_number_retry(
+                        ocr, image, (sub_x, sub_y, sub_w, sub_h), y_shift, scaler,
                     ) {
                         let num_text = num_text.trim();
                         // Extract number from the retry text
@@ -581,7 +583,7 @@ impl GoodArtifactScanner {
         //    undercount due to OCR errors), try the 4-substat position first,
         //    then fall back to 3, 2, 1 positions.
         let stat_count = (substats.len() + unactivated_substats.len()).clamp(1, 4);
-        if stat_count < 4 && rarity == 5 && self.config.verbose {
+        if stat_count < 4 && rarity == 5 && config.verbose {
             warn!("[artifact] 5* only identified {} substats", stat_count);
         }
 
@@ -592,16 +594,16 @@ impl GoodArtifactScanner {
         // Try from 4 substats down to 1 (most common case first)
         for assumed_count in (1..=4).rev() {
             let missing = 4 - assumed_count;
-            let set_y = self.ocr_regions.set_name_base_y + y_shift - (missing as f64 * 40.0);
-            let set_rect = (self.ocr_regions.set_name_x, set_y, self.ocr_regions.set_name_w, self.ocr_regions.set_name_h);
+            let set_y = ocr_regions.set_name_base_y + y_shift - (missing as f64 * 40.0);
+            let set_rect = (ocr_regions.set_name_x, set_y, ocr_regions.set_name_w, ocr_regions.set_name_h);
             // Try regular OCR first, then grayscale fallback.
             // Some set names work better with one or the other.
-            let text_rgb = self.ocr_image_region(image, set_rect, scaler)?;
-            let text = if self.find_set_key_in_text(&text_rgb).is_some() {
+            let text_rgb = Self::ocr_image_region(ocr, image, set_rect, scaler)?;
+            let text = if Self::find_set_key_in_text(&text_rgb, mappings).is_some() {
                 text_rgb
             } else {
-                let text_gray = self.ocr_image_region_grayscale(image, set_rect, scaler)?;
-                if self.find_set_key_in_text(&text_gray).is_some() {
+                let text_gray = Self::ocr_image_region_grayscale(ocr, image, set_rect, scaler, mappings)?;
+                if Self::find_set_key_in_text(&text_gray, mappings).is_some() {
                     text_gray
                 } else {
                     // Neither matched — use whichever has more Chinese characters
@@ -609,13 +611,13 @@ impl GoodArtifactScanner {
                     if cn_count(&text_rgb) >= cn_count(&text_gray) { text_rgb } else { text_gray }
                 }
             };
-            if self.config.verbose {
+            if config.verbose {
                 info!(
                     "[artifact] set probe: assumed_count={} set_y={:.0} text=「{}」",
                     assumed_count, set_y, text
                 );
             }
-            if let Some(key) = self.find_set_key_in_text(&text) {
+            if let Some(key) = Self::find_set_key_in_text(&text, mappings) {
                 set_key = Some(key);
                 set_name_text = text;
                 tried_y = set_y;
@@ -641,7 +643,7 @@ impl GoodArtifactScanner {
                     stat_keys.join(", "),
                     set_name_text
                 );
-                if self.config.continue_on_failure {
+                if config.continue_on_failure {
                     return Ok(ArtifactScanResult::Skip);
                 }
                 bail!(
@@ -653,8 +655,8 @@ impl GoodArtifactScanner {
         };
 
         // 8. Equipped character
-        let equip_text = self.ocr_image_region(image, self.ocr_regions.equip, scaler)?;
-        let location = self.parse_equip_location(&equip_text);
+        let equip_text = Self::ocr_image_region(ocr, image, ocr_regions.equip, scaler)?;
+        let location = Self::parse_equip_location(&equip_text, mappings);
 
         // 9. Lock
         let lock = pixel_utils::detect_artifact_lock(image, scaler, y_shift);
@@ -697,9 +699,9 @@ impl GoodArtifactScanner {
 
     /// Scan all artifacts from the backpack.
     ///
-    /// Uses `BackpackScanner` for grid traversal with panel-load detection
-    /// and adaptive scrolling. The controller is passed in to avoid borrow
-    /// conflicts between BackpackScanner and the scan callback.
+    /// Uses pipelined architecture: the main thread navigates the grid and
+    /// captures screenshots, while a worker pool OCRs them in parallel.
+    /// Results are collected in order via `scan_worker`.
     ///
     /// If `start_at > 0`, skips directly to that item index.
     pub fn scan(
@@ -725,7 +727,9 @@ impl GoodArtifactScanner {
         }
         bp.select_tab("artifact", self.config.delay_tab);
 
-        let (_, total_count) = bp.read_item_count(self.ocr_model.as_ref())?;
+        // Create a temporary OCR model just for reading item count
+        let count_ocr = ocr_factory::create_ocr_model(&self.config.ocr_backend)?;
+        let (_, total_count) = bp.read_item_count(count_ocr.as_ref())?;
 
         if total_count == 0 {
             warn!("[artifact] no artifacts in backpack");
@@ -733,21 +737,71 @@ impl GoodArtifactScanner {
         }
         info!("[artifact] total: {}", total_count);
 
-        let mut artifacts: Vec<GoodArtifact> = Vec::new();
-        let mut fail_count = 0;
+        // Clone scaler so callback doesn't conflict with BackpackScanner's borrow
+        let scaler = bp.scaler().clone();
 
-        // Row-level deduplication
-        let mut seen_rows: Vec<String> = Vec::new();
-        let mut current_row: Vec<String> = Vec::new();
-        let mut pending_row: Vec<GoodArtifact> = Vec::new();
+        // Create OCR pool with multiple model instances for parallel OCR.
+        // Use available parallelism (capped at 8) for pool size.
+        let pool_size = std::thread::available_parallelism()
+            .map(|n| n.get().min(8))
+            .unwrap_or(4);
+        let ocr_backend = self.config.ocr_backend.clone();
+        let ocr_pool = Arc::new(OcrPool::new(
+            move || ocr_factory::create_ocr_model(&ocr_backend),
+            pool_size,
+        )?);
+        info!("[artifact] OCR pool: {} instances", pool_size);
 
+        // Shared context for worker threads
+        let worker_mappings = self.mappings.clone();
+        let worker_config = self.config.clone();
+        let worker_scaler = scaler.clone();
+        let worker_ocr_pool = ocr_pool.clone();
+        let worker_ocr_regions = ArtifactOcrRegions::new();
+
+        // Start the parallel worker.
+        // Metadata is just () since the image + index is all we need.
+        let (item_tx, worker_handle) = scan_worker::start_worker::<(), GoodArtifact, _>(
+            total_count as usize,
+            move |work_item: WorkItem<()>| {
+                // Quick rarity check — stop on 3-star or below.
+                // Note: returning Err with a special message to signal stop.
+                let rarity = pixel_utils::detect_artifact_rarity(&work_item.image, &worker_scaler);
+                if rarity <= 3 {
+                    info!("[artifact] detected {}* item at index {}, signaling stop", rarity, work_item.index);
+                    // Signal stop via the worker handle's AtomicBool
+                    return Ok(None);
+                }
+
+                // Checkout an OCR model from the pool (blocks until available)
+                let ocr_guard = worker_ocr_pool.get();
+
+                match Self::scan_single_artifact(
+                    &ocr_guard,
+                    &work_item.image,
+                    &worker_scaler,
+                    &worker_ocr_regions,
+                    &worker_mappings,
+                    &worker_config,
+                )? {
+                    ArtifactScanResult::Artifact(artifact) => {
+                        if artifact.rarity >= worker_config.min_rarity {
+                            Ok(Some(artifact))
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                    ArtifactScanResult::Stop => Ok(None),
+                    ArtifactScanResult::Skip => Ok(None),
+                }
+            },
+        );
+
+        // Main thread: navigate grid and send captured images to worker
         let scan_config = BackpackScanConfig {
             delay_grid_item: self.config.delay_grid_item,
             delay_scroll: self.config.delay_scroll,
         };
-
-        // Clone scaler so callback doesn't conflict with BackpackScanner's borrow
-        let scaler = bp.scaler().clone();
 
         bp.scan_grid(
             total_count as usize,
@@ -755,69 +809,23 @@ impl GoodArtifactScanner {
             start_at,
             |event| {
                 match event {
-                    GridEvent::PageScrolled => {
-                        // Clear row cache on page scroll
-                        seen_rows.clear();
-                        current_row.clear();
-                        pending_row.clear();
-                        return ScanAction::Continue;
-                    }
-                    GridEvent::Item(_idx, image) => {
-                        match self.scan_single_artifact(image, &scaler) {
-                            Ok(ArtifactScanResult::Artifact(artifact)) => {
-                                let fingerprint = Self::artifact_fingerprint(&artifact);
-                                current_row.push(fingerprint);
-                                if artifact.rarity >= self.config.min_rarity {
-                                    pending_row.push(artifact);
-                                    fail_count = 0;
-                                }
-                            }
-                            Ok(ArtifactScanResult::Stop) => {
-                                return ScanAction::Stop;
-                            }
-                            Ok(ArtifactScanResult::Skip) => {
-                                current_row.push("skip".to_string());
-                                fail_count = 0;
-                            }
-                            Err(e) => {
-                                error!("[artifact] scan error: {}", e);
-                                current_row.push("null".to_string());
-                                if !self.config.continue_on_failure {
-                                    return ScanAction::Stop;
-                                }
-                                fail_count += 1;
-                            }
+                    GridEvent::PageScrolled => ScanAction::Continue,
+                    GridEvent::Item(idx, image) => {
+                        // Check if worker has signaled stop (e.g., too many errors)
+                        if worker_handle.stop_requested() {
+                            return ScanAction::Stop;
                         }
 
-                        // Row full → check deduplication
-                        if current_row.len() >= GRID_COLS {
-                            let row_str = current_row.join(",");
-                            let is_dup = seen_rows.iter().any(|s| s == &row_str);
-
-                            if is_dup {
-                                warn!("[artifact] detected duplicate row, skipping {} items", pending_row.len());
-                            } else {
-                                seen_rows.push(row_str);
-                                for a in pending_row.drain(..) {
-                                    if self.config.log_progress {
-                                        info!(
-                                            "[artifact] {} {} +{} {}* {}{}{}",
-                                            a.set_key, a.slot_key, a.level, a.rarity,
-                                            if a.location.is_empty() { "-" } else { &a.location },
-                                            if a.lock { " locked" } else { "" },
-                                            if a.elixir_crafted { " elixir" } else { "" },
-                                        );
-                                    }
-                                    artifacts.push(a);
-                                }
-                                fail_count = 0;
-                            }
-                            current_row.clear();
-                            pending_row.clear();
+                        // Quick rarity check on main thread to stop early
+                        let rarity = pixel_utils::detect_artifact_rarity(&image, &scaler);
+                        if rarity <= 3 {
+                            info!("[artifact] detected {}* item, stopping capture", rarity);
+                            return ScanAction::Stop;
                         }
 
-                        if fail_count >= 10 {
-                            error!("[artifact] {} consecutive failures, stopping", fail_count);
+                        // Send image to worker for OCR processing
+                        if item_tx.send(WorkItem { index: idx, image, metadata: () }).is_err() {
+                            error!("[artifact] worker channel closed");
                             return ScanAction::Stop;
                         }
 
@@ -827,25 +835,11 @@ impl GoodArtifactScanner {
             },
         );
 
-        // Flush partial final row
-        if !current_row.is_empty() {
-            let row_str = current_row.join(",");
-            let is_dup = seen_rows.iter().any(|s| s == &row_str);
-            if !is_dup {
-                for a in pending_row.drain(..) {
-                    if self.config.log_progress {
-                        info!(
-                            "[artifact] {} {} +{} {}* {}{}{}",
-                            a.set_key, a.slot_key, a.level, a.rarity,
-                            if a.location.is_empty() { "-" } else { &a.location },
-                            if a.lock { " locked" } else { "" },
-                            if a.elixir_crafted { " elixir" } else { "" },
-                        );
-                    }
-                    artifacts.push(a);
-                }
-            }
-        }
+        // Drop sender to signal worker that no more items are coming
+        drop(item_tx);
+
+        // Wait for all OCR work to complete and collect results
+        let mut artifacts = worker_handle.join();
 
         // Post-processing: remove unleveled 4-star artifacts from 5-star-capable sets
         let before_count = artifacts.len();
@@ -882,6 +876,7 @@ impl GoodArtifactScanner {
     /// and timing information. Used by the re-scan debug mode.
     pub fn debug_scan_single(
         &self,
+        ocr: &dyn ImageToText<RgbImage>,
         image: &RgbImage,
         scaler: &CoordScaler,
     ) -> DebugScanResult {
@@ -903,7 +898,7 @@ impl GoodArtifactScanner {
 
         // Part name → slot key
         let t = Instant::now();
-        let part_text = self.ocr_image_region(image, self.ocr_regions.part_name, scaler)
+        let part_text = Self::ocr_image_region(ocr, image, self.ocr_regions.part_name, scaler)
             .unwrap_or_default();
         let slot_key = stat_parser::match_slot_key(&part_text)
             .map(|s| s.to_string())
@@ -918,7 +913,7 @@ impl GoodArtifactScanner {
 
         // Main stat
         let t = Instant::now();
-        let main_stat_text = self.ocr_image_region(image, self.ocr_regions.main_stat, scaler)
+        let main_stat_text = Self::ocr_image_region(ocr, image, self.ocr_regions.main_stat, scaler)
             .unwrap_or_default();
         let main_stat_key = if slot_key == "flower" {
             "hp".to_string()
@@ -939,7 +934,7 @@ impl GoodArtifactScanner {
 
         // Elixir detection
         let t = Instant::now();
-        let elixir_crafted = self.detect_elixir_crafted(image, scaler).unwrap_or(false);
+        let elixir_crafted = Self::detect_elixir_crafted(ocr, image, self.ocr_regions.elixir, scaler).unwrap_or(false);
         let y_shift = if elixir_crafted { ELIXIR_SHIFT } else { 0.0 };
         fields.push(DebugOcrField {
             field_name: "elixir".into(),
@@ -951,7 +946,7 @@ impl GoodArtifactScanner {
 
         // Level
         let t = Instant::now();
-        let level_text = self.ocr_image_region_shifted(image, self.ocr_regions.level, y_shift, scaler)
+        let level_text = Self::ocr_image_region_shifted(ocr, image, self.ocr_regions.level, y_shift, scaler)
             .unwrap_or_default();
         let level = {
             let re = Regex::new(r"\+?\s*(\d+)").unwrap();
@@ -974,8 +969,8 @@ impl GoodArtifactScanner {
         let mut subs_raw_lines = Vec::new();
         for i in 0..4 {
             let (sub_x, sub_y, sub_w, sub_h) = self.ocr_regions.substat_lines[i];
-            let line_text = self.ocr_image_region_shifted(
-                image, (sub_x, sub_y, sub_w, sub_h), y_shift, scaler,
+            let line_text = Self::ocr_image_region_shifted(
+                ocr, image, (sub_x, sub_y, sub_w, sub_h), y_shift, scaler,
             ).unwrap_or_default();
             let line = line_text.trim().to_string();
             if line.len() < 2 { subs_raw_lines.push(line); continue; }
@@ -990,7 +985,6 @@ impl GoodArtifactScanner {
             }
             subs_raw_lines.push(line);
         }
-        // Level-0 inference removed — groundtruth treats all as active
         let subs_summary: Vec<String> = substats.iter()
             .map(|s| format!("{}={}", s.key, s.value))
             .chain(unactivated_substats.iter().map(|s| format!("{}={}(inactive)", s.key, s.value)))
@@ -1010,15 +1004,15 @@ impl GoodArtifactScanner {
         let set_y = self.ocr_regions.set_name_base_y + y_shift - (missing_stats as f64 * 40.0);
         let set_rect = (self.ocr_regions.set_name_x, set_y, self.ocr_regions.set_name_w, self.ocr_regions.set_name_h);
         let set_name_text = {
-            let rgb = self.ocr_image_region(image, set_rect, scaler).unwrap_or_default();
-            if self.find_set_key_in_text(&rgb).is_some() {
+            let rgb = Self::ocr_image_region(ocr, image, set_rect, scaler).unwrap_or_default();
+            if Self::find_set_key_in_text(&rgb, &self.mappings).is_some() {
                 rgb
             } else {
-                let gray = self.ocr_image_region_grayscale(image, set_rect, scaler).unwrap_or_default();
-                if self.find_set_key_in_text(&gray).is_some() { gray } else { rgb }
+                let gray = Self::ocr_image_region_grayscale(ocr, image, set_rect, scaler, &self.mappings).unwrap_or_default();
+                if Self::find_set_key_in_text(&gray, &self.mappings).is_some() { gray } else { rgb }
             }
         };
-        let set_key = self.find_set_key_in_text(&set_name_text).unwrap_or_default();
+        let set_key = Self::find_set_key_in_text(&set_name_text, &self.mappings).unwrap_or_default();
         fields.push(DebugOcrField {
             field_name: "setName".into(),
             raw_text: set_name_text,
@@ -1029,9 +1023,9 @@ impl GoodArtifactScanner {
 
         // Equip
         let t = Instant::now();
-        let equip_text = self.ocr_image_region(image, self.ocr_regions.equip, scaler)
+        let equip_text = Self::ocr_image_region(ocr, image, self.ocr_regions.equip, scaler)
             .unwrap_or_default();
-        let location = self.parse_equip_location(&equip_text);
+        let location = Self::parse_equip_location(&equip_text, &self.mappings);
         fields.push(DebugOcrField {
             field_name: "equip".into(),
             raw_text: equip_text,
