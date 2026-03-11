@@ -28,6 +28,12 @@ lazy_static::lazy_static! {
     static ref LEVEL_REGEX: Regex = Regex::new(r"\+?\s*(\d+)").unwrap();
 }
 
+/// Crop fraction for number-only OCR retry: percent stats need more left trimming
+/// to skip the stat name, flat stats need less.
+fn crop_frac_for_stat(is_percent: bool) -> f64 {
+    if is_percent { 0.40 } else { 0.25 }
+}
+
 /// Count Chinese characters (CJK Unified Ideographs) in a string.
 fn cn_char_count(s: &str) -> usize {
     s.chars().filter(|&c| c >= '\u{4E00}' && c <= '\u{9FFF}').count()
@@ -428,8 +434,9 @@ impl GoodArtifactScanner {
     /// OCR one substat line with both engines and return candidates.
     ///
     /// Each engine tries direct OCR first, then icon-masked fallback.
-    /// Returns (candidates, stop_marker_hit) where stop_marker_hit is true
-    /// if "2件套" was detected.
+    /// Returns (candidates, stop_marker_hit, raw_texts) where stop_marker_hit is true
+    /// if "2件套" was detected. raw_texts contains the best OCR text from each engine
+    /// for diagnostic logging and rescue attempts.
     fn ocr_substat_line_candidates(
         ocr: &dyn ImageToText<RgbImage>,
         substat_ocr: &dyn ImageToText<RgbImage>,
@@ -437,7 +444,7 @@ impl GoodArtifactScanner {
         sub_rect: (f64, f64, f64, f64),
         y_shift: f64,
         scaler: &CoordScaler,
-    ) -> (Vec<OcrCandidate>, bool) {
+    ) -> (Vec<OcrCandidate>, bool, [String; 2]) {
         let mut candidates = Vec::new();
 
         // Helper: best OCR text from one engine (direct + masked fallback)
@@ -461,7 +468,7 @@ impl GoodArtifactScanner {
         // Check for stop marker in either text
         let stop = text1.contains("2\u{4EF6}\u{5957}") || text2.contains("2\u{4EF6}\u{5957}");
         if stop || (text1.trim().len() < 2 && text2.trim().len() < 2) {
-            return (candidates, stop);
+            return (candidates, stop, [text1, text2]);
         }
 
         // Parse both and collect candidates (including inactive/待激活 substats)
@@ -476,7 +483,7 @@ impl GoodArtifactScanner {
             }
         }
 
-        (candidates, false)
+        (candidates, false, [text1, text2])
     }
 
     /// Scan a single artifact from a captured game image.
@@ -629,16 +636,17 @@ impl GoodArtifactScanner {
         // Phase 1: OCR at original width
         for i in 0..4 {
             let sub_rect = ocr_regions.substat_lines[i];
-            let (cands, stop) = Self::ocr_substat_line_candidates(
+            let (cands, stop, raw_texts) = Self::ocr_substat_line_candidates(
                 ocr, substat_ocr, image, sub_rect, y_shift, scaler,
             );
             if stop { break; }
 
             // Also try number-only OCR for additional value candidates
             let (sub_x, sub_y, sub_w, sub_h) = sub_rect;
+            let mut did_extend = false;
             for c in &cands {
                 let is_pct = c.key.ends_with('_');
-                let crop_frac = if is_pct { 0.40 } else { 0.25 };
+                let crop_frac = crop_frac_for_stat(is_pct);
                 if let Ok(num_text) = Self::ocr_substat_number_crop(
                     substat_ocr, image, (sub_x, sub_y, sub_w, sub_h), y_shift, scaler, crop_frac,
                 ) {
@@ -651,21 +659,69 @@ impl GoodArtifactScanner {
                                 extended.push(OcrCandidate { key: c.key.clone(), value: retry_val, inactive: c.inactive });
                             }
                             solver_candidates.push(extended);
-                            // Skip the normal push below
-                            continue;
+                            did_extend = true;
+                            break;
                         }
                     }
                 }
             }
+
+            // Rescue: when full-text parsing failed but OCR produced text,
+            // try extracting the stat key from the raw text and get the value
+            // from a number-only crop.
+            if cands.is_empty() && !did_extend
+                && (raw_texts[0].trim().len() >= 2 || raw_texts[1].trim().len() >= 2)
+            {
+                // Try to identify the stat key from either engine's raw text
+                let key_info = stat_parser::try_extract_stat_key(raw_texts[0].trim())
+                    .or_else(|| stat_parser::try_extract_stat_key(raw_texts[1].trim()));
+
+                if let Some((key, has_pct, is_inactive)) = key_info {
+                    let crop_frac = crop_frac_for_stat(has_pct);
+                    // Try number crop with both engines
+                    let mut rescue_val = None;
+                    for engine in [substat_ocr, ocr] {
+                        if let Ok(num_text) = Self::ocr_substat_number_crop(
+                            engine, image, (sub_x, sub_y, sub_w, sub_h), y_shift, scaler, crop_frac,
+                        ) {
+                            if let Some(v) = stat_parser::extract_number(num_text.trim()) {
+                                if v > 0.5 {
+                                    rescue_val = Some(v);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(val) = rescue_val {
+                        if config.verbose {
+                            info!("[artifact] sub[{}] RESCUE: key={} val={} from raw OCR 「{}」/「{}」",
+                                i, key, val, raw_texts[0].trim(), raw_texts[1].trim());
+                        }
+                        solver_candidates.push(vec![OcrCandidate {
+                            key, value: val, inactive: is_inactive,
+                        }]);
+                        did_extend = true;
+                    } else if config.verbose {
+                        warn!("[artifact] sub[{}] rescue: found key={} but no valid number from raw 「{}」/「{}」",
+                            i, key, raw_texts[0].trim(), raw_texts[1].trim());
+                    }
+                } else if config.verbose {
+                    warn!("[artifact] sub[{}] no candidates, no key found in raw OCR 「{}」/「{}」",
+                        i, raw_texts[0].trim(), raw_texts[1].trim());
+                }
+            }
+
             // If we didn't extend above (or no number retry), push original candidates
-            if solver_candidates.len() <= i {
+            if !did_extend {
                 solver_candidates.push(cands);
             }
 
             if config.verbose {
                 let cand_str: Vec<String> = solver_candidates.last().unwrap()
-                    .iter().map(|c| format!("{}={}", c.key, c.value)).collect();
-                info!("[artifact] sub[{}] candidates: [{}]", i, cand_str.join(", "));
+                    .iter().map(|c| format!("{}={}{}", c.key, c.value,
+                        if c.inactive { "(inactive)" } else { "" })).collect();
+                info!("[artifact] sub[{}] candidates: [{}] raw: 「{}」/「{}」",
+                    i, cand_str.join(", "), raw_texts[0].trim(), raw_texts[1].trim());
             }
         }
 
@@ -694,7 +750,7 @@ impl GoodArtifactScanner {
                 for i in 0..retry_candidates.len().min(4) {
                     let (sub_x, sub_y, sub_w, sub_h) = ocr_regions.substat_lines[i];
                     let cropped_rect = (sub_x, sub_y, sub_w - crop_px, sub_h);
-                    let (new_cands, _) = Self::ocr_substat_line_candidates(
+                    let (new_cands, _, _) = Self::ocr_substat_line_candidates(
                         ocr, substat_ocr, image, cropped_rect, y_shift, scaler,
                     );
                     // Add new candidates to existing ones (deduplicated)

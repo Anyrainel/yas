@@ -301,12 +301,17 @@ pub struct SolverResult {
 /// Init count preference depends on level:
 /// - Level 0: prefer higher init (the number of substat lines IS the init count)
 /// - Level > 0: prefer lower init (init=3 is more common, better GT accuracy)
+///
+/// At level 0 with init < max_init, the artifact shows init_count + 1 substats
+/// (the extra one is inactive/待激活). The solver accounts for this by trying to
+/// select all visible substats before falling back to fewer.
 pub fn solve(input: &SolverInput) -> Option<SolverResult> {
     if input.rarity < 4 || input.rarity > 5 {
         return None;
     }
 
     let max_level = if input.rarity == 5 { 20 } else { 16 };
+    let max_init = if input.rarity == 5 { 4 } else { 3 };
 
     // Deduplicate level candidates
     let mut levels: Vec<i32> = input.level_candidates.clone();
@@ -327,14 +332,55 @@ pub fn solve(input: &SolverInput) -> Option<SolverResult> {
         })
         .collect();
 
-    // Iterate: level × initial_count × substat selections
-    for &level in &levels {
+    let num_candidate_lines = line_options.len();
+
+    // Try solving with original levels first
+    let result = solve_with_levels(&levels, input.rarity, max_level, max_init, &line_options);
+
+    // If the solution uses fewer substats than available candidate lines AND
+    // a level < 10 was involved, try level+10 fallback — common OCR error:
+    // "11" misread as "1", "12" as "2", etc. Prefer the solution with more substats.
+    let needs_fallback = match &result {
+        None => true,
+        Some(r) => r.substats.len() < num_candidate_lines && r.level < 10,
+    };
+
+    if needs_fallback {
+        let fallback_levels: Vec<i32> = levels.iter()
+            .filter(|&&l| l >= 0 && l < 10)
+            .map(|&l| l + 10)
+            .filter(|l| *l <= max_level && !levels.contains(l))
+            .collect();
+        if !fallback_levels.is_empty() {
+            if let Some(fb) = solve_with_levels(&fallback_levels, input.rarity, max_level, max_init, &line_options) {
+                // Prefer the fallback if it uses more substats, or if original failed
+                match &result {
+                    None => return Some(fb),
+                    Some(r) if fb.substats.len() > r.substats.len() => return Some(fb),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// Inner solving loop: try each level candidate and find a valid substat assignment.
+fn solve_with_levels(
+    levels: &[i32],
+    rarity: i32,
+    max_level: i32,
+    max_init: i32,
+    line_options: &[Vec<Option<&OcrCandidate>>],
+) -> Option<SolverResult> {
+    for &level in levels {
         let level = level.clamp(0, max_level);
         let upgrades = level / 4;
 
         // At level 0, #lines = init count, so prefer higher init first.
         // At level > 0, prefer lower init (better GT accuracy).
-        let possible_initials: &[i32] = if input.rarity == 5 {
+        let possible_initials: &[i32] = if rarity == 5 {
             if level == 0 { &[4, 3] } else { &[3, 4] }
         } else {
             if level == 0 { &[3, 2] } else { &[2, 3] }
@@ -343,69 +389,92 @@ pub fn solve(input: &SolverInput) -> Option<SolverResult> {
         for &init_count in possible_initials {
             let total_rolls = init_count + upgrades;
             let adds = (4 - init_count).max(0).min(upgrades);
-            let expected_active = init_count + adds;
+            let base_expected = init_count + adds;
 
-            // Try all substat line selections
-            let mut selection = vec![0usize; line_options.len()];
-            loop {
-                // Build current substat set
-                let chosen: Vec<&OcrCandidate> = line_options
-                    .iter()
-                    .zip(selection.iter())
-                    .filter_map(|(opts, &idx)| opts[idx])
-                    .collect();
+            // At lv0 with lower init, an inactive substat is also visible.
+            // Try selecting all substats (init+1) first, then fall back to init.
+            let pending_inactive = level == 0 && init_count < max_init;
+            let expected_variants: Vec<(i32, i32)> = if pending_inactive {
+                // (expected_selected, solve_total_rolls)
+                vec![(base_expected + 1, total_rolls + 1), (base_expected, total_rolls)]
+            } else {
+                vec![(base_expected, total_rolls)]
+            };
 
-                let num_active = chosen.len() as i32;
-
-                // Check: num_active should equal expected_active, and all keys unique
-                // (an artifact cannot have two substats with the same key)
-                let has_dup_keys = {
-                    let mut seen = std::collections::HashSet::new();
-                    chosen.iter().any(|c| !seen.insert(c.key.as_str()))
-                };
-                if num_active == expected_active && num_active >= 1 && !has_dup_keys {
-                    // Compute max rolls per stat
-                    let max_per = total_rolls - (num_active - 1); // at least 1 per other stat
-
-                    let valid_counts: Vec<Vec<i32>> = chosen
+            for &(expected_active, solve_total) in &expected_variants {
+                // Try all substat line selections
+                let mut selection = vec![0usize; line_options.len()];
+                loop {
+                    // Build current substat set
+                    let chosen: Vec<&OcrCandidate> = line_options
                         .iter()
-                        .map(|c| valid_roll_counts(&c.key, input.rarity, c.value, max_per))
+                        .zip(selection.iter())
+                        .filter_map(|(opts, &idx)| opts[idx])
                         .collect();
 
-                    // If any substat has no valid roll counts, skip
-                    if valid_counts.iter().all(|v| !v.is_empty()) {
-                        if let Some(assignment) = find_assignment(&valid_counts, total_rolls) {
-                            // Build result
-                            let substats: Vec<SolvedSubstat> = chosen
-                                .iter()
-                                .zip(assignment.iter())
-                                .map(|(c, &rolls)| {
-                                    let init_val = compute_initial_value(
-                                        &c.key, input.rarity, c.value, rolls,
-                                    );
-                                    SolvedSubstat {
-                                        key: c.key.clone(),
-                                        value: c.value,
-                                        roll_count: rolls,
-                                        initial_value: init_val,
-                                        inactive: c.inactive,
-                                    }
-                                })
-                                .collect();
+                    let num_active = chosen.len() as i32;
 
-                            return Some(SolverResult {
-                                level,
-                                substats,
-                                initial_substat_count: init_count,
-                                total_rolls,
-                            });
+                    // Check: num_active should equal expected_active, and all keys unique
+                    // (an artifact cannot have two substats with the same key)
+                    let has_dup_keys = {
+                        let mut seen = std::collections::HashSet::new();
+                        chosen.iter().any(|c| !seen.insert(c.key.as_str()))
+                    };
+                    if num_active == expected_active && num_active >= 1 && !has_dup_keys {
+                        // Compute max rolls per stat
+                        let max_per = solve_total - (num_active - 1); // at least 1 per other stat
+
+                        let valid_counts: Vec<Vec<i32>> = chosen
+                            .iter()
+                            .map(|c| valid_roll_counts(&c.key, rarity, c.value, max_per))
+                            .collect();
+
+                        // If any substat has no valid roll counts, skip
+                        if valid_counts.iter().all(|v| !v.is_empty()) {
+                            if let Some(assignment) = find_assignment(&valid_counts, solve_total) {
+                                // Build result
+                                let substats: Vec<SolvedSubstat> = chosen
+                                    .iter()
+                                    .zip(assignment.iter())
+                                    .map(|(c, &rolls)| {
+                                        let init_val = compute_initial_value(
+                                            &c.key, rarity, c.value, rolls,
+                                        );
+                                        SolvedSubstat {
+                                            key: c.key.clone(),
+                                            value: c.value,
+                                            roll_count: rolls,
+                                            initial_value: init_val,
+                                            inactive: c.inactive,
+                                        }
+                                    })
+                                    .collect();
+
+                                // At lv0, adjust init_count based on actual inactive substats.
+                                // This correctly handles the case where init=4 matches but the
+                                // artifact actually has init=3 (one substat is inactive).
+                                let result_init = if level == 0 {
+                                    let inactive_count = substats.iter()
+                                        .filter(|s| s.inactive).count() as i32;
+                                    (num_active - inactive_count).max(1)
+                                } else {
+                                    init_count
+                                };
+
+                                return Some(SolverResult {
+                                    level,
+                                    substats,
+                                    initial_substat_count: result_init,
+                                    total_rolls: result_init + upgrades,
+                                });
+                            }
                         }
                     }
-                }
 
-                // Advance selection (odometer-style)
-                if !advance_selection(&mut selection, &line_options) {
-                    break;
+                    // Advance selection (odometer-style)
+                    if !advance_selection(&mut selection, &line_options) {
+                        break;
+                    }
                 }
             }
         }
@@ -596,5 +665,104 @@ mod tests {
             ("def", 23.0),
             ("enerRech_", 20.7),
         ]));
+    }
+
+    #[test]
+    fn test_lv0_with_inactive_substat() {
+        // 5★ lv0 init=3: 3 active + 1 inactive (待激活)
+        // Artifact 0909: atk_=4.7, atk=19, def=16, enerRech_=6.5 (inactive)
+        let input = SolverInput {
+            rarity: 5,
+            level_candidates: vec![0],
+            substat_candidates: vec![
+                vec![OcrCandidate { key: "atk_".into(), value: 4.7, inactive: false }],
+                vec![OcrCandidate { key: "atk".into(), value: 19.0, inactive: false }],
+                vec![OcrCandidate { key: "def".into(), value: 16.0, inactive: false }],
+                vec![OcrCandidate { key: "enerRech_".into(), value: 6.5, inactive: true }],
+            ],
+        };
+        let result = solve(&input);
+        assert!(result.is_some(), "solver should find all 4 substats");
+        let r = result.unwrap();
+        // Should select all 4 substats
+        assert_eq!(r.substats.len(), 4, "should have 4 substats (3 active + 1 inactive)");
+        // init should be 3 (not 4) because 1 substat is inactive
+        assert_eq!(r.initial_substat_count, 3, "init should be 3 for lv0 with 1 inactive");
+        // total_rolls should be 3 (inactive doesn't count toward active rolls)
+        assert_eq!(r.total_rolls, 3, "total_rolls should exclude inactive at lv0");
+        // Verify each has 1 roll
+        for s in &r.substats {
+            assert_eq!(s.roll_count, 1);
+        }
+        // Verify one is inactive
+        assert_eq!(r.substats.iter().filter(|s| s.inactive).count(), 1);
+    }
+
+    #[test]
+    fn test_lv0_init4_all_active() {
+        // 5★ lv0 init=4: 4 active substats, no inactive
+        let input = SolverInput {
+            rarity: 5,
+            level_candidates: vec![0],
+            substat_candidates: vec![
+                vec![OcrCandidate { key: "critRate_".into(), value: 3.9, inactive: false }],
+                vec![OcrCandidate { key: "critDMG_".into(), value: 7.8, inactive: false }],
+                vec![OcrCandidate { key: "atk_".into(), value: 5.8, inactive: false }],
+                vec![OcrCandidate { key: "hp_".into(), value: 5.8, inactive: false }],
+            ],
+        };
+        let result = solve(&input);
+        assert!(result.is_some());
+        let r = result.unwrap();
+        assert_eq!(r.substats.len(), 4);
+        assert_eq!(r.initial_substat_count, 4, "init should be 4 for all-active lv0");
+        assert_eq!(r.total_rolls, 4);
+    }
+
+    #[test]
+    fn test_lv0_inactive_ocr_dropped_line() {
+        // 5★ lv0 init=3: OCR dropped 1 active line, only 2 active + 1 inactive
+        // The solver should still find a solution with 3 substats
+        let input = SolverInput {
+            rarity: 5,
+            level_candidates: vec![0],
+            substat_candidates: vec![
+                vec![OcrCandidate { key: "atk_".into(), value: 4.7, inactive: false }],
+                // atk=19 line dropped (empty)
+                vec![OcrCandidate { key: "def".into(), value: 16.0, inactive: false }],
+                vec![OcrCandidate { key: "enerRech_".into(), value: 6.5, inactive: true }],
+            ],
+        };
+        let result = solve(&input);
+        assert!(result.is_some(), "should find solution with 3 substats");
+        let r = result.unwrap();
+        assert_eq!(r.substats.len(), 3);
+        // With 2 active + 1 inactive, init = 2
+        assert_eq!(r.initial_substat_count, 2);
+        assert_eq!(r.total_rolls, 2);
+    }
+
+    #[test]
+    fn test_level_plus10_fallback_more_substats() {
+        // Real case: artifact #0825, 5★ lv11.
+        // OCR reads level as 1. At lv1 (total=3), solver picks 3 single-roll
+        // substats and drops critDMG_=13.2 (needs 2 rolls).
+        // At lv11 (total=5), all 4 substats fit: 1+2+1+1=5.
+        // The solver should prefer lv11 because it uses more substats.
+        let input = SolverInput {
+            rarity: 5,
+            level_candidates: vec![1], // OCR misread "11" as "1"
+            substat_candidates: vec![
+                vec![OcrCandidate { key: "critRate_".into(), value: 3.1, inactive: false }], // 1 roll
+                vec![OcrCandidate { key: "critDMG_".into(), value: 13.2, inactive: false }], // 2 rolls
+                vec![OcrCandidate { key: "atk_".into(), value: 4.1, inactive: false }],      // 1 roll
+                vec![OcrCandidate { key: "def".into(), value: 23.0, inactive: false }],      // 1 roll
+            ],
+        };
+        let result = solve(&input);
+        assert!(result.is_some(), "should solve");
+        let r = result.unwrap();
+        assert_eq!(r.level, 11, "should prefer lv11 (4 substats) over lv1 (3 substats)");
+        assert_eq!(r.substats.len(), 4);
     }
 }

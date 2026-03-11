@@ -56,6 +56,36 @@ lazy_static! {
     static ref DOT_LETTER_REGEX: Regex = Regex::new(r"(\d+\.)([a-zA-Z])(\d*)").unwrap();
 }
 
+/// Strip spaces between CJK characters.
+/// OCR models often insert spaces within Chinese text (e.g., "暴击 伤害" instead of "暴击伤害").
+fn strip_cjk_spaces(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() < 3 {
+        return text.to_string();
+    }
+    let mut result = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == ' ' {
+            // Check if surrounded by CJK characters
+            let prev_cjk = i > 0 && is_cjk(chars[i - 1]);
+            let next_cjk = i + 1 < chars.len() && is_cjk(chars[i + 1]);
+            if prev_cjk && next_cjk {
+                // Skip the space
+                i += 1;
+                continue;
+            }
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+    result
+}
+
+fn is_cjk(c: char) -> bool {
+    c >= '\u{4E00}' && c <= '\u{9FFF}'
+}
+
 /// Pre-clean OCR text: normalize decimal separators, strip bullets, fix common errors.
 fn clean_ocr_text(text: &str) -> String {
     let text = text
@@ -65,6 +95,9 @@ fn clean_ocr_text(text: &str) -> String {
         .replace('\u{00B7}', ".")
         .replace('\u{2022}', "")
         .replace('\u{2027}', "");
+    // Strip spaces between CJK characters — OCR often inserts spurious spaces
+    // that break stat name matching (e.g., "暴击 伤害" → "暴击伤害")
+    let text = strip_cjk_spaces(&text);
     let text = SPACE_DOT_REGEX.replace_all(&text, "${d1}.${d2}");
     DOT_LETTER_REGEX.replace_all(&text, |caps: &regex::Captures| {
         let prefix = &caps[1];
@@ -125,26 +158,8 @@ pub fn parse_stat_from_text(text: &str) -> Option<ParsedStat> {
         return Some(result);
     }
 
-    // Fuzzy retry: apply common OCR substitutions
-    // Common OCR errors:
-    //   "力" misread as "b"/"B" (only in Chinese text context)
-    //   "生" misread as "E"/"三"/"t" (stat icon interference on 生命值)
-    //   "元" misread as "亡" (元素精通/元素充能效率)
-    let mut fuzzy_text = String::with_capacity(text.len());
-    let chars: Vec<char> = text.chars().collect();
-    for (i, &ch) in chars.iter().enumerate() {
-        if (ch == 'b' || ch == 'B') && i > 0 && !chars[i - 1].is_ascii() {
-            fuzzy_text.push('\u{529B}'); // 力
-        } else if (ch == 'E' || ch == '\u{4E09}' || ch == 't') && i == 0 {
-            // E/三/t at start → 生 (生命值)
-            fuzzy_text.push('\u{751F}');
-        } else if ch == '\u{4EA1}' {
-            // 亡 → 元 (元素精通/元素充能效率)
-            fuzzy_text.push('\u{5143}');
-        } else {
-            fuzzy_text.push(ch);
-        }
-    }
+    // Fuzzy retry: apply common OCR character substitutions
+    let fuzzy_text = apply_fuzzy_substitutions(text);
     if fuzzy_text != text {
         if let Some(result) = parse_stat_inner(&fuzzy_text) {
             return Some(result);
@@ -167,7 +182,6 @@ pub fn parse_stat_from_text(text: &str) -> Option<ParsedStat> {
 /// stat icon or bullet point interfering.
 fn parse_stat_suffix(text: &str) -> Option<ParsedStat> {
     for &(stat_name, ref entry) in STAT_KEY_ENTRIES {
-        // Get suffix by skipping first character
         let suffix: String = stat_name.chars().skip(1).collect();
         if suffix.len() < 2 || !text.contains(&suffix) {
             continue;
@@ -175,18 +189,10 @@ fn parse_stat_suffix(text: &str) -> Option<ParsedStat> {
 
         let is_inactive = text.contains("\u{5F85}\u{6FC0}\u{6D3B}"); // 待激活
         let has_percent = text.contains('%');
-
         let value = try_extract_value(text).unwrap_or(0.0);
 
-        let key = match entry {
-            StatKeyEntry::Simple(k) => k.to_string(),
-            StatKeyEntry::FlatPercent { flat, percent } => {
-                if has_percent { percent.to_string() } else { flat.to_string() }
-            }
-        };
-
         return Some(ParsedStat {
-            key,
+            key: resolve_stat_key(entry, has_percent),
             value,
             inactive: is_inactive,
         });
@@ -210,37 +216,95 @@ fn fix_ocr_digits(text: &str) -> String {
         .collect()
 }
 
-fn parse_stat_inner(text: &str) -> Option<ParsedStat> {
+/// Find a stat name in text and return its GOOD key, or None.
+fn find_stat_key_in_text(text: &str, has_percent: bool) -> Option<String> {
     for &stat_name in STAT_NAMES.iter() {
-        if !text.contains(stat_name) {
+        if text.contains(stat_name) {
+            return STAT_KEY_ENTRIES
+                .iter()
+                .find(|(name, _)| *name == stat_name)
+                .map(|(_, entry)| resolve_stat_key(entry, has_percent));
+        }
+    }
+    None
+}
+
+/// Resolve a StatKeyEntry to a GOOD key string based on whether "%" was present.
+fn resolve_stat_key(entry: &StatKeyEntry, has_percent: bool) -> String {
+    match entry {
+        StatKeyEntry::Simple(k) => k.to_string(),
+        StatKeyEntry::FlatPercent { flat, percent } => {
+            if has_percent { percent.to_string() } else { flat.to_string() }
+        }
+    }
+}
+
+/// Apply common OCR character substitutions for Chinese stat names.
+///   "力" misread as "b"/"B" (only after non-ASCII)
+///   "生" misread as "E"/"三"/"t" (at position 0)
+///   "元" misread as "亡"
+fn apply_fuzzy_substitutions(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let chars: Vec<char> = text.chars().collect();
+    for (i, &ch) in chars.iter().enumerate() {
+        if (ch == 'b' || ch == 'B') && i > 0 && !chars[i - 1].is_ascii() {
+            result.push('\u{529B}'); // 力
+        } else if (ch == 'E' || ch == '\u{4E09}' || ch == 't') && i == 0 {
+            result.push('\u{751F}'); // 生
+        } else if ch == '\u{4EA1}' {
+            result.push('\u{5143}'); // 元
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+fn parse_stat_inner(text: &str) -> Option<ParsedStat> {
+    let has_percent = text.contains('%');
+    let key = find_stat_key_in_text(text, has_percent)?;
+
+    Some(ParsedStat {
+        key,
+        value: try_extract_value(text).unwrap_or(0.0),
+        inactive: text.contains("\u{5F85}\u{6FC0}\u{6D3B}"), // 待激活
+    })
+}
+
+/// Try to extract just the stat key from OCR text, ignoring the value.
+///
+/// Returns `(key, has_percent, is_inactive)` if a stat name is found.
+/// This is used as a rescue mechanism when `parse_stat_from_text` fails
+/// because the value portion is garbled — we can still identify the stat type.
+pub fn try_extract_stat_key(text: &str) -> Option<(String, bool, bool)> {
+    let text = clean_ocr_text(text);
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+
+    let is_inactive = text.contains("\u{5F85}\u{6FC0}\u{6D3B}"); // 待激活
+    let has_percent = text.contains('%');
+
+    // Try finding a stat name in text (direct, then fuzzy, then suffix)
+    if let Some(key) = find_stat_key_in_text(text, has_percent) {
+        return Some((key, has_percent, is_inactive));
+    }
+
+    let fuzzy_text = apply_fuzzy_substitutions(text);
+    if fuzzy_text != text {
+        if let Some(key) = find_stat_key_in_text(&fuzzy_text, has_percent) {
+            return Some((key, has_percent, is_inactive));
+        }
+    }
+
+    // Suffix match (drop first char of each stat name)
+    for &(stat_name, ref entry) in STAT_KEY_ENTRIES {
+        let suffix: String = stat_name.chars().skip(1).collect();
+        if suffix.len() < 2 || !text.contains(&suffix) {
             continue;
         }
-
-        let is_inactive = text.contains("\u{5F85}\u{6FC0}\u{6D3B}"); // 待激活
-        let has_percent = text.contains('%');
-
-        let value = try_extract_value(text).unwrap_or(0.0);
-
-        // Look up the key
-        let key = STAT_KEY_ENTRIES
-            .iter()
-            .find(|(name, _)| *name == stat_name)
-            .map(|(_, entry)| match entry {
-                StatKeyEntry::Simple(k) => k.to_string(),
-                StatKeyEntry::FlatPercent { flat, percent } => {
-                    if has_percent {
-                        percent.to_string()
-                    } else {
-                        flat.to_string()
-                    }
-                }
-            })?;
-
-        return Some(ParsedStat {
-            key,
-            value,
-            inactive: is_inactive,
-        });
+        return Some((resolve_stat_key(entry, has_percent), has_percent, is_inactive));
     }
 
     None
@@ -385,5 +449,55 @@ mod tests {
         assert_eq!(match_slot_key("\u{751F}\u{4E4B}\u{82B1}"), Some("flower")); // 生之花
         assert_eq!(match_slot_key("\u{7406}\u{4E4B}\u{51A0}"), Some("circlet")); // 理之冠
         assert_eq!(match_slot_key("random"), None);
+    }
+
+    #[test]
+    fn test_cjk_space_stripping() {
+        // "暴击 伤害+7.8%" → "暴击伤害+7.8%" (space between CJK removed)
+        let r = parse_stat_from_text("\u{66B4}\u{51FB} \u{4F24}\u{5BB3}+7.8%");
+        assert!(r.is_some());
+        let s = r.unwrap();
+        assert_eq!(s.key, "critDMG_");
+        assert!((s.value - 7.8).abs() < 0.01);
+
+        // "元素 充能 效率+6.5%" → "元素充能效率+6.5%"
+        let r = parse_stat_from_text("\u{5143}\u{7D20} \u{5145}\u{80FD} \u{6548}\u{7387}+6.5%");
+        assert!(r.is_some());
+        let s = r.unwrap();
+        assert_eq!(s.key, "enerRech_");
+        assert!((s.value - 6.5).abs() < 0.01);
+
+        // Space between CJK and ASCII should NOT be stripped: "攻击力 +19"
+        let r = parse_stat_from_text("\u{653B}\u{51FB}\u{529B} +19");
+        assert!(r.is_some());
+        assert_eq!(r.unwrap().key, "atk");
+    }
+
+    #[test]
+    fn test_try_extract_stat_key() {
+        // Normal text
+        let r = try_extract_stat_key("\u{653B}\u{51FB}\u{529B}+19"); // 攻击力+19
+        assert!(r.is_some());
+        let (key, has_pct, inactive) = r.unwrap();
+        assert_eq!(key, "atk");
+        assert!(!has_pct);
+        assert!(!inactive);
+
+        // Percent
+        let r = try_extract_stat_key("\u{653B}\u{51FB}\u{529B}+4.7%"); // 攻击力+4.7%
+        assert!(r.is_some());
+        assert_eq!(r.unwrap().0, "atk_");
+
+        // Garbled number but key still identifiable
+        let r = try_extract_stat_key("\u{66B4}\u{51FB}\u{4F24}\u{5BB3}#@!"); // 暴击伤害#@!
+        assert!(r.is_some());
+        assert_eq!(r.unwrap().0, "critDMG_");
+
+        // Inactive
+        let r = try_extract_stat_key("\u{5143}\u{7D20}\u{5145}\u{80FD}\u{6548}\u{7387}+6.5%\u{FF08}\u{5F85}\u{6FC0}\u{6D3B}\u{FF09}");
+        assert!(r.is_some());
+        let (key, _, inactive) = r.unwrap();
+        assert_eq!(key, "enerRech_");
+        assert!(inactive);
     }
 }
