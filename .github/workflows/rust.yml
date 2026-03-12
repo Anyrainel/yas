@@ -18,16 +18,6 @@ jobs:
           fetch-depth: 0 # For $commitCount
           lfs: true
 
-      # - uses: actions/cache@v4
-      #   with:
-      #     path: |
-      #       ~/.cargo/bin/
-      #       ~/.cargo/registry/index/
-      #       ~/.cargo/registry/cache/
-      #       ~/.cargo/git/db/
-      #       target/
-      #     key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
       - name: Extract git-rev
         run: |
           $commitCount = git rev-list --count HEAD
@@ -35,7 +25,7 @@ jobs:
           "GIT_REV=r$commitCount.$shortHash" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Setup Toolchain
-        run: rustup default nightly-msvc
+        run: rustup default stable-msvc
 
       - name: Set version in Cargo.toml
         run: |
@@ -43,7 +33,6 @@ jobs:
               './Cargo.toml'
               './yas/Cargo.toml'
               './yas-genshin/Cargo.toml'
-              './yas-starrail/Cargo.toml'
               './yas-application/Cargo.toml'
           )
           [regex]$pattern = '(?<=version = ").*(?=")'
@@ -56,24 +45,10 @@ jobs:
 
       - name: Rename Outputs
         run: |
-          Move-Item ./target/release/yas_artifact.exe "yas_artifact_$env:GIT_REV.exe"
-          Move-Item ./target/release/yas_relic.exe "yas_relic_$env:GIT_REV.exe"
-          Move-Item ./target/release/yas.exe "yas_$env:GIT_REV.exe"
+          Move-Item ./target/release/GOODScanner.exe "GOODScanner_$env:GIT_REV.exe"
 
-      - name: Upload yas_artifact
+      - name: Upload GOODScanner
         uses: actions/upload-artifact@v4
         with:
-          name: yas_artifact_${{ env.GIT_REV }}
-          path: yas_artifact_${{ env.GIT_REV }}.exe
-
-      - name: Upload yas_relic
-        uses: actions/upload-artifact@v4
-        with:
-          name: yas_relic_${{ env.GIT_REV }}
-          path: yas_relic_${{ env.GIT_REV }}.exe
-      
-      - name: Upload yas
-        uses: actions/upload-artifact@v4
-        with:
-          name: yas_${{ env.GIT_REV }}
-          path: yas_${{ env.GIT_REV }}.exe
+          name: GOODScanner_${{ env.GIT_REV }}
+          path: GOODScanner_${{ env.GIT_REV }}.exe
