@@ -18,14 +18,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # For $commitCount
+          fetch-depth: 0 # Fetch all tags for version dedup
           lfs: true
 
-      - name: Extract git-rev
+      - name: Extract version
         run: |
-          $commitCount = git rev-list --count HEAD
-          $shortHash = git rev-parse --short HEAD
-          "GIT_REV=r$commitCount.$shortHash" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $date = Get-Date -Format "yyyy.MM.dd"
+          $tag = "v$date"
+          # Check if tag already exists; append .N suffix if so
+          $existing = git tag -l "$tag*" | Sort-Object
+          if ($existing) {
+              $maxSuffix = 1
+              foreach ($t in $existing) {
+                  if ($t -match "^v\d{4}\.\d{2}\.\d{2}\.(\d+)$") {
+                      $s = [int]$Matches[1]
+                      if ($s -ge $maxSuffix) { $maxSuffix = $s + 1 }
+                  } elseif ($t -eq $tag) {
+                      if ($maxSuffix -lt 2) { $maxSuffix = 2 }
+                  }
+              }
+              $tag = "$tag.$maxSuffix"
+          }
+          "VERSION=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Setup Toolchain
         run: rustup default stable-msvc
@@ -38,32 +52,25 @@ jobs:
               './genshin/Cargo.toml'
               './application/Cargo.toml'
           )
+          $ver = $env:VERSION.TrimStart('v')
           [regex]$pattern = '(?<=version = ").*(?=")'
           foreach ($file in $files) {
-              $pattern.Replace((Get-Content -Raw $file), "0.0.0-$env:GIT_REV", 1) | Out-File -FilePath $file
+              $pattern.Replace((Get-Content -Raw $file), $ver, 1) | Out-File -FilePath $file
           }
 
       - name: Build (Release)
         run: cargo build --release
 
-      - name: Rename Outputs
-        run: |
-          Move-Item ./target/release/GOODScanner.exe "GOODScanner_$env:GIT_REV.exe"
-
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GOODScanner_${{ env.GIT_REV }}
-          path: GOODScanner_${{ env.GIT_REV }}.exe
+          name: GOODScanner_${{ env.VERSION }}
+          path: target/release/GOODScanner.exe
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.GIT_REV }}
-          name: GOODScanner ${{ env.GIT_REV }}
-          body: |
-            Automated build from commit ${{ github.sha }}
-
-            **Download:** `GOODScanner_${{ env.GIT_REV }}.exe`
-          files: GOODScanner_${{ env.GIT_REV }}.exe
+          tag_name: ${{ env.VERSION }}
+          name: GOODScanner ${{ env.VERSION }}
+          files: target/release/GOODScanner.exe
           make_latest: true
