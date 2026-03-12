@@ -37,13 +37,10 @@ jobs:
               './genshin/Cargo.toml'
               './application/Cargo.toml'
           )
-          # Convert calver v2026.03.12 to valid semver 2026.312.0
-          # Encode month+day as minor (MM*100+DD), patch=0
-          $parts = $env:VERSION.TrimStart('v').Split('.')
-          $year = [int]$parts[0]
-          $month = [int]$parts[1]
-          $day = [int]$parts[2]
-          $ver = "$year.$($month * 100 + $day).0"
+          # Convert calver v2026.03.12 to valid semver: 20260312.0.0
+          # Cargo requires 3-part semver; pack YYYYMMDD into major
+          $d = Get-Date -Format "yyyyMMdd"
+          $ver = "$d.0.0"
           [regex]$pattern = '(?<=version = ").*(?=")'
           foreach ($file in $files) {
               $pattern.Replace((Get-Content -Raw $file), $ver, 1) | Out-File -FilePath $file
