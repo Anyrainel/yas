@@ -2,13 +2,13 @@
 
 # GOODScanner
 
+**中文 | [English](README_EN.md)**
+
 基于 [yas](https://github.com/1803233552/yas) 编写的原神 GOOD 格式扫描器
 
 扫描游戏内角色、武器、圣遗物数据，导出为 [GOOD v3](https://frzyc.github.io/genshin-optimizer/#/doc) 格式 JSON，可直接导入 [GGArtifact](https://ggartifact.com/)、[Genshin Optimizer](https://frzyc.github.io/genshin-optimizer/) 等配装工具。
 
 [![Build](https://github.com/Anyrainel/GOODScanner/actions/workflows/rust.yml/badge.svg)](https://github.com/Anyrainel/GOODScanner/actions)
-
-**[English](README_EN.md)**
 
 </div>
 
@@ -16,9 +16,9 @@
 
 - **角色扫描**：名称、等级、突破、命座、天赋
 - **武器扫描**：名称、等级、突破、精炼、装备角色、锁定状态
-- **圣遗物扫描**：套装、位置、主词条、副词条（含精炼值验证）、等级、稀有度、锁定、星标、祝圣秘境标记、待激活词条
-- **双引擎 OCR**：PPOCRv4（通用）+ PPOCRv5（等级专用），自动选择最优结果
-- **副词条验证**：Roll Solver 基于游戏机制验证词条合法性
+- **圣遗物扫描**：套装、位置、主词条、副词条、等级、稀有度、锁定、星标、祝圣秘境标记、待激活词条
+- **双引擎 OCR**：PPOCRv4（通用）+ PPOCRv5（特殊部分专用），自动选择最优结果
+- **副词条验证**：Roll Solver 基于游戏精确度验证词条合法性
 
 ## 快速开始
 

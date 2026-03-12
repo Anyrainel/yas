@@ -2,13 +2,13 @@
 
 # GOODScanner
 
+**[中文](README.md) | English**
+
 Genshin Impact GOOD Format Scanner, based on [yas](https://github.com/wormtql/yas)
 
-Scans in-game character, weapon, and artifact data and exports it as [GOOD v3](https://frzyc.github.io/genshin-optimizer/#/doc) JSON for use with optimizer tools like [Genshin Optimizer](https://frzyc.github.io/genshin-optimizer/) and [Mona Uranai](https://mona-uranai.com/).
+Scans in-game character, weapon, and artifact data and exports it as [GOOD v3](https://frzyc.github.io/genshin-optimizer/#/doc) JSON for use with optimizer tools like [GGArtifact](https://ggartifact.com/), [Genshin Optimizer](https://frzyc.github.io/genshin-optimizer/).
 
 [![Build](https://github.com/Anyrainel/GOODScanner/actions/workflows/rust.yml/badge.svg)](https://github.com/Anyrainel/GOODScanner/actions)
-
-**[中文](README.md)**
 
 </div>
 
@@ -16,7 +16,7 @@ Scans in-game character, weapon, and artifact data and exports it as [GOOD v3](h
 
 - **Character scanning**: level, ascension, constellation, talents
 - **Weapon scanning**: name, level, ascension, refinement, equipped character, lock status
-- **Artifact scanning**: set, slot, main stat, substats (with roll validation), level, rarity, lock, astral mark, elixir crafted flag, unactivated substats
+- **Artifact scanning**: set, slot, main stat, substats, level, rarity, lock, astral mark, elixir crafted flag, unactivated substats
 - **Dual-engine OCR**: PPOCRv4 (general) + PPOCRv5 (level-specific), automatically picks the best result
 - **Substat validation**: Roll Solver verifies substat combinations against game mechanics
 
