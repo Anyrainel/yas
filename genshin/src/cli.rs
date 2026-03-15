@@ -1,11 +1,11 @@
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use clap::{command, ArgMatches, Args, FromArgMatches};
-use log::{debug, info};
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 
 use yas::game_info::{GameInfo, GameInfoBuilder};
@@ -30,6 +30,134 @@ fn exe_dir() -> PathBuf {
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+}
+
+// ================================================================
+// ONNX Runtime auto-download
+// ================================================================
+
+/// The DLL name that `ort` loads at runtime.
+#[cfg(target_os = "windows")]
+const ORT_DLL_NAME: &str = "onnxruntime.dll";
+
+/// Mirror URLs to try in order. CDN proxies first (fast globally), GitHub direct last.
+#[cfg(target_os = "windows")]
+const ORT_DOWNLOAD_URLS: &[&str] = &[
+    "https://ghfast.top/https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-1.22.0.zip",
+    "https://gh-proxy.com/https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-1.22.0.zip",
+    "https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-1.22.0.zip",
+];
+
+/// Ensure onnxruntime.dll is available next to the exe; if not, offer to download it.
+///
+/// When the DLL exists locally, sets `ORT_DYLIB_PATH` so `ort` uses our copy
+/// instead of any older/incompatible system DLL that might be on PATH.
+#[cfg(target_os = "windows")]
+fn ensure_onnxruntime() -> Result<()> {
+    let dll_path = exe_dir().join(ORT_DLL_NAME);
+    if dll_path.exists() {
+        // Force ort to use our local copy, bypassing any system PATH DLL.
+        std::env::set_var("ORT_DYLIB_PATH", &dll_path);
+        return Ok(());
+    }
+
+    println!();
+    println!("=======================================================");
+    println!("  未找到 {} / {} not found", ORT_DLL_NAME, ORT_DLL_NAME);
+    println!("=======================================================");
+    println!();
+    println!("OCR引擎需要ONNX Runtime运行库。");
+    println!("The OCR engine requires the ONNX Runtime library.");
+    println!();
+    println!("按回车自动下载（约70MB），或按 Ctrl+C 退出。");
+    println!("Press Enter to download automatically (~70MB), or Ctrl+C to exit.");
+    let _ = std::io::stdin().read_line(&mut String::new());
+
+    println!("正在下载 ONNX Runtime... / Downloading ONNX Runtime...");
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .connect_timeout(Duration::from_secs(15))
+        .build()?;
+
+    let mut last_error = String::new();
+    for (i, url) in ORT_DOWNLOAD_URLS.iter().enumerate() {
+        println!("尝试源 {} / Trying source {}:  {}", i + 1, i + 1, url);
+
+        match client.get(*url).send() {
+            Ok(response) => {
+                if !response.status().is_success() {
+                    last_error = format!("HTTP {}", response.status());
+                    warn!("源 {} 失败 / Source {} failed: {}", i + 1, i + 1, last_error);
+                    continue;
+                }
+                match response.bytes() {
+                    Ok(bytes) => {
+                        println!(
+                            "下载完成（{}字节），正在解压... / Downloaded ({} bytes), extracting...",
+                            bytes.len(), bytes.len()
+                        );
+                        match extract_onnxruntime_dll(&bytes, &dll_path) {
+                            Ok(()) => {
+                                println!("ONNX Runtime 已安装到 / installed to: {}", dll_path.display());
+                                std::env::set_var("ORT_DYLIB_PATH", &dll_path);
+                                return Ok(());
+                            }
+                            Err(e) => {
+                                last_error = format!("{}", e);
+                                warn!("解压失败 / Extract failed: {}", last_error);
+                                // Clean up partial file
+                                let _ = std::fs::remove_file(&dll_path);
+                                continue;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        last_error = format!("{}", e);
+                        warn!("下载失败 / Download failed: {}", last_error);
+                        continue;
+                    }
+                }
+            }
+            Err(e) => {
+                last_error = format!("{}", e);
+                warn!("连接失败 / Connection failed: {}", last_error);
+                continue;
+            }
+        }
+    }
+
+    Err(anyhow!(
+        "所有下载源均失败 / All download sources failed. 最后一次错误 / Last error: {}\n\
+         您也可以手动下载 onnxruntime.dll 并放在程序同目录下。\n\
+         You can also manually download onnxruntime.dll and place it next to the exe.\n\
+         下载地址 / Download URL: {}",
+        last_error,
+        ORT_DOWNLOAD_URLS[0]
+    ))
+}
+
+/// Extract onnxruntime.dll from the downloaded zip archive.
+#[cfg(target_os = "windows")]
+fn extract_onnxruntime_dll(zip_bytes: &[u8], dest: &std::path::Path) -> Result<()> {
+    use std::io::{Cursor, Read};
+    let reader = Cursor::new(zip_bytes);
+    let mut archive = zip::ZipArchive::new(reader)
+        .map_err(|e| anyhow!("无法打开压缩包 / Cannot open zip archive: {}", e))?;
+
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)
+            .map_err(|e| anyhow!("无法读取压缩包条目 / Cannot read zip entry: {}", e))?;
+        let name = file.name().to_string();
+        if name.ends_with("lib/onnxruntime.dll") {
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf)?;
+            std::fs::write(dest, &buf)?;
+            return Ok(());
+        }
+    }
+
+    Err(anyhow!("压缩包中未找到 onnxruntime.dll / onnxruntime.dll not found in zip archive"))
 }
 
 // ================================================================
@@ -424,6 +552,11 @@ impl GoodScannerApplication {
 
     pub fn run(&self) -> Result<()> {
         println!("正在启动扫描器... / GOOD Scanner starting...");
+
+        // Check for ONNX Runtime before doing anything else
+        #[cfg(target_os = "windows")]
+        ensure_onnxruntime()?;
+
         let arg_matches = &self.arg_matches;
         let config = GoodScannerConfig::from_arg_matches(arg_matches)?;
 
