@@ -9,6 +9,9 @@ use super::lock_manager::LockManager;
 use super::equip_manager::EquipManager;
 use super::models::*;
 
+/// Progress callback: (completed, total, current_instruction_id, phase_description).
+pub type ProgressFn = dyn Fn(usize, usize, &str, &str);
+
 /// Top-level artifact manager that orchestrates lock and equip operations.
 ///
 /// 顶层圣遗物管理器，编排锁定和装备操作。
@@ -43,12 +46,16 @@ impl ArtifactManager {
     /// via character screens). The backpack scan results from Phase 1 are reused
     /// in Phase 2 for pre-flight validation.
     ///
+    /// If `progress_fn` is provided, it is called after each instruction result
+    /// with (completed_count, total_count, current_instruction_id, phase).
+    ///
     /// 执行请求中的所有指令。先执行阶段一（通过背包扫描更改锁定），
     /// 再执行阶段二（通过角色界面更改装备）。
     pub fn execute(
         &self,
         ctrl: &mut GenshinGameController,
         request: ArtifactManageRequest,
+        progress_fn: Option<&ProgressFn>,
     ) -> ManageResult {
         let mut all_results: Vec<InstructionResult> = Vec::new();
 
@@ -81,6 +88,8 @@ impl ArtifactManager {
             return ManageResult { results: all_results, summary };
         }
 
+        let total = valid_instructions.len();
+
         // Replace request with validated instructions only
         let request = ArtifactManageRequest { instructions: valid_instructions };
 
@@ -106,6 +115,12 @@ impl ArtifactManager {
             has_equip_changes.len(),
         );
 
+        let report = |completed: usize, id: &str, phase: &str| {
+            if let Some(f) = progress_fn {
+                f(completed, total, id, phase);
+            }
+        };
+
         // Phase 1: Lock changes (iterate artifact backpack)
         let mut scanned_artifacts = Vec::new();
         let lock_instructions: Vec<ArtifactInstruction> = request.instructions.iter()
@@ -114,6 +129,8 @@ impl ArtifactManager {
             .collect();
 
         if !lock_instructions.is_empty() && !yas::utils::was_aborted() {
+            report(0, "", "阶段一：锁定变更 / Phase 1: Lock changes");
+
             let lock_mgr = LockManager::new(
                 self.mappings.clone(),
                 self.ocr_backend.clone(),
@@ -126,7 +143,12 @@ impl ArtifactManager {
                 self.delay_scroll,
             );
             scanned_artifacts = artifacts;
-            all_results.extend(lock_results);
+
+            // Report progress for each lock result
+            for r in &lock_results {
+                all_results.push(r.clone());
+                report(all_results.len(), &r.id, "阶段一：锁定变更 / Phase 1: Lock changes");
+            }
 
             // Return to main UI between phases
             if !yas::utils::was_aborted() {
@@ -141,6 +163,8 @@ impl ArtifactManager {
             .collect();
 
         if !equip_instructions.is_empty() && !yas::utils::was_aborted() {
+            report(all_results.len(), "", "阶段二：装备变更 / Phase 2: Equip changes");
+
             let equip_mgr = EquipManager::new(
                 self.mappings.clone(),
                 self.ocr_backend.clone(),
@@ -149,7 +173,12 @@ impl ArtifactManager {
             let equip_results = equip_mgr.execute(
                 ctrl, &equip_instructions, &scanned_artifacts,
             );
-            all_results.extend(equip_results);
+
+            // Report progress for each equip result
+            for r in &equip_results {
+                all_results.push(r.clone());
+                report(all_results.len(), &r.id, "阶段二：装备变更 / Phase 2: Equip changes");
+            }
         }
 
         // Mark any remaining instructions as aborted
@@ -192,7 +221,6 @@ impl ArtifactManager {
 
 /// Validate a single instruction. Returns Some(error_message) if invalid.
 fn validate_instruction(instr: &ArtifactInstruction) -> Option<String> {
-    // Must have at least one change
     if instr.changes.lock.is_none() && instr.changes.location.is_none() {
         return Some(
             "没有指定任何更改（lock 和 location 均为空） / \
@@ -200,39 +228,26 @@ fn validate_instruction(instr: &ArtifactInstruction) -> Option<String> {
                 .to_string(),
         );
     }
-
-    // Target fields must be non-empty
     if instr.target.set_key.trim().is_empty() {
-        return Some(
-            "setKey 为空 / setKey is empty".to_string(),
-        );
+        return Some("setKey 为空 / setKey is empty".to_string());
     }
     if instr.target.slot_key.trim().is_empty() {
-        return Some(
-            "slotKey 为空 / slotKey is empty".to_string(),
-        );
+        return Some("slotKey 为空 / slotKey is empty".to_string());
     }
     if instr.target.main_stat_key.trim().is_empty() {
-        return Some(
-            "mainStatKey 为空 / mainStatKey is empty".to_string(),
-        );
+        return Some("mainStatKey 为空 / mainStatKey is empty".to_string());
     }
-
-    // Rarity must be valid
     if instr.target.rarity < 1 || instr.target.rarity > 5 {
         return Some(format!(
             "稀有度无效: {} (应为 1-5) / Invalid rarity: {} (must be 1-5)",
             instr.target.rarity, instr.target.rarity
         ));
     }
-
-    // Level must be valid
     if instr.target.level < 0 || instr.target.level > 20 {
         return Some(format!(
             "等级无效: {} (应为 0-20) / Invalid level: {} (must be 0-20)",
             instr.target.level, instr.target.level
         ));
     }
-
     None
 }

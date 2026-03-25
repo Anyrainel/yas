@@ -1313,6 +1313,6 @@ pub fn run_manage_json(
     manager.delay_grid_item = user_config.artifact_grid_delay;
     manager.delay_scroll = user_config.artifact_scroll_delay;
 
-    let result = manager.execute(&mut ctrl, request);
+    let result = manager.execute(&mut ctrl, request, None);
     Ok(result)
 }

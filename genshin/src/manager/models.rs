@@ -144,3 +144,69 @@ impl ManageSummary {
         summary
     }
 }
+
+// ---------------------------------------------------------------------------
+// Async job state
+// ---------------------------------------------------------------------------
+
+/// Phase of an async manage job.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum JobPhase {
+    Idle,
+    Running,
+    Completed,
+}
+
+/// Progress of a running job.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobProgress {
+    pub completed: usize,
+    pub total: usize,
+    /// ID of the instruction currently being processed.
+    #[serde(rename = "currentId")]
+    pub current_id: String,
+    /// Human-readable phase description.
+    pub phase: String,
+}
+
+/// Shared state for an async manage job, polled via GET /status.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobState {
+    pub state: JobPhase,
+    #[serde(rename = "jobId", skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<JobProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<ManageResult>,
+}
+
+impl JobState {
+    pub fn idle() -> Self {
+        Self { state: JobPhase::Idle, job_id: None, progress: None, result: None }
+    }
+
+    pub fn running(job_id: String, total: usize) -> Self {
+        Self {
+            state: JobPhase::Running,
+            job_id: Some(job_id),
+            progress: Some(JobProgress {
+                completed: 0,
+                total,
+                current_id: String::new(),
+                phase: String::new(),
+            }),
+            result: None,
+        }
+    }
+
+    pub fn completed(job_id: String, result: ManageResult) -> Self {
+        Self {
+            state: JobPhase::Completed,
+            job_id: Some(job_id),
+            progress: None,
+            result: Some(result),
+        }
+    }
+}

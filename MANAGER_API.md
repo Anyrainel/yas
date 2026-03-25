@@ -7,12 +7,15 @@ Server: `http://127.0.0.1:{port}` (default 8765)
 ### `GET /health`
 
 ```json
-{"status":"ok","enabled":true}
+{"status":"ok","enabled":true,"busy":false}
 ```
 
-`enabled: false` means the manager is paused — `/manage` will return 503.
+- `enabled: false` — manager paused, `/manage` returns 503
+- `busy: true` — a job is running, `/manage` returns 409
 
-### `POST /manage`
+### `POST /manage` (async)
+
+Submit a batch of instructions. Returns immediately — poll `GET /status` for progress.
 
 #### Request
 
@@ -57,29 +60,64 @@ Server: `http://127.0.0.1:{port}` (default 8765)
 
 At least one of `lock` or `location` must be present.
 
-#### Response
+#### Responses
+
+| Code | When | Body |
+|------|------|------|
+| 202 | Job accepted | `{"jobId": "<uuid>", "total": N}` |
+| 409 | Another job running | `{"error": "..."}` |
+| 503 | Manager paused | `{"error": "..."}` |
+| 400 | Bad JSON or empty instructions | `{"error": "..."}` |
+
+### `GET /status`
+
+Poll job state. Returns immediately.
+
+#### When idle (no job, or after completed result is consumed)
+
+```json
+{"state": "idle"}
+```
+
+#### When running
 
 ```json
 {
-  "results": [
-    {
-      "id": "client-tracking-id",
-      "status": "success",
-      "detail": null
-    }
-  ],
-  "summary": {
-    "total": 1,
-    "success": 1,
-    "already_correct": 0,
-    "not_found": 0,
-    "errors": 0,
-    "aborted": 0
+  "state": "running",
+  "jobId": "abc-123",
+  "progress": {
+    "completed": 5,
+    "total": 20,
+    "currentId": "instr-6",
+    "phase": "Phase 1: Lock changes"
   }
 }
 ```
 
-#### Status Values
+#### When completed (persists until next `POST /manage`)
+
+```json
+{
+  "state": "completed",
+  "jobId": "abc-123",
+  "result": {
+    "results": [
+      {"id": "instr-1", "status": "success", "detail": null},
+      {"id": "instr-2", "status": "not_found", "detail": "..."}
+    ],
+    "summary": {
+      "total": 2,
+      "success": 1,
+      "already_correct": 0,
+      "not_found": 1,
+      "errors": 0,
+      "aborted": 0
+    }
+  }
+}
+```
+
+## Status Values
 
 | Status | Meaning |
 |--------|---------|
@@ -92,17 +130,20 @@ At least one of `lock` or `location` must be present.
 | `aborted` | User cancelled (right-click) |
 | `skipped` | Skipped (earlier failure or abort) |
 
-#### HTTP Errors
+## Client Flow
 
-| Code | Meaning |
-|------|---------|
-| 400 | Malformed JSON |
-| 503 | Manager paused |
-| 404 | Unknown endpoint |
+```
+1. GET /health → check enabled && !busy
+2. POST /manage → get jobId (202)
+3. Poll GET /status every 500ms–1s
+   → "running": update progress UI
+   → "completed": read result, done
+4. If 409: another job is running, wait or show error
+```
 
 ## Examples
 
-Lock one artifact:
+Lock + equip:
 
 ```json
 {
@@ -121,72 +162,12 @@ Lock one artifact:
         {"key": "hp", "value": 508}
       ]
     },
-    "changes": {"lock": true}
+    "changes": {"lock": true, "location": "RaidenShogun"}
   }]
 }
 ```
 
-Equip to character:
-
-```json
-{
-  "instructions": [{
-    "id": "2",
-    "target": {
-      "setKey": "GladiatorsFinale",
-      "slotKey": "flower",
-      "rarity": 5,
-      "level": 20,
-      "mainStatKey": "hp",
-      "substats": []
-    },
-    "changes": {"location": "Furina"}
-  }]
-}
-```
-
-Unequip:
-
-```json
-{
-  "instructions": [{
-    "id": "3",
-    "target": {
-      "setKey": "GladiatorsFinale",
-      "slotKey": "flower",
-      "rarity": 5,
-      "level": 20,
-      "mainStatKey": "hp",
-      "substats": []
-    },
-    "changes": {"location": ""}
-  }]
-}
-```
-
-Lock + equip in one instruction:
-
-```json
-{
-  "instructions": [{
-    "id": "4",
-    "target": {
-      "setKey": "NoblesseOblige",
-      "slotKey": "goblet",
-      "rarity": 5,
-      "level": 20,
-      "mainStatKey": "pyro_dmg_",
-      "substats": [
-        {"key": "critRate_", "value": 7.0},
-        {"key": "critDMG_", "value": 14.0}
-      ]
-    },
-    "changes": {"lock": true, "location": "HuTao"}
-  }]
-}
-```
-
-Batch (multiple instructions):
+Batch:
 
 ```json
 {
