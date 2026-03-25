@@ -152,6 +152,11 @@ pub fn was_aborted() -> bool {
     ABORTED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Reset the abort flag. Called before starting a new scan (for GUI re-run).
+pub fn reset_abort() {
+    ABORTED.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn set_dpi_awareness() {
     let h_lib = unsafe {
         let utf16 = encode_lpcstr("Shcore.dll");

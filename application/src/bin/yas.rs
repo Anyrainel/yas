@@ -1,7 +1,7 @@
 use yas::utils::press_any_key_to_continue;
 use yas_genshin::cli::GoodScannerApplication;
 
-fn init() {
+fn init_cli() {
     env_logger::Builder::new()
         .filter_level(log::LevelFilter::Info)
         .init();
@@ -17,7 +17,14 @@ fn init() {
 }
 
 pub fn main() {
-    init();
+    // No CLI args → launch GUI; any args → CLI mode
+    if std::env::args().len() == 1 {
+        yas_application::gui::run_gui();
+        return;
+    }
+
+    // CLI mode: existing behavior
+    init_cli();
     let command = GoodScannerApplication::build_command();
     let matches = match command.try_get_matches() {
         Ok(m) => m,

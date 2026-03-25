@@ -24,8 +24,13 @@ use crate::scanner::weapon::{GoodWeaponScanner, GoodWeaponScannerConfig};
 /// Config file path relative to the executable directory.
 const CONFIG_FILE_REL: &str = "data/good_config.json";
 
+/// Get the full path to the config file.
+pub fn config_path() -> PathBuf {
+    exe_dir().join(CONFIG_FILE_REL)
+}
+
 /// Get the directory containing the running executable.
-fn exe_dir() -> PathBuf {
+pub fn exe_dir() -> PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
@@ -48,33 +53,28 @@ const ORT_DOWNLOAD_URLS: &[&str] = &[
     "https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-1.22.0.zip",
 ];
 
-/// Ensure onnxruntime.dll is available next to the exe; if not, offer to download it.
-///
-/// When the DLL exists locally, sets `ORT_DYLIB_PATH` so `ort` uses our copy
-/// instead of any older/incompatible system DLL that might be on PATH.
+/// Check if ONNX Runtime is available. Returns true if found, false if download needed.
 #[cfg(target_os = "windows")]
-fn ensure_onnxruntime() -> Result<()> {
+pub fn check_onnxruntime() -> bool {
     let dll_path = exe_dir().join(ORT_DLL_NAME);
     if dll_path.exists() {
-        // Force ort to use our local copy, bypassing any system PATH DLL.
         std::env::set_var("ORT_DYLIB_PATH", &dll_path);
-        return Ok(());
+        true
+    } else {
+        false
     }
+}
 
-    println!();
-    println!("=======================================================");
-    println!("  未找到 {} / {} not found", ORT_DLL_NAME, ORT_DLL_NAME);
-    println!("=======================================================");
-    println!();
-    println!("OCR引擎需要ONNX Runtime运行库。");
-    println!("The OCR engine requires the ONNX Runtime library.");
-    println!();
-    println!("按回车自动下载（约70MB），或按 Ctrl+C 退出。");
-    println!("Press Enter to download automatically (~70MB), or Ctrl+C to exit.");
-    let _ = std::io::stdin().read_line(&mut String::new());
+/// Download ONNX Runtime without interactive prompts (for GUI mode).
+#[cfg(target_os = "windows")]
+pub fn download_onnxruntime() -> Result<()> {
+    let dll_path = exe_dir().join(ORT_DLL_NAME);
+    info!("正在下载 ONNX Runtime... / Downloading ONNX Runtime...");
+    download_onnxruntime_inner(&dll_path)
+}
 
-    println!("正在下载 ONNX Runtime... / Downloading ONNX Runtime...");
-
+#[cfg(target_os = "windows")]
+fn download_onnxruntime_inner(dll_path: &std::path::Path) -> Result<()> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(300))
         .connect_timeout(Duration::from_secs(15))
@@ -82,7 +82,7 @@ fn ensure_onnxruntime() -> Result<()> {
 
     let mut last_error = String::new();
     for (i, url) in ORT_DOWNLOAD_URLS.iter().enumerate() {
-        println!("尝试源 {} / Trying source {}:  {}", i + 1, i + 1, url);
+        info!("尝试源 {} / Trying source {}:  {}", i + 1, i + 1, url);
 
         match client.get(*url).send() {
             Ok(response) => {
@@ -93,21 +93,20 @@ fn ensure_onnxruntime() -> Result<()> {
                 }
                 match response.bytes() {
                     Ok(bytes) => {
-                        println!(
+                        info!(
                             "下载完成（{}字节），正在解压... / Downloaded ({} bytes), extracting...",
                             bytes.len(), bytes.len()
                         );
-                        match extract_onnxruntime_dll(&bytes, &dll_path) {
+                        match extract_onnxruntime_dll(&bytes, dll_path) {
                             Ok(()) => {
-                                println!("ONNX Runtime 已安装到 / installed to: {}", dll_path.display());
-                                std::env::set_var("ORT_DYLIB_PATH", &dll_path);
+                                info!("ONNX Runtime 已安装到 / installed to: {}", dll_path.display());
+                                std::env::set_var("ORT_DYLIB_PATH", dll_path);
                                 return Ok(());
                             }
                             Err(e) => {
                                 last_error = format!("{}", e);
                                 warn!("解压失败 / Extract failed: {}", last_error);
-                                // Clean up partial file
-                                let _ = std::fs::remove_file(&dll_path);
+                                let _ = std::fs::remove_file(dll_path);
                                 continue;
                             }
                         }
@@ -133,6 +132,31 @@ fn ensure_onnxruntime() -> Result<()> {
         last_error,
         ORT_DOWNLOAD_URLS.last().unwrap()
     ))
+}
+
+/// Ensure onnxruntime.dll is available next to the exe; if not, offer to download it.
+///
+/// When the DLL exists locally, sets `ORT_DYLIB_PATH` so `ort` uses our copy
+/// instead of any older/incompatible system DLL that might be on PATH.
+#[cfg(target_os = "windows")]
+fn ensure_onnxruntime() -> Result<()> {
+    if check_onnxruntime() {
+        return Ok(());
+    }
+
+    println!();
+    println!("=======================================================");
+    println!("  未找到 {} / {} not found", ORT_DLL_NAME, ORT_DLL_NAME);
+    println!("=======================================================");
+    println!();
+    println!("OCR引擎需要ONNX Runtime运行库。");
+    println!("The OCR engine requires the ONNX Runtime library.");
+    println!();
+    println!("按回车自动下载（约70MB），或按 Ctrl+C 退出。");
+    println!("Press Enter to download automatically (~70MB), or Ctrl+C to exit.");
+    let _ = std::io::stdin().read_line(&mut String::new());
+
+    download_onnxruntime()
 }
 
 /// Extract onnxruntime.dll from the downloaded zip archive.
@@ -290,6 +314,31 @@ fn prompt_first_run_config() -> GoodUserConfig {
         manekina_name,
         ..Default::default()
     }
+}
+
+/// Load the user config from data/good_config.json without interactive prompts.
+/// Returns defaults if the file does not exist.
+pub fn load_config_or_default() -> GoodUserConfig {
+    let path = config_path();
+    if path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            if let Ok(config) = serde_json::from_str(&contents) {
+                return config;
+            }
+        }
+    }
+    GoodUserConfig::default()
+}
+
+/// Save the user config to data/good_config.json.
+pub fn save_config(config: &GoodUserConfig) -> Result<()> {
+    let path = config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(config)?;
+    std::fs::write(&path, &json)?;
+    Ok(())
 }
 
 /// Load the user config from data/good_config.json (next to the executable).
@@ -501,7 +550,7 @@ impl GoodScannerApplication {
         <GoodScannerConfig as Args>::augment_args_for_update(cmd)
     }
 
-    fn get_game_info() -> Result<GameInfo> {
+    pub fn get_game_info() -> Result<GameInfo> {
         GameInfoBuilder::new()
             .add_local_window_name("\u{539F}\u{795E}") // 原神
             .add_local_window_name("Genshin Impact")
@@ -510,7 +559,7 @@ impl GoodScannerApplication {
     }
 
     /// Build a character scanner config from global CLI flags + JSON config.
-    fn make_char_config(config: &GoodScannerConfig, user_config: &GoodUserConfig) -> GoodCharacterScannerConfig {
+    pub fn make_char_config(config: &GoodScannerConfig, user_config: &GoodUserConfig) -> GoodCharacterScannerConfig {
         GoodCharacterScannerConfig {
             verbose: config.verbose,
             ocr_backend: config.ocr_backend.clone().unwrap_or_else(|| "ppocrv4".to_string()),
@@ -524,7 +573,7 @@ impl GoodScannerApplication {
     }
 
     /// Build a weapon scanner config from global CLI flags + JSON config.
-    fn make_weapon_config(config: &GoodScannerConfig, user_config: &GoodUserConfig) -> GoodWeaponScannerConfig {
+    pub fn make_weapon_config(config: &GoodScannerConfig, user_config: &GoodUserConfig) -> GoodWeaponScannerConfig {
         GoodWeaponScannerConfig {
             min_rarity: config.weapon_min_rarity,
             verbose: config.verbose,
@@ -542,7 +591,7 @@ impl GoodScannerApplication {
     }
 
     /// Build an artifact scanner config from global CLI flags + JSON config.
-    fn make_artifact_config(config: &GoodScannerConfig, user_config: &GoodUserConfig) -> GoodArtifactScannerConfig {
+    pub fn make_artifact_config(config: &GoodScannerConfig, user_config: &GoodUserConfig) -> GoodArtifactScannerConfig {
         GoodArtifactScannerConfig {
             min_rarity: config.artifact_min_rarity,
             verbose: config.verbose,
@@ -1018,4 +1067,274 @@ fn chrono_timestamp() -> String {
 
 fn is_leap(y: i32) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+// ================================================================
+// Core functions for GUI reuse
+// ================================================================
+
+/// Standalone scan configuration (no clap dependency).
+#[derive(Clone, Debug)]
+pub struct ScanCoreConfig {
+    pub scan_characters: bool,
+    pub scan_weapons: bool,
+    pub scan_artifacts: bool,
+    pub weapon_min_rarity: i32,
+    pub artifact_min_rarity: i32,
+    pub verbose: bool,
+    pub continue_on_failure: bool,
+    pub log_progress: bool,
+    pub dump_images: bool,
+    pub output_dir: String,
+    pub ocr_backend: Option<String>,
+    pub artifact_substat_ocr: String,
+    pub char_max_count: usize,
+    pub weapon_max_count: usize,
+    pub artifact_max_count: usize,
+    pub weapon_skip_delay: bool,
+    pub artifact_skip_delay: bool,
+}
+
+impl Default for ScanCoreConfig {
+    fn default() -> Self {
+        Self {
+            scan_characters: true,
+            scan_weapons: true,
+            scan_artifacts: true,
+            weapon_min_rarity: 3,
+            artifact_min_rarity: 4,
+            verbose: false,
+            continue_on_failure: false,
+            log_progress: false,
+            dump_images: false,
+            output_dir: ".".to_string(),
+            ocr_backend: None,
+            artifact_substat_ocr: "ppocrv4".to_string(),
+            char_max_count: 0,
+            weapon_max_count: 0,
+            artifact_max_count: 0,
+            weapon_skip_delay: false,
+            artifact_skip_delay: false,
+        }
+    }
+}
+
+impl ScanCoreConfig {
+    /// Convert to the internal GoodScannerConfig fields needed by make_*_config.
+    fn to_scanner_config(&self) -> GoodScannerConfig {
+        GoodScannerConfig {
+            scan_characters: self.scan_characters,
+            scan_weapons: self.scan_weapons,
+            scan_artifacts: self.scan_artifacts,
+            scan_all: false,
+            verbose: self.verbose,
+            continue_on_failure: self.continue_on_failure,
+            log_progress: self.log_progress,
+            output_dir: self.output_dir.clone(),
+            ocr_backend: self.ocr_backend.clone(),
+            dump_images: self.dump_images,
+            weapon_min_rarity: self.weapon_min_rarity,
+            artifact_min_rarity: self.artifact_min_rarity,
+            char_max_count: self.char_max_count,
+            weapon_max_count: self.weapon_max_count,
+            artifact_max_count: self.artifact_max_count,
+            weapon_skip_delay: self.weapon_skip_delay,
+            artifact_skip_delay: self.artifact_skip_delay,
+            artifact_substat_ocr: self.artifact_substat_ocr.clone(),
+            server_mode: false,
+            server_port: 8765,
+            debug_compare: None,
+            debug_actual: None,
+            debug_start_at: 0,
+            debug_char_index: 0,
+            debug_timing: false,
+            debug_rescan_pos: None,
+            debug_rescan_type: "weapon".to_string(),
+            debug_rescan_count: 1,
+        }
+    }
+}
+
+/// Run a scan without CLI arg parsing. Returns the export path on success.
+///
+/// This is the core scan logic extracted from `GoodScannerApplication::run()`,
+/// usable from both CLI and GUI.
+pub fn run_scan_core(
+    user_config: &GoodUserConfig,
+    config: &ScanCoreConfig,
+    status_fn: Option<&dyn Fn(&str)>,
+) -> Result<String> {
+    let report = |msg: &str| {
+        if let Some(f) = status_fn { f(msg); }
+    };
+
+    #[cfg(target_os = "windows")]
+    {
+        if !yas::utils::is_admin() {
+            return Err(anyhow!("请以管理员身份运行 / Please run as administrator"));
+        }
+    }
+
+    let scanner_config = config.to_scanner_config();
+
+    // Fetch and load mappings
+    report("加载映射数据 / Loading mappings...");
+    info!("=== 加载映射数据 / Loading mappings ===");
+    let overrides = user_config.to_overrides();
+    let mappings = Arc::new(MappingManager::new(&overrides)?);
+    info!(
+        "已加载 / Loaded: {} characters, {} weapons, {} artifact sets",
+        mappings.character_name_map.len(),
+        mappings.weapon_name_map.len(),
+        mappings.artifact_set_map.len(),
+    );
+
+    // Find and focus the game window
+    report("查找游戏窗口 / Finding game window...");
+    let game_info = GoodScannerApplication::get_game_info()?;
+    let mut ctrl = GenshinGameController::new(game_info)?;
+    ctrl.focus_game_window();
+
+    let mut characters = None;
+    let mut weapons = None;
+    let mut artifacts = None;
+
+    // Scan characters
+    if config.scan_characters {
+        report("扫描角色 / Scanning characters...");
+        info!("=== 扫描角色 / Scanning characters ===");
+        let char_config = GoodScannerApplication::make_char_config(&scanner_config, user_config);
+        let scanner = GoodCharacterScanner::new(char_config, mappings.clone())?;
+        let result = scanner.scan(&mut ctrl, 0)?;
+        info!("已扫描 / Scanned {} characters", result.len());
+        characters = Some(result);
+
+        if !yas::utils::was_aborted() {
+            ctrl.return_to_main_ui(4);
+        }
+    }
+
+    // Scan weapons
+    if config.scan_weapons && !yas::utils::was_aborted() {
+        report("扫描武器 / Scanning weapons...");
+        info!("=== 扫描武器 / Scanning weapons ===");
+        let weapon_config = GoodScannerApplication::make_weapon_config(&scanner_config, user_config);
+        let scanner = GoodWeaponScanner::new(weapon_config, mappings.clone())?;
+        let result = scanner.scan(&mut ctrl, false, 0)?;
+        info!("已扫描 / Scanned {} weapons", result.len());
+        weapons = Some(result);
+    }
+
+    // Scan artifacts
+    if config.scan_artifacts && !yas::utils::was_aborted() {
+        report("扫描圣遗物 / Scanning artifacts...");
+        info!("=== 扫描圣遗物 / Scanning artifacts ===");
+        let artifact_config = GoodScannerApplication::make_artifact_config(&scanner_config, user_config);
+        let skip_open = config.scan_weapons;
+        let scanner = GoodArtifactScanner::new(artifact_config, mappings.clone())?;
+        let result = scanner.scan(&mut ctrl, skip_open, 0)?;
+        info!("已扫描 / Scanned {} artifacts", result.len());
+        artifacts = Some(result);
+    }
+
+    if yas::utils::was_aborted() {
+        info!("扫描被用户中断 / Scan aborted by user (right-click)");
+    }
+
+    // Export as GOOD v3
+    let export = GoodExport::new(characters, weapons, artifacts);
+    let json = serde_json::to_string_pretty(&export)?;
+
+    let timestamp = chrono_timestamp();
+    let output_dir = PathBuf::from(&config.output_dir);
+    std::fs::create_dir_all(&output_dir)?;
+    let filename = format!("good_export_{}.json", timestamp);
+    let path = output_dir.join(&filename);
+
+    std::fs::write(&path, &json)?;
+    let path_str = path.display().to_string();
+    info!("已导出 / Exported to {}", path_str);
+
+    Ok(path_str)
+}
+
+/// Run the artifact manager HTTP server (blocks until the server is stopped).
+pub fn run_server_core(
+    user_config: &GoodUserConfig,
+    server_port: u16,
+    ocr_backend: Option<&str>,
+    artifact_substat_ocr: &str,
+) -> Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        if !yas::utils::is_admin() {
+            return Err(anyhow!("请以管理员身份运行 / Please run as administrator"));
+        }
+    }
+
+    info!("=== 加载映射数据 / Loading mappings ===");
+    let overrides = user_config.to_overrides();
+    let mappings = Arc::new(MappingManager::new(&overrides)?);
+    info!(
+        "已加载 / Loaded: {} characters, {} weapons, {} artifact sets",
+        mappings.character_name_map.len(),
+        mappings.weapon_name_map.len(),
+        mappings.artifact_set_map.len(),
+    );
+
+    let game_info = GoodScannerApplication::get_game_info()?;
+    let mut ctrl = GenshinGameController::new(game_info)?;
+
+    let ocr_be = ocr_backend.unwrap_or("ppocrv5").to_string();
+    let mut manager = crate::manager::orchestrator::ArtifactManager::new(
+        mappings,
+        ocr_be,
+        artifact_substat_ocr.to_string(),
+    );
+    manager.delay_grid_item = user_config.artifact_grid_delay;
+    manager.delay_scroll = user_config.artifact_scroll_delay;
+
+    crate::server::run_server(server_port, &mut ctrl, &manager)
+}
+
+/// Execute manage instructions from a JSON string.
+pub fn run_manage_json(
+    user_config: &GoodUserConfig,
+    json_str: &str,
+    ocr_backend: Option<&str>,
+    artifact_substat_ocr: &str,
+) -> Result<crate::manager::models::ManageResult> {
+    #[cfg(target_os = "windows")]
+    {
+        if !yas::utils::is_admin() {
+            return Err(anyhow!("请以管理员身份运行 / Please run as administrator"));
+        }
+    }
+
+    let request: crate::manager::models::ArtifactManageRequest =
+        serde_json::from_str(json_str)
+            .map_err(|e| anyhow!("JSON解析失败 / JSON parse error: {}", e))?;
+
+    info!(
+        "执行 {} 条管理指令 / Executing {} manage instructions",
+        request.instructions.len(), request.instructions.len()
+    );
+
+    let overrides = user_config.to_overrides();
+    let mappings = Arc::new(MappingManager::new(&overrides)?);
+
+    let game_info = GoodScannerApplication::get_game_info()?;
+    let mut ctrl = GenshinGameController::new(game_info)?;
+
+    let ocr_be = ocr_backend.unwrap_or("ppocrv5").to_string();
+    let mut manager = crate::manager::orchestrator::ArtifactManager::new(
+        mappings,
+        ocr_be,
+        artifact_substat_ocr.to_string(),
+    );
+    manager.delay_grid_item = user_config.artifact_grid_delay;
+    manager.delay_scroll = user_config.artifact_scroll_delay;
+
+    let result = manager.execute(&mut ctrl, request);
+    Ok(result)
 }

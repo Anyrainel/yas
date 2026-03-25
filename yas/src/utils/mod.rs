@@ -56,6 +56,9 @@ pub fn was_aborted() -> bool {
     false
 }
 
+#[cfg(not(windows))]
+pub fn reset_abort() {}
+
 #[derive(Deserialize)]
 pub struct GithubTag {
     pub name: String,
