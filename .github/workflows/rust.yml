@@ -66,16 +66,17 @@ jobs:
           name: GOODScanner_${{ env.VERSION }}
           path: target/release/GOODScanner.exe
 
-      - name: Delete existing release if any
-        run: gh release delete $env:VERSION --yes --cleanup-tag 2>$null
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.VERSION }}
-          name: ${{ env.VERSION }}
-          files: target/release/GOODScanner.exe
-          make_latest: true
+      # --- Release disabled until GUI is fully tested ---
+      # - name: Delete existing release if any
+      #   run: gh release delete $env:VERSION --yes --cleanup-tag 2>$null
+      #   continue-on-error: true
+      #   env:
+      #     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #
+      # - name: Create GitHub Release
+      #   uses: softprops/action-gh-release@v2
+      #   with:
+      #     tag_name: ${{ env.VERSION }}
+      #     name: ${{ env.VERSION }}
+      #     files: target/release/GOODScanner.exe
+      #     make_latest: true
