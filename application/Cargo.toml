@@ -3,6 +3,10 @@ name = "yas-application"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+dev-tools = []
+
 [dependencies]
 anyhow = "1.0"
 yas = { path = "../yas" , package = "yas_core" }
@@ -27,11 +31,14 @@ path = "src/bin/yas.rs"
 [[bin]]
 name = "ocr_test"
 path = "src/bin/ocr_test.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "ocr_eval"
 path = "src/bin/ocr_eval.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "filter_debug"
 path = "src/bin/filter_debug.rs"
+required-features = ["dev-tools"]
