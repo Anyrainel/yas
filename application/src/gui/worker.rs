@@ -71,6 +71,7 @@ pub fn spawn_server(state: &AppState) -> TaskHandle {
     let status = state.server_status.clone();
     let user_config = state.user_config.clone();
     let port = state.server_port;
+    let enabled = state.server_enabled.clone();
 
     *status.lock().unwrap() =
         TaskStatus::Running(format!("服务器运行中 / Server running on port {}", port));
@@ -87,7 +88,7 @@ pub fn spawn_server(state: &AppState) -> TaskHandle {
             }
         }
 
-        match yas_genshin::cli::run_server_core(&user_config, port, None, "ppocrv4") {
+        match yas_genshin::cli::run_server_core(&user_config, port, None, "ppocrv4", enabled) {
             Ok(()) => {
                 *status.lock().unwrap() = TaskStatus::Completed("服务器已停止 / Server stopped".into());
             }

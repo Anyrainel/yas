@@ -1,3 +1,4 @@
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use yas_genshin::cli::{GoodUserConfig, ScanCoreConfig};
@@ -43,6 +44,9 @@ pub struct AppState {
 
     // --- Manager tab config ---
     pub server_port: u16,
+    /// Controls whether POST /manage requests are executed or rejected (503).
+    /// Shared with the server thread via Arc.
+    pub server_enabled: Arc<AtomicBool>,
     pub server_status: Arc<Mutex<TaskStatus>>,
     pub manage_status: Arc<Mutex<TaskStatus>>,
 
@@ -71,6 +75,7 @@ impl AppState {
             artifact_skip_delay: false,
             scan_status: Arc::new(Mutex::new(TaskStatus::Idle)),
             server_port: 8765,
+            server_enabled: Arc::new(AtomicBool::new(true)),
             server_status: Arc::new(Mutex::new(TaskStatus::Idle)),
             manage_status: Arc::new(Mutex::new(TaskStatus::Idle)),
             log_lines: Arc::new(Mutex::new(Vec::with_capacity(1000))),

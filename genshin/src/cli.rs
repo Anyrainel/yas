@@ -972,8 +972,9 @@ impl GoodScannerApplication {
         manager.delay_grid_item = user_config.artifact_grid_delay;
         manager.delay_scroll = user_config.artifact_scroll_delay;
 
-        // Start HTTP server (blocks forever)
-        crate::server::run_server(config.server_port, &mut ctrl, &manager)
+        // Start HTTP server (blocks forever, always enabled in CLI mode)
+        let enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        crate::server::run_server(config.server_port, &mut ctrl, &manager, enabled)
     }
 
     /// Standalone diff mode: compare two existing JSON files without game.
@@ -1259,11 +1260,16 @@ pub fn run_scan_core(
 }
 
 /// Run the artifact manager HTTP server (blocks until the server is stopped).
+///
+/// The `enabled` flag controls whether POST /manage requests are executed.
+/// When false, the server still runs but returns 503 for manage requests.
+/// Health and CORS endpoints always respond.
 pub fn run_server_core(
     user_config: &GoodUserConfig,
     server_port: u16,
     ocr_backend: Option<&str>,
     artifact_substat_ocr: &str,
+    enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
@@ -1294,7 +1300,7 @@ pub fn run_server_core(
     manager.delay_grid_item = user_config.artifact_grid_delay;
     manager.delay_scroll = user_config.artifact_scroll_delay;
 
-    crate::server::run_server(server_port, &mut ctrl, &manager)
+    crate::server::run_server(server_port, &mut ctrl, &manager, enabled)
 }
 
 /// Execute manage instructions from a JSON string.

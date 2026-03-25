@@ -5,8 +5,11 @@
 //!
 //! HTTP 服务器，接受来自网页前端的圣遗物管理指令并返回结果。
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use anyhow::{anyhow, Result};
-use log::{error, info};
+use log::{error, info, warn};
 use tiny_http::{Header, Method, Response, Server};
 
 use crate::manager::models::ArtifactManageRequest;
@@ -28,32 +31,48 @@ fn cors_headers() -> Vec<Header> {
 /// This blocks the current thread and serves requests until the process is killed.
 /// Only one manage operation can run at a time (game control is single-threaded).
 ///
+/// When `enabled` is false, POST /manage returns 503 instead of executing.
+/// Health and CORS endpoints always respond regardless of the enabled flag.
+///
 /// 运行圣遗物管理 HTTP 服务器。阻塞当前线程。
 /// 同一时间只能执行一个管理操作。
+/// 当 enabled 为 false 时，POST /manage 返回 503，不执行操作。
 pub fn run_server(
     port: u16,
     ctrl: &mut GenshinGameController,
     manager: &ArtifactManager,
+    enabled: Arc<AtomicBool>,
 ) -> Result<()> {
     let addr = format!("127.0.0.1:{}", port);
     let server = Server::http(&addr)
-        .map_err(|e| anyhow!("HTTP服务器启动失败 / HTTP server start failed: {}", e))?;
+        .map_err(|e| {
+            let msg = format!("{}", e);
+            if msg.contains("Address already in use") || msg.contains("address is already in use")
+                || msg.contains("AddrInUse") || msg.contains("10048")
+            {
+                anyhow!(
+                    "端口 {} 已被占用，请更换端口 / Port {} is already in use. \
+                     Please choose a different port.",
+                    port, port
+                )
+            } else {
+                anyhow!(
+                    "HTTP服务器启动失败 / HTTP server start failed on port {}: {}",
+                    port, msg
+                )
+            }
+        })?;
 
     info!(
         "HTTP服务器已启动：http://{} / HTTP server running at http://{}",
         addr, addr
     );
-    println!(
-        "圣遗物管理服务器已启动 / Artifact manager server running at http://{}",
-        addr
-    );
-    println!("按 Ctrl+C 停止 / Press Ctrl+C to stop");
 
     for mut request in server.incoming_requests() {
         let method = request.method().clone();
         let url = request.url().to_string();
 
-        // Handle CORS preflight
+        // Handle CORS preflight (always respond)
         if method == Method::Options {
             let response = Response::empty(204);
             let mut resp = response;
@@ -68,6 +87,18 @@ pub fn run_server(
 
         match (method, url.as_str()) {
             (Method::Post, "/manage") => {
+                // Check if manager is enabled
+                if !enabled.load(Ordering::Relaxed) {
+                    warn!("管理器已暂停，拒绝请求 / Manager paused, rejecting request");
+                    let json = r#"{"error":"管理器已暂停 / Manager is paused. Enable it in the GUI to accept requests."}"#;
+                    let mut resp = Response::from_string(json).with_status_code(503);
+                    for header in cors_headers() {
+                        resp.add_header(header);
+                    }
+                    let _ = request.respond(resp);
+                    continue;
+                }
+
                 // Read request body
                 let mut body = String::new();
                 if let Err(e) = request.as_reader().read_to_string(&mut body) {
@@ -129,7 +160,12 @@ pub fn run_server(
             }
 
             (Method::Get, "/health") => {
-                let json = r#"{"status":"ok"}"#;
+                let is_enabled = enabled.load(Ordering::Relaxed);
+                let json = if is_enabled {
+                    r#"{"status":"ok","enabled":true}"#
+                } else {
+                    r#"{"status":"ok","enabled":false}"#
+                };
                 let mut resp = Response::from_string(json);
                 for header in cors_headers() {
                     resp.add_header(header);

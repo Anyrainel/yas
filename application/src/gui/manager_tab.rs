@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use eframe::egui;
 
 use super::state::{AppState, TaskStatus};
@@ -27,33 +29,65 @@ pub fn show(
 
         ui.add_space(4.0);
 
-        ui.horizontal(|ui| {
-            if is_server_running {
-                // Server is running — show status, no easy stop for tiny_http blocking server
+        if is_server_running {
+            // Server is running — show status and enabled toggle
+            ui.horizontal(|ui| {
                 ui.spinner();
-                let status = state.server_status.lock().unwrap().clone();
-                if let TaskStatus::Running(msg) = status {
-                    ui.label(msg);
-                }
-            } else {
-                if ui.button("▶ 启动服务器 / Start Server").clicked() {
-                    let _ = yas_genshin::cli::save_config(&state.user_config);
-                    *server_handle = Some(worker::spawn_server(state));
-                }
+                ui.label(format!(
+                    "服务器运行中 / Server running on port {}",
+                    state.server_port
+                ));
+            });
 
-                // Show result of previous server run
-                let status = state.server_status.lock().unwrap().clone();
-                match status {
-                    TaskStatus::Completed(ref msg) => {
-                        ui.colored_label(egui::Color32::from_rgb(100, 200, 100), msg);
-                    }
-                    TaskStatus::Failed(ref msg) => {
-                        ui.colored_label(egui::Color32::from_rgb(255, 100, 100), msg);
-                    }
-                    _ => {}
+            ui.add_space(4.0);
+
+            // Enabled/paused toggle
+            let mut enabled = state.server_enabled.load(Ordering::Relaxed);
+            if ui
+                .checkbox(&mut enabled, "接受管理请求 / Accept manage requests")
+                .changed()
+            {
+                state.server_enabled.store(enabled, Ordering::Relaxed);
+                if enabled {
+                    log::info!(
+                        "管理器已启用 / Manager enabled — requests on port {} will be executed",
+                        state.server_port
+                    );
+                } else {
+                    log::info!(
+                        "管理器已暂停 / Manager paused — requests on port {} will be rejected (503)",
+                        state.server_port
+                    );
                 }
             }
-        });
+            if !enabled {
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 200, 50),
+                    "已暂停：POST /manage 将返回 503 / Paused: POST /manage returns 503",
+                );
+            }
+        } else {
+            if ui.button("▶ 启动服务器 / Start Server").clicked() {
+                let _ = yas_genshin::cli::save_config(&state.user_config);
+                // Ensure enabled is true when starting fresh
+                state
+                    .server_enabled
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                *server_handle = Some(worker::spawn_server(state));
+            }
+
+            // Show result of previous server run
+            let status = state.server_status.lock().unwrap().clone();
+            match status {
+                TaskStatus::Completed(ref msg) => {
+                    ui.colored_label(egui::Color32::from_rgb(100, 200, 100), msg);
+                }
+                TaskStatus::Failed(ref msg) => {
+                    ui.colored_label(egui::Color32::from_rgb(255, 100, 100), msg);
+                }
+                _ => {}
+            }
+        }
 
         ui.add_space(12.0);
         ui.separator();
@@ -65,7 +99,10 @@ pub fn show(
         ui.add_space(4.0);
 
         ui.add_enabled_ui(!is_managing && !is_server_running, |ui| {
-            if ui.button("📁 选择文件并执行 / Choose File & Execute...").clicked() {
+            if ui
+                .button("📁 选择文件并执行 / Choose File & Execute...")
+                .clicked()
+            {
                 if let Some(path) = rfd::FileDialog::new()
                     .add_filter("JSON", &["json"])
                     .pick_file()
