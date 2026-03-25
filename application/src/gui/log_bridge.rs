@@ -46,12 +46,37 @@ impl Log for GuiLogger {
     fn flush(&self) {}
 }
 
+#[cfg(windows)]
+fn format_timestamp() -> String {
+    use std::mem::MaybeUninit;
+    #[repr(C)]
+    struct SystemTime {
+        w_year: u16,
+        w_month: u16,
+        w_day_of_week: u16,
+        w_day: u16,
+        w_hour: u16,
+        w_minute: u16,
+        w_second: u16,
+        w_milliseconds: u16,
+    }
+    extern "system" {
+        fn GetLocalTime(lp_system_time: *mut SystemTime);
+    }
+    let mut st = MaybeUninit::<SystemTime>::uninit();
+    unsafe {
+        GetLocalTime(st.as_mut_ptr());
+        let st = st.assume_init();
+        format!("{:02}:{:02}:{:02}", st.w_hour, st.w_minute, st.w_second)
+    }
+}
+
+#[cfg(not(windows))]
 fn format_timestamp() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-
     let secs_of_day = now % 86400;
     let hours = secs_of_day / 3600;
     let minutes = (secs_of_day % 3600) / 60;

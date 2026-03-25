@@ -32,6 +32,11 @@ pub struct AppState {
     pub continue_on_failure: bool,
     pub dump_images: bool,
     pub output_dir: String,
+    pub char_max_count: usize,
+    pub weapon_max_count: usize,
+    pub artifact_max_count: usize,
+    pub weapon_skip_delay: bool,
+    pub artifact_skip_delay: bool,
 
     // --- Scanner task ---
     pub scan_status: Arc<Mutex<TaskStatus>>,
@@ -58,7 +63,12 @@ impl AppState {
             verbose: false,
             continue_on_failure: false,
             dump_images: false,
-            output_dir: ".".to_string(),
+            output_dir: yas_genshin::cli::exe_dir().display().to_string(),
+            char_max_count: 0,
+            weapon_max_count: 0,
+            artifact_max_count: 0,
+            weapon_skip_delay: false,
+            artifact_skip_delay: false,
             scan_status: Arc::new(Mutex::new(TaskStatus::Idle)),
             server_port: 8765,
             server_status: Arc::new(Mutex::new(TaskStatus::Idle)),
@@ -82,11 +92,11 @@ impl AppState {
             output_dir: self.output_dir.clone(),
             ocr_backend: None,
             artifact_substat_ocr: "ppocrv4".to_string(),
-            char_max_count: 0,
-            weapon_max_count: 0,
-            artifact_max_count: 0,
-            weapon_skip_delay: false,
-            artifact_skip_delay: false,
+            char_max_count: self.char_max_count,
+            weapon_max_count: self.weapon_max_count,
+            artifact_max_count: self.artifact_max_count,
+            weapon_skip_delay: self.weapon_skip_delay,
+            artifact_skip_delay: self.artifact_skip_delay,
         }
     }
 }

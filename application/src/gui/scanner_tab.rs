@@ -112,6 +112,35 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, scan_handle: &mut Option<Ta
                     ui.checkbox(&mut state.verbose, "详细信息 / Verbose");
                     ui.checkbox(&mut state.continue_on_failure, "失败继续 / Continue on failure");
                     ui.checkbox(&mut state.dump_images, "保存截图 / Dump images");
+                    ui.checkbox(&mut state.weapon_skip_delay, "跳过武器面板等待 / Skip weapon panel delay");
+                    ui.checkbox(&mut state.artifact_skip_delay, "跳过圣遗物面板等待 / Skip artifact panel delay");
+
+                    ui.add_space(8.0);
+                    egui::Grid::new("max_count_grid")
+                        .num_columns(2)
+                        .spacing([8.0, 4.0])
+                        .show(ui, |ui| {
+                            ui.label("最大角色数 / Max characters (0=all):");
+                            let mut v = state.char_max_count as i64;
+                            if ui.add(egui::DragValue::new(&mut v).range(0..=1000).speed(1)).changed() {
+                                state.char_max_count = v.max(0) as usize;
+                            }
+                            ui.end_row();
+
+                            ui.label("最大武器数 / Max weapons (0=all):");
+                            let mut v = state.weapon_max_count as i64;
+                            if ui.add(egui::DragValue::new(&mut v).range(0..=2000).speed(1)).changed() {
+                                state.weapon_max_count = v.max(0) as usize;
+                            }
+                            ui.end_row();
+
+                            ui.label("最大圣遗物数 / Max artifacts (0=all):");
+                            let mut v = state.artifact_max_count as i64;
+                            if ui.add(egui::DragValue::new(&mut v).range(0..=2000).speed(1)).changed() {
+                                state.artifact_max_count = v.max(0) as usize;
+                            }
+                            ui.end_row();
+                        });
                 });
             });
 
@@ -122,11 +151,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut AppState, scan_handle: &mut Option<Ta
         ui.horizontal(|ui| {
             if is_scanning {
                 if ui.button("⏹ 停止扫描 / Stop Scan").clicked() {
-                    // Set the global abort flag to stop scanning
-                    yas::utils::reset_abort();
-                    // We actually need to trigger abort, not reset
-                    // The scanner checks is_rmb_down() which checks the ABORTED flag
-                    // We can't easily stop it from outside, but we can note this
+                    yas::utils::set_abort();
                 }
                 let status = state.scan_status.lock().unwrap().clone();
                 if let TaskStatus::Running(phase) = status {

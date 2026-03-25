@@ -157,6 +157,11 @@ pub fn reset_abort() {
     ABORTED.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Set the abort flag programmatically. Called from GUI stop button.
+pub fn set_abort() {
+    ABORTED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn set_dpi_awareness() {
     let h_lib = unsafe {
         let utf16 = encode_lpcstr("Shcore.dll");
