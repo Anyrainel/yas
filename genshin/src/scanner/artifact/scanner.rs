@@ -731,6 +731,92 @@ impl GoodArtifactScanner {
             }
         }
 
+        // Phase 1c: Substat count guard.
+        //
+        // Minimum required substat lines by rarity and level:
+        //   5-star: always 4 (init 3 or 4, but 3+1 unactivated = 4 lines)
+        //   4-star: lv0 → 2, lv4 → 3, lv8+ → 4
+        //     (init can be 2 or 3; each level-up at lv4/lv8 adds a line if below 4)
+        //
+        // If we got fewer non-empty lines than the minimum, retry failed lines
+        // with the fallback engine (v5) and slightly shifted crops.
+        let min_required = if rarity == 5 {
+            4
+        } else {
+            // 4-star: min(2 + level/4, 4)
+            (2 + level / 4).min(4) as usize
+        };
+        let non_empty_count = solver_candidates.iter().filter(|c| !c.is_empty()).count();
+        if non_empty_count < min_required {
+            warn!("[artifact] {}* lv{} has only {} substat lines (expected ≥{}), retrying failed lines with fallback engine + shifts",
+                rarity, level, non_empty_count, min_required);
+
+            // Ensure we have exactly 4 slots (pad if the loop broke early on stop marker)
+            while solver_candidates.len() < 4 {
+                solver_candidates.push(Vec::new());
+            }
+
+            // Retry with: V5 at original rect, then shifted V4, then shifted V5.
+            // All crops are from the in-memory image — no re-capture needed.
+            // Y-offsets: ±2px. Width offsets: ±10px (right edge only, X is fixed).
+            let shifts: &[(f64, f64)] = &[
+                // (dy, dw) — v5 at original rect first
+                (0.0, 0.0),
+                // shifted v4, then shifted v5
+                (-2.0, 0.0), (-2.0, 10.0), (-2.0, -10.0),
+                ( 2.0, 0.0), ( 2.0, 10.0), ( 2.0, -10.0),
+                ( 0.0, 10.0), ( 0.0, -10.0),
+            ];
+
+            for i in 0..min_required {
+                if !solver_candidates[i].is_empty() {
+                    continue; // Already have candidates for this line
+                }
+                let (sub_x, sub_y, sub_w, sub_h) = ocr_regions.substat_lines[i];
+                let mut found = false;
+
+                for (step, &(dy, dw)) in shifts.iter().enumerate() {
+                    let rect = (sub_x, sub_y + dy, sub_w + dw, sub_h);
+
+                    // Step 0: v5 at original rect
+                    // Other steps: v4 shifted first, then v5 shifted
+                    let engines: &[&dyn ImageToText<RgbImage>] = if step == 0 {
+                        &[ocr]
+                    } else {
+                        &[substat_ocr, ocr]
+                    };
+
+                    for &engine in engines {
+                        let text = Self::ocr_image_region_shifted(
+                            engine, image, rect, y_shift, scaler,
+                        ).unwrap_or_default();
+                        if text.trim().len() < 2 || text.contains("2\u{4EF6}\u{5957}") {
+                            continue;
+                        }
+                        if let Some(p) = stat_parser::parse_stat_from_text(text.trim()) {
+                            let already = solver_candidates[i].iter()
+                                .any(|c| c.key == p.key && (c.value - p.value).abs() < 0.01);
+                            if !already {
+                                let eng_name = if std::ptr::eq(engine, ocr) { "v5" } else { "v4" };
+                                info!("[artifact] sub[{}] RECOVERED via {} (dy={}, dw={}): {}={:.1}",
+                                    i, eng_name, dy, dw, p.key, p.value);
+                                solver_candidates[i].push(OcrCandidate {
+                                    key: p.key, value: p.value, inactive: p.inactive,
+                                });
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    if found { break; }
+                }
+
+                if !found {
+                    warn!("[artifact] sub[{}] STILL EMPTY after fallback retries ({}* lv{})", i, rarity, level);
+                }
+            }
+        }
+
         // Filter out empty candidate lines (OCR failures) — the solver doesn't
         // care which physical line a substat came from, only the candidate sets.
         let non_empty_candidates: Vec<Vec<OcrCandidate>> = solver_candidates.iter()
@@ -961,8 +1047,16 @@ impl GoodArtifactScanner {
         };
 
         // 8. Equipped character
+        // Try v4 first, fall back to v5 if no match (v4 dict lacks some rare chars like 魈/Xiao)
         let equip_text = Self::ocr_image_region(substat_ocr, image, ocr_regions.equip, scaler)?;
-        let location = Self::parse_equip_location(&equip_text, mappings);
+        let mut location = Self::parse_equip_location(&equip_text, mappings);
+        if location.is_empty() && equip_text.trim().len() >= 2 {
+            let equip_text_v5 = Self::ocr_image_region(ocr, image, ocr_regions.equip, scaler)?;
+            location = Self::parse_equip_location(&equip_text_v5, mappings);
+            if !location.is_empty() {
+                info!("[artifact] equip: v4「{}」failed, v5「{}」→ {}", equip_text.trim(), equip_text_v5.trim(), location);
+            }
+        }
 
         // 9. Lock
         let lock = pixel_utils::detect_artifact_lock(image, scaler, y_shift);
@@ -1111,29 +1205,29 @@ impl GoodArtifactScanner {
         let scaler = bp.scaler().clone();
 
         // Create OCR pools with multiple model instances for parallel OCR.
-        // Use available parallelism (capped at 8) for pool size.
         //
         // Two separate pools are required because each worker checks out from BOTH pools
-        // simultaneously — sharing one pool causes deadlock (N tasks each hold 1, all wait for 2nd).
+        // simultaneously — sharing one pool causes deadlock.
         //
         // Pool roles (based on systematic eval — v4 dominates on all fields except level):
-        //   ocr_pool       = "level engine" (v5) — only used for artifact level OCR
-        //   substat_pool   = "general engine" (v4) — used for name, main stat, set, equip, substats
-        let pool_size = std::thread::available_parallelism()
-            .map(|n| n.get().min(8))
-            .unwrap_or(4);
+        //   ocr_pool       = "level engine" (v5) — only for level OCR + equip/substat fallback
+        //   substat_pool   = "general engine" (v4) — name, main stat, set, equip, substats
+        //
+        // v5 pool is the bottleneck for max parallelism (each worker holds both).
+        // 2 v5 instances → max 2 concurrent scans. 5 v4 instances allows
+        // scheduling slack when v5 is returned before v4.
         let ocr_backend = self.config.ocr_backend.clone();
         let ocr_pool = Arc::new(OcrPool::new(
             move || ocr_factory::create_ocr_model(&ocr_backend),
-            pool_size,
+            2,
         )?);
         let substat_backend = self.config.substat_ocr_backend.clone();
         let substat_ocr_pool = Arc::new(OcrPool::new(
             move || ocr_factory::create_ocr_model(&substat_backend),
-            pool_size,
+            5,
         )?);
-        debug!("[artifact] OCR pool: {} instances (level_engine={}, general_engine={})",
-            pool_size, self.config.ocr_backend, self.config.substat_ocr_backend);
+        debug!("[artifact] OCR pool: v5(level)=2, v4(general)=5 (level_engine={}, general_engine={})",
+            self.config.ocr_backend, self.config.substat_ocr_backend);
 
         // Shared context for worker threads
         let worker_mappings = self.mappings.clone();

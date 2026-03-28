@@ -136,6 +136,7 @@ impl GoodWeaponScanner {
     /// Called from the worker thread with a checked-out OCR model.
     fn scan_single_weapon(
         ocr: &dyn ImageToText<RgbImage>,
+        equip_fallback_ocr: Option<&dyn ImageToText<RgbImage>>,
         image: &RgbImage,
         scaler: &CoordScaler,
         ocr_regions: &WeaponOcrRegions,
@@ -185,8 +186,18 @@ impl GoodWeaponScanner {
         let refinement = Self::parse_refinement(&ref_text);
 
         // OCR equip status
+        // Try primary engine first, fall back to v5 if no match (v4 dict lacks rare chars like 魈)
         let equip_text = Self::ocr_image_region(ocr, image, ocr_regions.equip, scaler)?;
-        let location = Self::parse_equip_location(&equip_text, mappings);
+        let mut location = Self::parse_equip_location(&equip_text, mappings);
+        if location.is_empty() && equip_text.trim().len() >= 2 {
+            if let Some(fallback) = equip_fallback_ocr {
+                let equip_text_v5 = Self::ocr_image_region(fallback, image, ocr_regions.equip, scaler)?;
+                location = Self::parse_equip_location(&equip_text_v5, mappings);
+                if !location.is_empty() {
+                    info!("[weapon] {} equip: v4「{}」failed, v5「{}」→ {}", weapon_key, equip_text.trim(), equip_text_v5.trim(), location);
+                }
+            }
+        }
         if !equip_text.is_empty() {
             debug!("[weapon] {} equip OCR: {:?} -> {:?}", weapon_key, equip_text, location);
         }
@@ -462,31 +473,38 @@ impl GoodWeaponScanner {
 
         let scaler = bp.scaler().clone();
 
-        // Create OCR pool
-        let pool_size = std::thread::available_parallelism()
-            .map(|n| n.get().min(8))
-            .unwrap_or(4);
+        // Create OCR pools.
+        // Weapon scanner uses a single engine (v4) for all fields.
+        // 4 instances for parallel scanning.
+        // 1 v5 instance for equip fallback (v4 dict lacks rare chars like 魈/Xiao).
         let ocr_backend = self.config.ocr_backend.clone();
         let ocr_pool = Arc::new(OcrPool::new(
             move || ocr_factory::create_ocr_model(&ocr_backend),
-            pool_size,
+            4,
         )?);
-        debug!("[weapon] OCR pool: {} instances", pool_size);
+        let equip_fallback_pool = Arc::new(OcrPool::new(
+            || ocr_factory::create_ocr_model("ppocrv5"),
+            1,
+        )?);
+        debug!("[weapon] OCR pool: v4=4, equip_fallback(v5)=1");
 
         // Shared context for worker threads
         let worker_mappings = self.mappings.clone();
         let worker_config = self.config.clone();
         let worker_scaler = scaler.clone();
         let worker_ocr_pool = ocr_pool.clone();
+        let worker_equip_pool = equip_fallback_pool.clone();
         let worker_ocr_regions = WeaponOcrRegions::new();
 
         let (item_tx, worker_handle) = scan_worker::start_worker::<(), GoodWeapon, _>(
             total_count as usize,
             move |work_item: WorkItem<()>| {
                 let ocr_guard = worker_ocr_pool.get();
+                let equip_guard = worker_equip_pool.get();
 
                 match Self::scan_single_weapon(
                     &ocr_guard,
+                    Some(&equip_guard as &dyn ImageToText<RgbImage>),
                     &work_item.image,
                     &worker_scaler,
                     &worker_ocr_regions,

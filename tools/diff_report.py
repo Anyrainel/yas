@@ -2,7 +2,7 @@
 """Generate a markdown diff report with embedded OCR region images.
 
 Usage:
-    python diff_report.py [actual.json] [expected.json] [--images debug_images]
+    python diff_report.py [actual.json] [expected.json] [--images debug_images] [--no-images]
 
 If no args given, auto-discovers the latest good_export_*.json as actual
 and genshin_export.json as expected.
@@ -421,7 +421,7 @@ def diff_characters(expected, actual):
     return results
 
 
-def generate_report(actual_path, expected_path, images_dir="debug_images"):
+def generate_report(actual_path, expected_path, images_dir="debug_images", no_images=False):
     actual = load_json(actual_path)
     expected = load_json(expected_path)
 
@@ -429,7 +429,9 @@ def generate_report(actual_path, expected_path, images_dir="debug_images"):
     lines.append("# Scan Diff Report\n")
     lines.append(f"- **Actual**: `{actual_path}`")
     lines.append(f"- **Expected**: `{expected_path}`")
-    lines.append(f"- **Images**: `{images_dir}/`\n")
+    if not no_images:
+        lines.append(f"- **Images**: `{images_dir}/`")
+    lines.append("")
 
     # === ARTIFACTS ===
     exp_artifacts = expected.get("artifacts") or []
@@ -512,7 +514,7 @@ def generate_report(actual_path, expected_path, images_dir="debug_images"):
         def render_diff_entry(entry, lines_out):
             idx, set_key, slot_key, diffs, exp_art, act_art = entry
             is_missing = any(f == "_status" and "MISSING" in ev for f, ev, av in diffs)
-            folder = None if is_missing else find_dump_folder(images_dir, "artifacts", idx)
+            folder = None if (is_missing or no_images) else find_dump_folder(images_dir, "artifacts", idx)
             status = ""
             for field, ev, av in diffs:
                 if field == "_status":
@@ -535,12 +537,13 @@ def generate_report(actual_path, expected_path, images_dir="debug_images"):
                 if field == "_status":
                     continue
                 lines_out.append(f"- **{field}**: expected=`{ev}` actual=`{av}`")
-                imgs = images_for_field(folder, field, "artifact")
-                for img in imgs:
-                    lines_out.append(f"  - {img}")
+                if not no_images:
+                    imgs = images_for_field(folder, field, "artifact")
+                    for img in imgs:
+                        lines_out.append(f"  - {img}")
 
             # Full screenshot in collapsible section
-            if folder:
+            if not no_images and folder:
                 full_ref = image_ref(folder, "full.png")
                 if full_ref:
                     lines_out.append(f"\n<details><summary>Full screenshot</summary>\n\n{full_ref}\n\n</details>")
@@ -572,17 +575,111 @@ def generate_report(actual_path, expected_path, images_dir="debug_images"):
                     break
                 render_diff_entry(entry, lines)
 
+    # === WEAPONS ===
+    exp_weapons = expected.get("weapons") or []
+    act_weapons = actual.get("weapons") or []
+    if exp_weapons or act_weapons:
+        weapon_diffs = diff_weapons(exp_weapons, act_weapons)
+        lines.append(f"## Weapons ({len(act_weapons)} scanned, {len(exp_weapons)} expected, {len(weapon_diffs)} issues)\n")
+
+        if weapon_diffs:
+            w_field_counts = defaultdict(int)
+            for _, _, diffs in weapon_diffs:
+                for field, _, _ in diffs:
+                    if field != "_status":
+                        w_field_counts[field] += 1
+            if w_field_counts:
+                lines.append("### Field summary\n")
+                lines.append("| Field | Count |")
+                lines.append("|-------|-------|")
+                for field, count in sorted(w_field_counts.items(), key=lambda x: -x[1]):
+                    lines.append(f"| {field} | {count} |")
+                lines.append("")
+
+            for idx, key, diffs in sorted(weapon_diffs, key=lambda x: x[0]):
+                status = ""
+                for field, ev, av in diffs:
+                    if field == "_status":
+                        status = f" **{ev}{av}**"
+                diff_fields = [f for f, _, _ in diffs if f != "_status"]
+                diff_summary = ", ".join(diff_fields[:5])
+                if len(diff_fields) > 5:
+                    diff_summary += f" +{len(diff_fields)-5} more"
+
+                lines.append(f"#### [{idx:04d}] {key}{status} — {diff_summary}\n")
+
+                folder = None if no_images else find_dump_folder(images_dir, "weapons", idx)
+                for field, ev, av in diffs:
+                    if field == "_status":
+                        continue
+                    lines.append(f"- **{field}**: expected=`{ev}` actual=`{av}`")
+                    if not no_images:
+                        imgs = images_for_field(folder, field, "weapon")
+                        for img in imgs:
+                            lines.append(f"  - {img}")
+
+                if not no_images and folder:
+                    full_ref = image_ref(folder, "full.png")
+                    if full_ref:
+                        lines.append(f"\n<details><summary>Full screenshot</summary>\n\n{full_ref}\n\n</details>")
+                lines.append("")
+
+    # === CHARACTERS ===
+    exp_characters = expected.get("characters") or []
+    act_characters = actual.get("characters") or []
+    if exp_characters or act_characters:
+        char_diffs = diff_characters(exp_characters, act_characters)
+        lines.append(f"## Characters ({len(act_characters)} scanned, {len(exp_characters)} expected, {len(char_diffs)} issues)\n")
+
+        if char_diffs:
+            c_field_counts = defaultdict(int)
+            for _, diffs in char_diffs:
+                for field, _, _ in diffs:
+                    if field != "_status":
+                        c_field_counts[field] += 1
+            if c_field_counts:
+                lines.append("### Field summary\n")
+                lines.append("| Field | Count |")
+                lines.append("|-------|-------|")
+                for field, count in sorted(c_field_counts.items(), key=lambda x: -x[1]):
+                    lines.append(f"| {field} | {count} |")
+                lines.append("")
+
+            for key, diffs in char_diffs:
+                status = ""
+                for field, ev, av in diffs:
+                    if field == "_status":
+                        status = f" **{ev}{av}**"
+                diff_fields = [f for f, _, _ in diffs if f != "_status"]
+                diff_summary = ", ".join(diff_fields[:5])
+                if len(diff_fields) > 5:
+                    diff_summary += f" +{len(diff_fields)-5} more"
+
+                lines.append(f"#### {key}{status} — {diff_summary}\n")
+
+                for field, ev, av in diffs:
+                    if field == "_status":
+                        continue
+                    lines.append(f"- **{field}**: expected=`{ev}` actual=`{av}`")
+                lines.append("")
+
     return "\n".join(lines)
 
 
 def main():
     images_dir = "debug_images"
+    no_images = False
 
-    if len(sys.argv) >= 3:
-        actual_path = sys.argv[1]
-        expected_path = sys.argv[2]
-        if len(sys.argv) >= 5 and sys.argv[3] == "--images":
-            images_dir = sys.argv[4]
+    args = sys.argv[1:]
+    if "--no-images" in args:
+        no_images = True
+        args.remove("--no-images")
+
+    if len(args) >= 2:
+        actual_path = args[0]
+        expected_path = args[1]
+        if len(args) >= 4 and args[2] == "--images":
+            images_dir = args[3]
     else:
         actual_path = find_latest_export()
         if actual_path is None:
@@ -592,9 +689,12 @@ def main():
 
     print(f"Actual:   {actual_path}")
     print(f"Expected: {expected_path}")
-    print(f"Images:   {images_dir}/")
+    if no_images:
+        print("Images:   disabled")
+    else:
+        print(f"Images:   {images_dir}/")
 
-    report = generate_report(actual_path, expected_path, images_dir)
+    report = generate_report(actual_path, expected_path, images_dir, no_images=no_images)
 
     output = "diff_report.md"
     with open(output, "w", encoding="utf-8") as f:
