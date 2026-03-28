@@ -29,8 +29,12 @@ pub enum GridEvent {
 pub struct BackpackScanConfig {
     pub delay_grid_item: u64,
     pub delay_scroll: u64,
-    /// Extra delay (ms) after panel load, before capture.
-    /// Allows lock/astral mark animations to finish.
+    /// Total delay (ms) after panel load, before capture.
+    ///
+    /// With two-phase capture enabled (via `needs_retry`), the first capture
+    /// attempt happens at half this value. If the icon state is ambiguous,
+    /// the scanner sleeps the remaining half and re-captures.
+    /// This means the full configured delay is the worst-case total.
     pub delay_after_panel: u64,
 }
 
@@ -173,14 +177,16 @@ impl<'a> BackpackScanner<'a> {
     /// After each page scroll, delivers `GridEvent::PageScrolled`.
     ///
     /// The callback returns `ScanAction::Continue` or `ScanAction::Stop`.
-    pub fn scan_grid<F>(
+    pub fn scan_grid<F, R>(
         &mut self,
         total: usize,
         _config: &BackpackScanConfig,
         start_at: usize,
+        mut needs_retry: R,
         mut callback: F,
     ) where
         F: FnMut(GridEvent) -> ScanAction,
+        R: FnMut(&RgbImage) -> bool,
     {
         let total_row = (total + GRID_COLS - 1) / GRID_COLS;
         let last_row_col = if total % GRID_COLS == 0 { GRID_COLS } else { total % GRID_COLS };
@@ -248,13 +254,19 @@ impl<'a> BackpackScanner<'a> {
                         PANEL_LOAD_TIMEOUT_MS,
                     );
 
-                    // Extra delay for lock/astral mark animations to finish
-                    if _config.delay_after_panel > 0 {
-                        utils::sleep(_config.delay_after_panel as u32);
+                    // Two-phase capture for lock/astral icon animation.
+                    // First attempt at half the configured delay; if icon
+                    // brightness is ambiguous (mid-animation), sleep the
+                    // remaining half and re-capture.
+                    let first_delay = _config.delay_after_panel / 2;
+                    let retry_delay = _config.delay_after_panel - first_delay;
+
+                    if first_delay > 0 {
+                        utils::sleep(first_delay as u32);
                     }
 
                     // Capture and process
-                    let image = match self.ctrl.capture_game() {
+                    let mut image = match self.ctrl.capture_game() {
                         Ok(img) => img,
                         Err(e) => {
                             error!("[backpack] capture failed: {}", e);
@@ -262,6 +274,20 @@ impl<'a> BackpackScanner<'a> {
                             continue;
                         }
                     };
+
+                    // If icon state is ambiguous (mid-animation), wait the
+                    // remaining half of delay_after_panel and re-capture.
+                    if retry_delay > 0 && needs_retry(&image) {
+                        utils::sleep(retry_delay as u32);
+                        image = match self.ctrl.capture_game() {
+                            Ok(img) => img,
+                            Err(e) => {
+                                error!("[backpack] retry capture failed: {}", e);
+                                scanned_count += 1;
+                                continue;
+                            }
+                        };
+                    }
 
                     match callback(GridEvent::Item(scanned_count, image)) {
                         ScanAction::Continue => {}

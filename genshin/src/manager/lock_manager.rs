@@ -149,8 +149,11 @@ impl LockManager {
             };
 
             let mappings = &self.mappings;
+            let retry_scaler = scaler.clone();
 
-            scanner.scan_grid(total, &config, 0, |event| {
+            scanner.scan_grid(total, &config, 0,
+            |image| pixel_utils::is_artifact_icon_ambiguous(image, &retry_scaler),
+            |event| {
                 match event {
                     GridEvent::Item(index, image) => {
                         if yas::utils::is_rmb_down() {

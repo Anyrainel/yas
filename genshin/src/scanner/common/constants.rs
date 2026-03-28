@@ -33,7 +33,7 @@ pub const DEFAULT_DELAY_CHAR_TAB_SWITCH: u64 = 500;
 pub const DEFAULT_DELAY_CHAR_NEXT: u64 = 400;
 pub const DEFAULT_DELAY_INV_TAB_SWITCH: u64 = 400;
 pub const DEFAULT_DELAY_SCROLL: u64 = 200;
-pub const DEFAULT_DELAY_GRID_ITEM: u64 = 60;
+pub const DEFAULT_DELAY_GRID_ITEM: u64 = 100;
 
 // ================================================================
 // Character scanner coordinates (at 1920x1080 base resolution)
@@ -50,13 +50,44 @@ pub const CHAR_TAB_ATTRIBUTES: (f64, f64) = (220.0, 158.0);
 pub const CHAR_TAB_CONSTELLATION: (f64, f64) = (220.0, 368.0);
 pub const CHAR_TAB_TALENTS: (f64, f64) = (170.0, 435.0);
 
-/// Constellation node click positions (x=1695, y = 270 + index*113)
+/// Constellation node click positions for OCR fallback (x=1695, y = 270 + index*113)
 pub const CHAR_CONSTELLATION_X: f64 = 1695.0;
 pub const CHAR_CONSTELLATION_Y_BASE: f64 = 270.0;
 pub const CHAR_CONSTELLATION_Y_STEP: f64 = 113.0;
 
 /// Constellation activate status OCR region
 pub const CHAR_CONSTELLATION_ACTIVATE_RECT: (f64, f64, f64, f64) = (218.0, 1002.0, 82.0, 31.0);
+
+// Constellation icon pixel detection constants.
+// Icons are arranged on an S-curve, each with a unique (cx, cy) position.
+// We sample a ring (not full circle) to avoid the icon center where both
+// active (ability art) and locked (lock icon) have similar brightness.
+// The ring captures the glow (active) vs dark circle edge (locked).
+//
+// Per-position threshold + monotonicity: check all 6 icons, find the first
+// locked one. Constellation = index of first locked node.
+//
+// Accuracy: 100% on 109 test characters (min gap=+55.4, d'=7.14).
+/// Per-node icon centers on the S-curve (base 1920x1080 coords)
+pub const CONSTELLATION_NODES: [(f64, f64); 6] = [
+    (1524.0, 277.0),  // C1
+    (1578.0, 387.0),  // C2
+    (1614.0, 500.0),  // C3
+    (1614.0, 611.0),  // C4
+    (1578.0, 722.0),  // C5
+    (1507.0, 832.0),  // C6
+];
+/// Ring inner radius (skip icon center)
+pub const CONSTELLATION_RING_INNER: i32 = 30;
+/// Ring outer radius (capture glow region)
+pub const CONSTELLATION_RING_OUTER: i32 = 41;
+/// Per-position brightness thresholds (midpoint of min_active and max_locked)
+pub const CONSTELLATION_THRESHOLDS: [f64; 6] = [
+    // Computed from 109 test characters with ring(30,41) sampling
+    // C1: gap=+77.5  C2: gap=+74.5  C3: gap=+71.0
+    // C4: gap=+69.4  C5: gap=+64.2  C6: gap=+55.4
+    85.9, 86.6, 88.8, 93.7, 98.3, 107.3,
+];
 
 /// Talent overview OCR regions (level display on right side of talent list)
 /// Width: 90px to accommodate 2-digit levels (Lv.13) at 1080p.

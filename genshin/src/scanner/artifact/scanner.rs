@@ -1188,13 +1188,14 @@ impl GoodArtifactScanner {
         let scan_config = BackpackScanConfig {
             delay_grid_item: self.config.delay_grid_item,
             delay_scroll: self.config.delay_scroll,
-            delay_after_panel: if self.config.skip_lock_delay { 0 } else { 100 },
+            delay_after_panel: if self.config.skip_lock_delay { 0 } else { self.config.delay_grid_item },
         };
 
         bp.scan_grid(
             total_count as usize,
             &scan_config,
             start_at,
+            |image| pixel_utils::is_artifact_icon_ambiguous(image, &scaler),
             |event| {
                 match event {
                     GridEvent::PageScrolled => ScanAction::Continue,

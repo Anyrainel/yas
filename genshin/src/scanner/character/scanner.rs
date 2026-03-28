@@ -361,6 +361,7 @@ impl GoodCharacterScanner {
     }
 
     /// Click a constellation node and check if it's activated via OCR.
+    /// Used as fallback when pixel detection returns a non-monotonic result.
     fn is_constellation_activated(
         ocr: &dyn ImageToText<RgbImage>,
         ctrl: &mut GenshinGameController,
@@ -375,7 +376,6 @@ impl GoodCharacterScanner {
         let delay = if is_first_click { tab_delay * 3 / 4 } else { tab_delay / 2 };
         utils::sleep(delay as u32);
 
-        // Dump per-constellation-node image
         if let Some(ref ctx) = dump {
             if let Ok(img) = ctrl.capture_game() {
                 ctx.dump_region(
@@ -390,65 +390,51 @@ impl GoodCharacterScanner {
         Ok(text.contains("\u{5DF2}\u{6FC0}\u{6D3B}"))
     }
 
-    /// Debug: capture constellation page screenshot and sample pixel lightness.
-    /// Saves full constellation page + logs lightness at each node position.
-    #[allow(dead_code)]
-    fn debug_constellation_lightness(
-        ctrl: &GenshinGameController,
-        character_name: &str,
-    ) {
-        let image = match ctrl.capture_game() {
-            Ok(im) => im,
-            Err(e) => {
-                warn!("[constellation-debug] capture failed: {}", e);
-                return;
+    /// OCR binary-search constellation count (max 3 clicks). Used as fallback.
+    fn read_constellation_ocr(
+        &self,
+        ocr: &dyn ImageToText<RgbImage>,
+        ctrl: &mut GenshinGameController,
+        dump: &Option<DumpCtx>,
+    ) -> Result<i32> {
+        let td = self.config.tab_delay;
+
+        let c3 = Self::is_constellation_activated(ocr, ctrl, 2, true, td, dump)?;
+        let constellation = if !c3 {
+            let c2 = Self::is_constellation_activated(ocr, ctrl, 1, false, td, dump)?;
+            if !c2 {
+                let c1 = Self::is_constellation_activated(ocr, ctrl, 0, false, td, dump)?;
+                if c1 { 1 } else { 0 }
+            } else {
+                2
+            }
+        } else {
+            let c6 = Self::is_constellation_activated(ocr, ctrl, 5, false, td, dump)?;
+            if c6 {
+                6
+            } else {
+                let c4 = Self::is_constellation_activated(ocr, ctrl, 3, false, td, dump)?;
+                if !c4 {
+                    3
+                } else {
+                    let c5 = Self::is_constellation_activated(ocr, ctrl, 4, false, td, dump)?;
+                    if c5 { 5 } else { 4 }
+                }
             }
         };
 
-        // Save the full constellation page
-        let path = format!("debug_constellation_{}.png", character_name);
-        let _ = image.save(&path);
-        debug!("[constellation-debug] saved: {}", path);
+        // Dismiss the constellation detail popup
+        ctrl.key_press(enigo::Key::Escape);
+        utils::sleep(self.config.tab_delay as u32);
 
-        // Sample lightness at each constellation node position
-        let scaler = &ctrl.scaler;
-        for i in 0..6 {
-            let base_y = CHAR_CONSTELLATION_Y_BASE + i as f64 * CHAR_CONSTELLATION_Y_STEP;
-            let sx = scaler.x(CHAR_CONSTELLATION_X) as u32;
-            let sy = scaler.y(base_y) as u32;
-
-            if sx < image.width() && sy < image.height() {
-                let pixel = image.get_pixel(sx, sy);
-                let r = pixel[0] as f64;
-                let g = pixel[1] as f64;
-                let b = pixel[2] as f64;
-                let lightness = (r + g + b) / 3.0;
-
-                // Also sample a small 5x5 region around the point for average lightness
-                let mut sum = 0.0;
-                let mut count = 0;
-                for dy in 0..5_i32 {
-                    for dx in 0..5_i32 {
-                        let px = (sx as i32 + dx - 2).max(0) as u32;
-                        let py = (sy as i32 + dy - 2).max(0) as u32;
-                        if px < image.width() && py < image.height() {
-                            let p = image.get_pixel(px, py);
-                            sum += (p[0] as f64 + p[1] as f64 + p[2] as f64) / 3.0;
-                            count += 1;
-                        }
-                    }
-                }
-                let avg_lightness = if count > 0 { sum / count as f64 } else { 0.0 };
-
-                debug!(
-                    "[constellation-debug] {} C{}: pixel({},{}) = ({},{},{}) lightness={:.1} avg5x5={:.1}",
-                    character_name, i + 1, sx, sy, pixel[0], pixel[1], pixel[2], lightness, avg_lightness
-                );
-            }
-        }
+        Ok(constellation)
     }
 
-    /// Binary-search constellation count (max 3 clicks).
+    /// Pixel-based constellation detection with OCR fallback on non-monotonic results.
+    ///
+    /// Normal path: capture constellation tab screenshot, check ring brightness at all 6
+    /// icon positions (0 clicks). Falls back to OCR binary search (max 3 clicks) if the
+    /// pixel result is non-monotonic (A-L-A pattern), indicating a detection error.
     fn read_constellation_count(
         &self,
         ocr: &dyn ImageToText<RgbImage>,
@@ -464,47 +450,25 @@ impl GoodCharacterScanner {
         ctrl.click_at(CHAR_TAB_CONSTELLATION.0, CHAR_TAB_CONSTELLATION.1);
         utils::sleep(self.config.tab_delay as u32);
 
-        let td = self.config.tab_delay;
-        let constellation;
+        let image = ctrl.capture_game()?;
 
-        let c3 = Self::is_constellation_activated(ocr, ctrl, 2, true, td, dump)?;
-        if !c3 {
-            let c2 = Self::is_constellation_activated(ocr, ctrl, 1, false, td, dump)?;
-            if !c2 {
-                let c1 = Self::is_constellation_activated(ocr, ctrl, 0, false, td, dump)?;
-                constellation = if c1 { 1 } else { 0 };
-            } else {
-                constellation = 2;
-            }
-        } else {
-            let c6 = Self::is_constellation_activated(ocr, ctrl, 5, false, td, dump)?;
-            if c6 {
-                constellation = 6;
-            } else {
-                let c4 = Self::is_constellation_activated(ocr, ctrl, 3, false, td, dump)?;
-                if !c4 {
-                    constellation = 3;
-                } else {
-                    let c5 = Self::is_constellation_activated(ocr, ctrl, 4, false, td, dump)?;
-                    constellation = if c5 { 5 } else { 4 };
-                }
-            }
-        }
-
-        // Dump the full constellation screen BEFORE dismissing the popup
         if let Some(ref ctx) = dump {
-            if let Ok(img) = ctrl.capture_game() {
-                ctx.dump_region("constellation_screen", &img, (0.0, 0.0, 1920.0, 1080.0), &ctrl.scaler);
-            }
+            ctx.dump_region("constellation_screen", &image, (0.0, 0.0, 1920.0, 1080.0), &ctrl.scaler);
         }
 
-        // Dismiss the constellation detail popup with Escape.
-        // Do NOT click_at(1600, 30) — that hits the mora display and can
-        // trigger unintended navigation.
-        ctrl.key_press(enigo::Key::Escape);
-        utils::sleep(self.config.tab_delay as u32);
+        let (constellation, monotonic) = crate::scanner::common::pixel_utils::detect_constellation_pixel(
+            &image, &ctrl.scaler,
+        );
 
-        Ok(constellation)
+        if monotonic {
+            Ok(constellation)
+        } else {
+            warn!(
+                "[constellation] pixel non-monotonic for {}, falling back to OCR binary search",
+                character_name
+            );
+            self.read_constellation_ocr(ocr, ctrl, dump)
+        }
     }
 
     /// Parse "Lv.X" format from talent overview text.

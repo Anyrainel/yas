@@ -114,7 +114,7 @@ All methods are on `GenshinGameController` (`genshin/src/scanner/common/game_con
 | `scanner.select_tab("artifact", delay_ms)` | Click artifact tab. |
 | `scanner.read_item_count(ocr_model)` | OCR the "X/Y" item count. Returns `Result<(i32, i32)>`. |
 | `scanner.scaler()` | Access the controller's `CoordScaler`. |
-| `scanner.scan_grid(total, config, start_at, callback)` | Iterate grid items. Callback receives `GridEvent::Item(index, image)` or `GridEvent::PageScrolled`. Return `ScanAction::Continue` or `ScanAction::Stop`. |
+| `scanner.scan_grid(total, config, start_at, needs_retry, callback)` | Iterate grid items. `needs_retry` is `FnMut(&RgbImage) -> bool` for two-phase icon detection (e.g., `pixel_utils::is_artifact_icon_ambiguous`). Callback receives `GridEvent::Item(index, image)` or `GridEvent::PageScrolled`. Return `ScanAction::Continue` or `ScanAction::Stop`. |
 
 ### OCR Model Creation
 
