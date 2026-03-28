@@ -5,6 +5,7 @@ dumps/
 .idea/
 /*.json
 **/*.png
+!assets/*.png
 **tmp**
 **/.DS_Store
 *.pyc
