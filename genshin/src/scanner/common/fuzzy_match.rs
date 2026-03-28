@@ -18,6 +18,8 @@ const OCR_CONFUSIONS: &[(&str, &str)] = &[
     ("\u{6726}", "\u{66DA}"), // 朦 → 曚 (朦=月+蒙, 曚=日+蒙, similar structure)
     ("\u{7A1A}", "\u{8599}"), // 稚 → 薙 (薙草之稻光: 稚 and 薙 share 隹 component, similar shape)
     ("\u{96C9}", "\u{8599}"), // 雉 → 薙 (薙=草+雉, OCR may drop 草字头)
+    ("\u{62C9}", "\u{83C8}"), // 拉 → 菈 (菈乌玛: OCR drops 艹 radical, reads 菈 as 拉)
+    ("\u{9E1F}", "\u{4E4C}"), // 鸟 → 乌 (菈乌玛: OCR adds stroke, reads 乌 as 鸟)
 ];
 
 /// Fuzzy match OCR text against a name→key map.
@@ -76,11 +78,33 @@ pub fn fuzzy_match_map(text: &str, map: &HashMap<String, String>) -> Option<Stri
         return None;
     }
 
-    // Try OCR confusion substitutions
+    // Try OCR confusion substitutions (individual)
     for &(from, to) in OCR_CONFUSIONS {
         if cleaned.contains(from) {
             let alt = cleaned.replace(from, to);
             if let Some(val) = map.get(&alt) {
+                return Some(val.clone());
+            }
+        }
+    }
+
+    // Try applying ALL confusion substitutions simultaneously.
+    // Needed when OCR garbles multiple characters (e.g. 菈乌玛 → 拉鸟玛:
+    // 拉→菈 alone gives 菈鸟玛, 鸟→乌 alone gives 拉乌玛 — neither matches).
+    // Single-pass char-by-char avoids cascading issues with bidirectional pairs.
+    {
+        let combined: String = cleaned.chars().map(|c| {
+            let cs: String = c.to_string();
+            for &(from, to) in OCR_CONFUSIONS {
+                if cs == from {
+                    return to.chars().next().unwrap_or(c);
+                }
+            }
+            c
+        }).collect();
+        if combined != cleaned {
+            if let Some(val) = map.get(&combined) {
+                debug!("[fuzzy] combined OCR confusion match: cleaned={:?} → combined={:?} → {:?}", cleaned, combined, val);
                 return Some(val.clone());
             }
         }
@@ -474,6 +498,29 @@ mod tests {
             fuzzy_match_map("乱码之心乱码", &map),
             None,
             "ambiguous LCS should not match"
+        );
+    }
+
+    /// 菈乌玛 misread as 拉鸟玛 — two simultaneous OCR confusions (拉→菈, 鸟→乌).
+    /// Neither individual substitution produces a match; the combined pass is required.
+    #[test]
+    fn test_combined_ocr_confusion_lauoma() {
+        let mut map = HashMap::new();
+        map.insert("菈乌玛".to_string(), "Lauoma".to_string());
+        map.insert("芭芭拉".to_string(), "Barbara".to_string());
+
+        // The exact OCR failure case: "拉鸟玛" needs both 拉→菈 AND 鸟→乌
+        assert_eq!(
+            fuzzy_match_map("拉鸟玛", &map),
+            Some("Lauoma".to_string()),
+            "拉鸟玛 should match 菈乌玛 via combined OCR confusion substitution"
+        );
+
+        // 芭芭拉 must still match correctly (拉→菈 substitution gives 芭芭菈, not in map → falls through)
+        assert_eq!(
+            fuzzy_match_map("芭芭拉", &map),
+            Some("Barbara".to_string()),
+            "芭芭拉 should still match Barbara exactly"
         );
     }
 

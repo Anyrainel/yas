@@ -40,10 +40,17 @@ pub fn show(
 
         ui.horizontal(|ui| {
             ui.label(l.t("端口:", "Port:"));
-            ui.add_enabled(
-                !is_server_running,
-                egui::DragValue::new(&mut state.server_port).range(1024..=65535u16),
-            );
+            let mut port_buf = state.server_port.to_string();
+            let port_edit = egui::TextEdit::singleline(&mut port_buf)
+                .desired_width(50.0)
+                .horizontal_align(egui::Align::RIGHT);
+            if ui.add_enabled(!is_server_running, port_edit).changed() {
+                if let Ok(v) = port_buf.parse::<u16>() {
+                    if v >= 1024 {
+                        state.server_port = v;
+                    }
+                }
+            }
 
             ui.add_space(12.0);
 
@@ -61,7 +68,6 @@ pub fn show(
                 );
             } else {
                 if ui.button(l.t("▶ 启动", "▶ Start")).clicked() {
-                    let _ = yas_genshin::cli::save_config(&state.user_config);
                     state.server_enabled.store(true, Ordering::Relaxed);
                     *server_handle = Some(worker::spawn_server(state));
                 }
@@ -140,11 +146,11 @@ pub fn show(
                     match std::fs::read_to_string(&path) {
                         Ok(json_str) => {
                             log::info!("{}: {}", l.t("加载文件", "Loaded"), path.display());
-                            let _ = yas_genshin::cli::save_config(&state.user_config);
                             *manage_handle = Some(worker::spawn_manage_json(
                                 state.user_config.clone(),
                                 json_str,
                                 state.manage_status.clone(),
+                                l,
                             ));
                         }
                         Err(e) => {

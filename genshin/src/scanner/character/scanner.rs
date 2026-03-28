@@ -22,6 +22,17 @@ use crate::scanner::common::ocr_factory;
 use crate::scanner::common::ocr_pool::OcrPool;
 use crate::scanner::common::stat_parser::level_to_ascension;
 
+/// Extra metadata from scanning a character, used for suspicious-result detection.
+/// Kept separate from `GoodCharacter` (which is the serialized output).
+struct ScanMeta {
+    /// True if `adjust_talents()` hit a raw value < 4 during constellation subtraction.
+    talent_suspicious: bool,
+    /// Raw OCR'd skill level BEFORE constellation/Tartaglia adjustment.
+    raw_skill: i32,
+    /// Raw OCR'd burst level BEFORE constellation/Tartaglia adjustment.
+    raw_burst: i32,
+}
+
 /// Character scanner ported from GOODScanner/lib/character_scanner.js.
 ///
 /// Uses binary-search constellation detection (max 3 clicks),
@@ -229,7 +240,7 @@ impl GoodCharacterScanner {
 
             // Phase 1: clean split (e.g. "9090" → 90/90)
             if let Some((lv, mx)) = Self::try_split_digits(&digits) {
-                warn!("[character] level OCR fallback split: {:?} -> {}/{}", digits, lv, mx);
+                debug!("[character] level OCR fallback split: {:?} -> {}/{}", digits, lv, mx);
                 return Ok(Self::finalize_level(lv, mx));
             }
 
@@ -617,7 +628,7 @@ impl GoodCharacterScanner {
         let click_y = CHAR_TALENT_FIRST_Y + talent_index as f64 * CHAR_TALENT_OFFSET_Y;
         ctrl.click_at(CHAR_TALENT_CLICK_X, click_y);
 
-        let delay = if is_first { tab_delay } else { tab_delay / 2 };
+        let delay = if is_first { tab_delay * 3 / 4 } else { tab_delay / 2 };
         utils::sleep(delay as u32);
 
         let text = Self::ocr_rect(ocr, ctrl, CHAR_TALENT_LEVEL_RECT)?;
@@ -654,8 +665,7 @@ impl GoodCharacterScanner {
     ) -> Result<(i32, i32, i32)> {
         if !skip_tab {
             ctrl.click_at(CHAR_TAB_TALENTS.0, CHAR_TAB_TALENTS.1);
-            // Extra 50ms for the talent overview to fully render
-            utils::sleep(self.config.tab_delay as u32 + 50);
+            utils::sleep(self.config.tab_delay as u32);
         }
 
         let has_special = SPECIAL_BURST_CHARACTERS.contains(&character_name);
@@ -726,7 +736,7 @@ impl GoodCharacterScanner {
                 burst = Self::read_talent_by_click(&ocr_guard, ctrl, burst_index, is_first, td)?;
             }
             ctrl.key_press(enigo::Key::Escape);
-            utils::sleep(500);
+            utils::sleep(td as u32);
         }
 
         Ok((auto, skill, burst))
@@ -748,7 +758,7 @@ impl GoodCharacterScanner {
         first_name: &Option<String>,
         reverse: bool,
         char_index: usize,
-    ) -> Result<(Option<GoodCharacter>, bool)> {
+    ) -> Result<(Option<GoodCharacter>, ScanMeta)> {
         let ocr = ocr_pool.get();
 
         // Name and element are visible from any tab
@@ -759,7 +769,7 @@ impl GoodCharacterScanner {
             None => {
                 if self.config.continue_on_failure {
                     warn!("[character] cannot identify: \u{300C}{}\u{300D}, skipping", raw_text);
-                    return Ok((None, false));
+                    return Ok((None, ScanMeta { talent_suspicious: false, raw_skill: 0, raw_burst: 0 }));
                 }
                 bail!("无法识别角色 / Cannot identify character: \u{300C}{}\u{300D}", raw_text);
             }
@@ -872,7 +882,11 @@ impl GoodCharacterScanner {
                 burst,
             },
             element: good_element,
-        }), talent_suspicious))
+        }), ScanMeta {
+            talent_suspicious,
+            raw_skill: talents.1,
+            raw_burst: talents.2,
+        }))
     }
 
     /// Scan all characters by iterating through the character list.
@@ -886,7 +900,7 @@ impl GoodCharacterScanner {
     /// If `start_at_char > 0`, presses right arrow that many times to
     /// jump to a specific character index before scanning.
     pub fn scan(&self, ctrl: &mut GenshinGameController, start_at_char: usize) -> Result<Vec<GoodCharacter>> {
-        info!("[character] starting scan...");
+        debug!("[character] starting scan...");
         let now = SystemTime::now();
 
         // Create OCR pool — 3 instances for parallel talent overview reads
@@ -907,7 +921,7 @@ impl GoodCharacterScanner {
         let mut screen_opened = false;
         for attempt in 0..3 {
             ctrl.key_press(enigo::Key::Layout('c'));
-            utils::sleep((self.config.open_delay as f64 * 1.5) as u32);
+            utils::sleep(self.config.open_delay as u32);
 
             // Verify the screen opened by reading the name region.
             let ocr = ocr_pool.get();
@@ -932,13 +946,13 @@ impl GoodCharacterScanner {
             debug!("[character] jumping to character index {}...", start_at_char);
             for _ in 0..start_at_char {
                 ctrl.click_at(CHAR_NEXT_POS.0, CHAR_NEXT_POS.1);
-                utils::sleep((self.config.tab_delay / 2).max(100) as u32);
+                utils::sleep((self.config.next_delay / 2).max(100) as u32);
             }
-            utils::sleep(self.config.tab_delay as u32);
+            utils::sleep(self.config.next_delay as u32);
         }
 
         let mut characters: Vec<GoodCharacter> = Vec::new();
-        let mut talent_suspicious_flags: Vec<bool> = Vec::new();
+        let mut scan_metas: Vec<ScanMeta> = Vec::new();
         let mut first_name: Option<String> = None;
         let mut viewed_count = 0;
         let mut consecutive_failures = 0;
@@ -961,7 +975,7 @@ impl GoodCharacterScanner {
             let result = self.scan_single_character(&ocr_pool, ctrl, &first_name, reverse, viewed_count);
 
             match result {
-                Ok((Some(character), talent_sus)) => {
+                Ok((Some(character), meta)) => {
                     if first_name.is_none() {
                         first_name = Some(character.key.clone());
                     }
@@ -969,13 +983,13 @@ impl GoodCharacterScanner {
                         "{} Lv.{} C{} {}/{}/{}{}",
                         character.key, character.level, character.constellation,
                         character.talent.auto, character.talent.skill, character.talent.burst,
-                        if talent_sus { " [talent suspicious]" } else { "" }
+                        if meta.talent_suspicious { " [talent suspicious]" } else { "" }
                     );
                     if self.config.log_progress {
                         debug!("[character] {}", char_msg);
                     }
                     characters.push(character);
-                    talent_suspicious_flags.push(talent_sus);
+                    scan_metas.push(meta);
                     consecutive_failures = 0;
                     pb.set_message(format!("{} scanned — {}", characters.len(), char_msg));
                     pb.tick();
@@ -1015,7 +1029,7 @@ impl GoodCharacterScanner {
 
             // Navigate to next character
             ctrl.click_at(CHAR_NEXT_POS.0, CHAR_NEXT_POS.1);
-            utils::sleep(self.config.tab_delay as u32);
+            utils::sleep(self.config.next_delay as u32);
             reverse = !reverse;
         }
 
@@ -1023,13 +1037,13 @@ impl GoodCharacterScanner {
 
         // Close character screen
         ctrl.key_press(enigo::Key::Escape);
-        utils::sleep(500);
+        utils::sleep(self.config.close_delay as u32);
 
         // Second pass: rescan characters with suspicious results.
         let suspicious_indices: Vec<usize> = characters.iter().enumerate()
             .filter(|(i, c)| {
-                let tsus = talent_suspicious_flags.get(*i).copied().unwrap_or(false);
-                Self::is_character_suspicious(c, tsus)
+                let meta = scan_metas.get(*i);
+                Self::is_character_suspicious(c, meta)
             })
             .map(|(i, c)| {
                 warn!(
@@ -1073,58 +1087,69 @@ impl GoodCharacterScanner {
         Ok(characters)
     }
 
-    /// Maximum base talent level (before constellation bonus) allowed at each level cap.
-    /// Index corresponds to VALID_MAX_LEVELS: [20, 40, 50, 60, 70, 80, 90, 95, 100].
-    /// Cap 95/100 does not raise the talent cap beyond 10.
-    const MAX_TALENT_FOR_CAP: &'static [i32] = &[1, 1, 2, 4, 6, 8, 10, 10, 10];
-
-    /// Get the maximum allowed talent level for a given character level.
-    fn max_talent_for_level(level: i32) -> i32 {
-        // Find the cap at or above the character's level
-        for (i, &cap) in Self::VALID_MAX_LEVELS.iter().enumerate() {
-            if level <= cap {
-                return Self::MAX_TALENT_FOR_CAP[i];
-            }
+    /// Get the maximum allowed base talent level for an ascension phase (0–6).
+    ///
+    /// Ascension phase → level cap → max talent:
+    ///   0 → 20 → 1,  1 → 40 → 1,  2 → 50 → 2,  3 → 60 → 4,
+    ///   4 → 70 → 6,  5 → 80 → 8,  6+ → 90+ → 10
+    fn max_talent_for_ascension(ascension: i32) -> i32 {
+        match ascension {
+            0 => 1,
+            1 => 1,
+            2 => 2,
+            3 => 4,
+            4 => 6,
+            5 => 8,
+            _ => 10,
         }
-        15 // above all caps
     }
 
     /// Check if a scanned character has suspicious results that warrant a rescan.
     ///
-    /// `talent_suspicious` comes from `adjust_talents()` — true if a constellation
-    /// bonus subtraction hit a raw talent value < 4 (impossible if OCR was correct).
-    fn is_character_suspicious(c: &GoodCharacter, talent_suspicious: bool) -> bool {
+    /// Uses `ScanMeta` from `scan_single_character()` which carries:
+    /// - `talent_suspicious`: true if constellation subtraction hit a raw value < 4
+    /// - `raw_skill` / `raw_burst`: pre-adjustment OCR values for E and Q
+    fn is_character_suspicious(c: &GoodCharacter, meta: Option<&ScanMeta>) -> bool {
         // Use the same level check as read_level
         let ascended = false; // conservative — just check the level value itself
         if Self::is_level_suspicious(c.level, ascended) {
             return true;
         }
 
-        // Talent = 1 is suspicious for characters above level 40
+        // Raw E or Q == 1 is suspicious for characters above level 40.
+        // This catches cases where OCR misread the level (e.g., Lv.10 → Lv.1).
+        // We check the RAW (pre-subtraction) values, not the post-constellation values,
+        // because a raw 4 minus C3/C5 bonus of 3 → 1 is perfectly valid.
+        // Auto attack is excluded — many players leave it at 1.
         if c.level >= 40 {
-            if c.talent.auto == 1 || c.talent.skill == 1 || c.talent.burst == 1 {
-                return true;
+            if let Some(m) = meta {
+                if m.raw_skill == 1 || m.raw_burst == 1 {
+                    return true;
+                }
             }
         }
 
-        // Talent levels too high for the scanned level — level OCR likely failed.
-        // E.g., Shenhe reads level=20 but talents 8/13/12 — impossible at cap 20.
-        let max_talent = Self::max_talent_for_level(c.level);
+        // Talent levels too high for the character's ascension phase.
+        // Uses ascension (not raw level) to correctly handle ascended characters.
+        // E.g., Lv.70 ascended (phase 5, cap 80) → max talent 8, not 6.
+        let max_talent = Self::max_talent_for_ascension(c.ascension);
         if c.talent.auto > max_talent || c.talent.skill > max_talent || c.talent.burst > max_talent {
             return true;
         }
 
         // Constellation bonus subtraction hit a raw value < 4
-        if talent_suspicious {
-            return true;
+        if let Some(m) = meta {
+            if m.talent_suspicious {
+                return true;
+            }
         }
 
         false
     }
 
     /// Second pass: reopen character screen, navigate to each suspicious index,
-    /// and rescan level + talents. Only updates the character if the new read
-    /// is strictly better (higher level, or more non-1 talents).
+    /// and rescan level, constellation, and talents. Only updates the character
+    /// if the new read is strictly better.
     #[allow(unused_assignments)]
     fn rescan_suspicious(
         &self,
@@ -1138,7 +1163,7 @@ impl GoodCharacterScanner {
         let mut screen_opened = false;
         for _attempt in 0..3 {
             ctrl.key_press(enigo::Key::Layout('c'));
-            utils::sleep((self.config.open_delay as f64 * 1.5) as u32);
+            utils::sleep(self.config.open_delay as u32);
             let ocr = ocr_pool.get();
             let check = Self::ocr_rect(&ocr, ctrl, CHAR_NAME_RECT).unwrap_or_default();
             if !check.trim().is_empty() {
@@ -1168,28 +1193,24 @@ impl GoodCharacterScanner {
             } else {
                 // Wrapped around — close and reopen to reset to 0
                 ctrl.key_press(enigo::Key::Escape);
-                utils::sleep(500);
+                utils::sleep(self.config.close_delay as u32);
                 ctrl.return_to_main_ui(4);
                 ctrl.key_press(enigo::Key::Layout('c'));
-                utils::sleep((self.config.open_delay as f64 * 1.5) as u32);
+                utils::sleep(self.config.open_delay as u32);
                 current_index = 0;
                 target_idx
             };
 
             for _ in 0..steps {
                 ctrl.click_at(CHAR_NEXT_POS.0, CHAR_NEXT_POS.1);
-                utils::sleep((self.config.tab_delay / 2).max(100) as u32);
+                utils::sleep((self.config.next_delay / 2).max(100) as u32);
             }
             if steps > 0 {
-                utils::sleep(self.config.tab_delay as u32);
+                utils::sleep(self.config.next_delay as u32);
             }
             current_index = target_idx;
 
             let old = &characters[target_idx];
-            info!(
-                "[character] second pass: rescanning index {} ({})",
-                target_idx, old.key
-            );
 
             // Rescan: we're on the attributes tab (default after opening)
             let ocr = ocr_pool.get();
@@ -1199,26 +1220,29 @@ impl GoodCharacterScanner {
                 .unwrap_or((None, None, String::new()));
             if name.as_deref() != Some(&old.key) {
                 warn!(
-                    "[character] second pass: expected {} but got {:?}, skipping",
-                    old.key, name
+                    "[character] rescan #{}: expected {} but got {:?}, skipping",
+                    target_idx, old.key, name
                 );
                 continue;
             }
 
-            // Re-read level
+            // Re-read level (on attributes tab)
             let (new_level, new_ascended) = Self::read_level(&ocr, ctrl)
                 .unwrap_or((old.level, false));
             let new_ascension = level_to_ascension(new_level, new_ascended);
 
-            // Re-read talents
+            // Re-read constellation (navigates to constellation tab, dismisses popup)
+            let new_constellation = self.read_constellation_count(&ocr, ctrl, &old.key, &None, &None)
+                .unwrap_or(old.constellation);
+
+            // Re-read talents (navigates to talents tab)
             drop(ocr);
-            // Navigate to talents tab, read, then back to attributes
             let raw_talents = self.read_talent_levels(ocr_pool, ctrl, &old.key, false)
                 .unwrap_or((old.talent.auto, old.talent.skill, old.talent.burst));
 
-            // Apply talent adjustments (same as first pass)
+            // Apply talent adjustments using the NEW constellation
             let (new_auto, new_skill, new_burst, _new_tsus) =
-                self.adjust_talents(raw_talents.0, raw_talents.1, raw_talents.2, &old.key, old.constellation);
+                self.adjust_talents(raw_talents.0, raw_talents.1, raw_talents.2, &old.key, new_constellation);
 
             // Navigate back to attributes tab for the next character
             ctrl.click_at(CHAR_TAB_ATTRIBUTES.0, CHAR_TAB_ATTRIBUTES.1);
@@ -1226,16 +1250,18 @@ impl GoodCharacterScanner {
 
             // Decide whether to use the new result
             let level_improved = new_level > old.level;
+            let constellation_changed = new_constellation != old.constellation;
             let old_talent_ones = [old.talent.auto, old.talent.skill, old.talent.burst]
                 .iter().filter(|&&v| v == 1).count();
             let new_talent_ones = [new_auto, new_skill, new_burst]
                 .iter().filter(|&&v| v == 1).count();
             let talents_improved = new_talent_ones < old_talent_ones;
 
-            if level_improved || talents_improved {
+            if level_improved || constellation_changed || talents_improved {
                 info!(
-                    "[character] second pass: {} improved: Lv.{}->{} talents {}/{}/{}->{}/{}/{}",
-                    old.key, old.level, new_level,
+                    "[character] rescan #{} {}: Lv.{}->{} C{}->{} {}/{}/{}->{}/{}/{}",
+                    target_idx, old.key, old.level, new_level,
+                    old.constellation, new_constellation,
                     old.talent.auto, old.talent.skill, old.talent.burst,
                     new_auto, new_skill, new_burst
                 );
@@ -1244,22 +1270,26 @@ impl GoodCharacterScanner {
                     c.level = new_level;
                     c.ascension = new_ascension;
                 }
-                if talents_improved {
+                if constellation_changed {
+                    c.constellation = new_constellation;
+                }
+                // Always update talents when constellation changed (talent adjustment depends on it)
+                if talents_improved || constellation_changed {
                     c.talent.auto = new_auto;
                     c.talent.skill = new_skill;
                     c.talent.burst = new_burst;
                 }
             } else {
                 info!(
-                    "[character] second pass: {} no improvement (Lv.{} {}/{}/{})",
-                    old.key, new_level, new_auto, new_skill, new_burst
+                    "[character] rescan #{} {}: no change (Lv.{} C{} {}/{}/{})",
+                    target_idx, old.key, new_level, new_constellation, new_auto, new_skill, new_burst
                 );
             }
         }
 
         // Close character screen
         ctrl.key_press(enigo::Key::Escape);
-        utils::sleep(500);
+        utils::sleep(self.config.close_delay as u32);
     }
 
     /// Debug scan the currently displayed character.

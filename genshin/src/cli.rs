@@ -186,10 +186,20 @@ fn extract_onnxruntime_dll(zip_bytes: &[u8], dest: &std::path::Path) -> Result<(
 // ================================================================
 
 fn default_char_tab_delay() -> u64 { DEFAULT_DELAY_CHAR_TAB_SWITCH }
+fn default_char_next_delay() -> u64 { DEFAULT_DELAY_CHAR_NEXT }
 fn default_open_delay() -> u64 { DEFAULT_DELAY_OPEN_SCREEN }
+fn default_close_delay() -> u64 { DEFAULT_DELAY_CLOSE_SCREEN }
 fn default_grid_delay() -> u64 { DEFAULT_DELAY_GRID_ITEM }
 fn default_scroll_delay() -> u64 { DEFAULT_DELAY_SCROLL }
 fn default_tab_delay() -> u64 { DEFAULT_DELAY_INV_TAB_SWITCH }
+
+fn is_default_char_tab_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_CHAR_TAB_SWITCH }
+fn is_default_char_next_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_CHAR_NEXT }
+fn is_default_open_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_OPEN_SCREEN }
+fn is_default_close_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_CLOSE_SCREEN }
+fn is_default_grid_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_GRID_ITEM }
+fn is_default_scroll_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_SCROLL }
+fn is_default_tab_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_INV_TAB_SWITCH }
 
 /// User config stored in `data/good_config.json`.
 ///
@@ -212,28 +222,34 @@ pub struct GoodUserConfig {
     pub manekina_name: String,
 
     // --- Timing / delay settings ---
+    // Only serialized when user set a value higher than default.
+    // On load, values at or below default are clamped up to default.
 
-    #[serde(default = "default_char_tab_delay")]
+    #[serde(default = "default_char_tab_delay", skip_serializing_if = "is_default_char_tab_delay")]
     pub char_tab_delay: u64,
-    #[serde(default = "default_open_delay")]
+    #[serde(default = "default_char_next_delay", skip_serializing_if = "is_default_char_next_delay")]
+    pub char_next_delay: u64,
+    #[serde(default = "default_open_delay", skip_serializing_if = "is_default_open_delay")]
     pub char_open_delay: u64,
+    #[serde(default = "default_close_delay", skip_serializing_if = "is_default_close_delay")]
+    pub char_close_delay: u64,
 
-    #[serde(default = "default_grid_delay")]
+    #[serde(default = "default_grid_delay", skip_serializing_if = "is_default_grid_delay")]
     pub weapon_grid_delay: u64,
-    #[serde(default = "default_scroll_delay")]
+    #[serde(default = "default_scroll_delay", skip_serializing_if = "is_default_scroll_delay")]
     pub weapon_scroll_delay: u64,
-    #[serde(default = "default_tab_delay")]
+    #[serde(default = "default_tab_delay", skip_serializing_if = "is_default_tab_delay")]
     pub weapon_tab_delay: u64,
-    #[serde(default = "default_open_delay")]
+    #[serde(default = "default_open_delay", skip_serializing_if = "is_default_open_delay")]
     pub weapon_open_delay: u64,
 
-    #[serde(default = "default_grid_delay")]
+    #[serde(default = "default_grid_delay", skip_serializing_if = "is_default_grid_delay")]
     pub artifact_grid_delay: u64,
-    #[serde(default = "default_scroll_delay")]
+    #[serde(default = "default_scroll_delay", skip_serializing_if = "is_default_scroll_delay")]
     pub artifact_scroll_delay: u64,
-    #[serde(default = "default_tab_delay")]
+    #[serde(default = "default_tab_delay", skip_serializing_if = "is_default_tab_delay")]
     pub artifact_tab_delay: u64,
-    #[serde(default = "default_open_delay")]
+    #[serde(default = "default_open_delay", skip_serializing_if = "is_default_open_delay")]
     pub artifact_open_delay: u64,
 
     /// GUI language preference: "zh" or "en".
@@ -254,6 +270,24 @@ impl GoodUserConfig {
             manekina_name: Self::opt(&self.manekina_name),
         }
     }
+
+    /// Clamp all delay values up to their defaults.
+    /// Values at or below the default are reset to the default — only user
+    /// overrides that are *higher* than the default are preserved.
+    fn normalize_delays(&mut self) {
+        self.char_tab_delay = self.char_tab_delay.max(default_char_tab_delay());
+        self.char_next_delay = self.char_next_delay.max(default_char_next_delay());
+        self.char_open_delay = self.char_open_delay.max(default_open_delay());
+        self.char_close_delay = self.char_close_delay.max(default_close_delay());
+        self.weapon_grid_delay = self.weapon_grid_delay.max(default_grid_delay());
+        self.weapon_scroll_delay = self.weapon_scroll_delay.max(default_scroll_delay());
+        self.weapon_tab_delay = self.weapon_tab_delay.max(default_tab_delay());
+        self.weapon_open_delay = self.weapon_open_delay.max(default_open_delay());
+        self.artifact_grid_delay = self.artifact_grid_delay.max(default_grid_delay());
+        self.artifact_scroll_delay = self.artifact_scroll_delay.max(default_scroll_delay());
+        self.artifact_tab_delay = self.artifact_tab_delay.max(default_tab_delay());
+        self.artifact_open_delay = self.artifact_open_delay.max(default_open_delay());
+    }
 }
 
 impl Default for GoodUserConfig {
@@ -264,7 +298,9 @@ impl Default for GoodUserConfig {
             manekin_name: String::new(),
             manekina_name: String::new(),
             char_tab_delay: default_char_tab_delay(),
+            char_next_delay: default_char_next_delay(),
             char_open_delay: default_open_delay(),
+            char_close_delay: default_close_delay(),
             weapon_grid_delay: default_grid_delay(),
             weapon_scroll_delay: default_scroll_delay(),
             weapon_tab_delay: default_tab_delay(),
@@ -286,8 +322,13 @@ pub fn load_config_or_default() -> GoodUserConfig {
         return GoodUserConfig::default();
     }
     match std::fs::read_to_string(&path) {
-        Ok(contents) => match serde_json::from_str(&contents) {
-            Ok(config) => config,
+        Ok(contents) => match serde_json::from_str::<GoodUserConfig>(&contents) {
+            Ok(mut config) => {
+                config.normalize_delays();
+                // Re-save to strip delay entries that are at/below defaults
+                let _ = save_config(&config);
+                config
+            }
             Err(e) => {
                 log::error!(
                     "配置文件解析失败，将使用默认值 / Config parse error (using defaults): {}: {}",
@@ -541,7 +582,9 @@ impl GoodScannerApplication {
             verbose: config.verbose,
             ocr_backend: config.ocr_backend.clone().unwrap_or_else(|| "ppocrv4".to_string()),
             tab_delay: user_config.char_tab_delay,
+            next_delay: user_config.char_next_delay,
             open_delay: user_config.char_open_delay,
+            close_delay: user_config.char_close_delay,
             continue_on_failure: config.continue_on_failure,
             log_progress: config.log_progress,
             dump_images: config.dump_images,

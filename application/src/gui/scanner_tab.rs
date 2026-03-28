@@ -28,96 +28,112 @@ pub fn show(
     ui.separator();
 
     // === Scrollable config area ===
-    egui::ScrollArea::vertical().show(ui, |ui| {
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
         ui.add_space(4.0);
 
-        // === Scan Targets ===
-        ui.strong(l.t("扫描目标", "Scan Targets"));
+        // === Character Names (always visible) ===
+        let names_header = if state.names_need_attention {
+            egui::RichText::new(l.t("⚠ 角色名称", "⚠ Character Names"))
+                .color(egui::Color32::from_rgb(255, 200, 50))
+                .strong()
+        } else {
+            egui::RichText::new(l.t("角色名称", "Character Names")).strong()
+        };
+        ui.label(names_header);
         ui.add_space(2.0);
         ui.add_enabled_ui(!is_scanning, |ui| {
-            ui.checkbox(&mut state.scan_characters, l.t("角色", "Characters"));
-            ui.checkbox(&mut state.scan_weapons, l.t("武器", "Weapons"));
-            ui.checkbox(&mut state.scan_artifacts, l.t("圣遗物", "Artifacts"));
+            if state.names_need_attention {
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 200, 50),
+                    l.t(
+                        "请输入您的游戏内角色名称，然后再次点击开始扫描。",
+                        "Enter your in-game character names, then click Start Scan again.",
+                    ),
+                );
+                ui.add_space(4.0);
+            } else {
+                ui.label(l.t(
+                    "这些角色可在游戏内改名，请填写您实际使用的名字",
+                    "These characters can be renamed in-game. Enter the names you actually use.",
+                ));
+            }
+            ui.add_space(2.0);
+
+            // Two name fields per row using horizontal layouts
+            let total_w = ui.available_width();
+            // Reserve ~70px per label + 24px spacing between pairs
+            let field_w = ((total_w - 70.0 * 2.0 - 24.0) / 2.0).max(80.0);
+            ui.horizontal(|ui| {
+                ui.label(l.t("旅行者", "Traveler"));
+                ui.add(egui::TextEdit::singleline(&mut state.user_config.traveler_name).desired_width(field_w));
+                ui.add_space(16.0);
+                ui.label(l.t("流浪者", "Wanderer"));
+                ui.add(egui::TextEdit::singleline(&mut state.user_config.wanderer_name).desired_width(field_w));
+            });
+            ui.horizontal(|ui| {
+                ui.label(l.t("奇偶·男", "Manekin"));
+                ui.add(egui::TextEdit::singleline(&mut state.user_config.manekin_name).desired_width(field_w));
+                ui.add_space(16.0);
+                ui.label(l.t("奇偶·女", "Manekina"));
+                ui.add(egui::TextEdit::singleline(&mut state.user_config.manekina_name).desired_width(field_w));
+            });
+
+            if state.names_need_attention {
+                let any_filled = !state.user_config.traveler_name.trim().is_empty()
+                    || !state.user_config.wanderer_name.trim().is_empty()
+                    || !state.user_config.manekin_name.trim().is_empty()
+                    || !state.user_config.manekina_name.trim().is_empty();
+                if any_filled {
+                    state.names_need_attention = false;
+                }
+            }
         });
 
         ui.add_space(8.0);
 
-        // === Character Names ===
-        let names_open = state.names_need_attention || !yas_genshin::cli::config_path().exists();
-        let header_text = if state.names_need_attention {
-            egui::RichText::new(l.t("⚠ 角色名称", "⚠ Character Names"))
-                .color(egui::Color32::from_rgb(255, 200, 50))
-        } else {
-            egui::RichText::new(l.t("角色名称", "Character Names"))
-        };
-        let header = egui::CollapsingHeader::new(header_text)
-            .default_open(names_open)
-            .open(if state.names_need_attention { Some(true) } else { None });
-
-        header.show(ui, |ui| {
-            ui.add_enabled_ui(!is_scanning, |ui| {
-                if state.names_need_attention {
-                    ui.colored_label(
-                        egui::Color32::from_rgb(255, 200, 50),
-                        l.t(
-                            "请输入您的游戏内角色名称，或留空使用默认名称，然后再次点击开始扫描。",
-                            "Enter your in-game character names (or leave empty for defaults), then click Start Scan again.",
-                        ),
-                    );
-                    ui.add_space(4.0);
-                } else {
-                    ui.label(l.t(
-                        "自定义名字的角色，留空为默认",
-                        "Custom names for renameable characters (empty = default)",
-                    ));
-                }
-                ui.add_space(2.0);
-                let w = (ui.available_width() - 140.0).max(120.0);
-                egui::Grid::new("names_grid")
-                    .num_columns(2)
-                    .spacing([8.0, 4.0])
-                    .show(ui, |ui| {
-                        name_field(ui, l.t("旅行者", "Traveler"), &mut state.user_config.traveler_name, w);
-                        name_field(ui, l.t("流浪者", "Wanderer"), &mut state.user_config.wanderer_name, w);
-                        name_field(ui, l.t("奇偶·男", "Manekin"), &mut state.user_config.manekin_name, w);
-                        name_field(ui, l.t("奇偶·女", "Manekina"), &mut state.user_config.manekina_name, w);
+        // === Scan Targets (collapsible, horizontal) ===
+        egui::CollapsingHeader::new(l.t("扫描目标", "Scan Targets"))
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.add_enabled_ui(!is_scanning, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut state.scan_characters, l.t("角色", "Characters"));
+                        ui.add_space(12.0);
+                        ui.checkbox(&mut state.scan_weapons, l.t("武器", "Weapons"));
+                        ui.add_space(12.0);
+                        ui.checkbox(&mut state.scan_artifacts, l.t("圣遗物", "Artifacts"));
                     });
-
-                if state.names_need_attention {
-                    let any_filled = !state.user_config.traveler_name.trim().is_empty()
-                        || !state.user_config.wanderer_name.trim().is_empty()
-                        || !state.user_config.manekin_name.trim().is_empty()
-                        || !state.user_config.manekina_name.trim().is_empty();
-                    if any_filled {
-                        state.names_need_attention = false;
-                    }
-                }
+                });
             });
-        });
 
         // === Timing Delays ===
         egui::CollapsingHeader::new(l.t("延迟设置", "Timing Delays"))
             .default_open(false)
             .show(ui, |ui| {
                 ui.add_enabled_ui(!is_scanning, |ui| {
-                    delay_group(ui, "char_delays", l.t("角色", "Character"), &mut [
-                        (l.t("Tab切换", "Tab switch"), &mut state.user_config.char_tab_delay),
-                        (l.t("打开", "Open"), &mut state.user_config.char_open_delay),
-                    ]);
-                    ui.add_space(4.0);
-                    delay_group(ui, "weapon_delays", l.t("武器", "Weapon"), &mut [
-                        (l.t("格子", "Grid"), &mut state.user_config.weapon_grid_delay),
-                        (l.t("滚动", "Scroll"), &mut state.user_config.weapon_scroll_delay),
-                        (l.t("Tab切换", "Tab switch"), &mut state.user_config.weapon_tab_delay),
-                        (l.t("打开", "Open"), &mut state.user_config.weapon_open_delay),
-                    ]);
-                    ui.add_space(4.0);
-                    delay_group(ui, "artifact_delays", l.t("圣遗物", "Artifact"), &mut [
-                        (l.t("格子", "Grid"), &mut state.user_config.artifact_grid_delay),
-                        (l.t("滚动", "Scroll"), &mut state.user_config.artifact_scroll_delay),
-                        (l.t("Tab切换", "Tab switch"), &mut state.user_config.artifact_tab_delay),
-                        (l.t("打开", "Open"), &mut state.user_config.artifact_open_delay),
-                    ]);
+                    // Three delay groups side by side using columns
+                    ui.columns(3, |cols| {
+                        delay_group(&mut cols[0], "char_delays", l.t("角色", "Character"), &mut [
+                            (l.t("面板切换", "Panel switch"), &mut state.user_config.char_tab_delay),
+                            (l.t("切换角色", "Next character"), &mut state.user_config.char_next_delay),
+                            (l.t("打开界面", "Open screen"), &mut state.user_config.char_open_delay),
+                            (l.t("关闭界面", "Close screen"), &mut state.user_config.char_close_delay),
+                        ]);
+                        delay_group(&mut cols[1], "weapon_delays", l.t("武器", "Weapon"), &mut [
+                            (l.t("切换物品", "Switch item"), &mut state.user_config.weapon_grid_delay),
+                            (l.t("翻页", "Page scroll"), &mut state.user_config.weapon_scroll_delay),
+                            (l.t("面板切换", "Panel switch"), &mut state.user_config.weapon_tab_delay),
+                            (l.t("打开背包", "Open backpack"), &mut state.user_config.weapon_open_delay),
+                        ]);
+                        delay_group(&mut cols[2], "artifact_delays", l.t("圣遗物", "Artifact"), &mut [
+                            (l.t("切换物品", "Switch item"), &mut state.user_config.artifact_grid_delay),
+                            (l.t("翻页", "Page scroll"), &mut state.user_config.artifact_scroll_delay),
+                            (l.t("面板切换", "Panel switch"), &mut state.user_config.artifact_tab_delay),
+                            (l.t("打开背包", "Open backpack"), &mut state.user_config.artifact_open_delay),
+                        ]);
+                    });
                 });
             });
 
@@ -126,21 +142,27 @@ pub fn show(
             .default_open(false)
             .show(ui, |ui| {
                 ui.add_enabled_ui(!is_scanning, |ui| {
-                    ui.checkbox(&mut state.verbose, l.t("详细信息", "Verbose"));
-                    ui.checkbox(&mut state.continue_on_failure, l.t("失败继续", "Continue on failure"));
-                    ui.checkbox(&mut state.dump_images, l.t("保存OCR截图", "Dump OCR images"));
-                    ui.checkbox(
-                        &mut state.weapon_skip_delay,
-                        l.t("跳过武器面板等待（更快但检测不太准）", "Skip weapon panel delay (faster, less accurate)"),
-                    );
-                    ui.checkbox(
-                        &mut state.artifact_skip_delay,
-                        l.t("跳过圣遗物面板等待（更快但检测不太准）", "Skip artifact panel delay (faster, less accurate)"),
-                    );
+                    // Checkboxes in a flowing horizontal layout
+                    ui.horizontal_wrapped(|ui| {
+                        ui.checkbox(&mut state.verbose, l.t("详细信息", "Verbose"));
+                        ui.checkbox(&mut state.continue_on_failure, l.t("失败继续", "Continue on failure"));
+                        ui.checkbox(&mut state.dump_images, l.t("保存OCR截图", "Dump OCR images"));
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        ui.checkbox(
+                            &mut state.weapon_skip_delay,
+                            l.t("跳过武器面板等待", "Skip weapon panel delay"),
+                        );
+                        ui.checkbox(
+                            &mut state.artifact_skip_delay,
+                            l.t("跳过圣遗物面板等待", "Skip artifact panel delay"),
+                        );
+                    });
 
                     ui.add_space(4.0);
-                    ui.label(l.t("最大扫描数 (0 = 全部):", "Max scan count (0 = all):"));
                     ui.horizontal(|ui| {
+                        ui.label(l.t("最大扫描数 (0=全部):", "Max count (0=all):"));
+                        ui.add_space(8.0);
                         ui.label(l.t("角色:", "Char:"));
                         max_count_field(ui, &mut state.char_max_count);
                         ui.add_space(8.0);
@@ -197,9 +219,8 @@ fn action_bar(
                     && state.user_config.wanderer_name.trim().is_empty()
                     && state.user_config.manekin_name.trim().is_empty()
                     && state.user_config.manekina_name.trim().is_empty();
-                let first_run = !yas_genshin::cli::config_path().exists();
 
-                if all_empty && first_run && !state.names_need_attention {
+                if all_empty && !state.names_need_attention {
                     state.names_need_attention = true;
                     log::warn!("{}", l.t(
                         "请先确认角色名称配置",
@@ -207,15 +228,10 @@ fn action_bar(
                     ));
                 } else {
                     state.names_need_attention = false;
+                    // Force immediate save before scanning (don't wait for debounce)
                     let _ = yas_genshin::cli::save_config(&state.user_config);
+                    state.config_dirty_since = None;
                     *scan_handle = Some(worker::spawn_scan(state));
-                }
-            }
-
-            if ui.button(l.t("💾 保存配置", "💾 Save Config")).clicked() {
-                match yas_genshin::cli::save_config(&state.user_config) {
-                    Ok(()) => log::info!("{}", l.t("配置已保存", "Config saved")),
-                    Err(e) => log::error!("{}: {}", l.t("保存失败", "Save failed"), e),
                 }
             }
         }
@@ -233,12 +249,6 @@ fn action_bar(
     }
 }
 
-fn name_field(ui: &mut egui::Ui, label: &str, value: &mut String, width: f32) {
-    ui.label(label);
-    ui.add(egui::TextEdit::singleline(value).desired_width(width));
-    ui.end_row();
-}
-
 fn delay_group(ui: &mut egui::Ui, id: &str, category: &str, fields: &mut [(&str, &mut u64)]) {
     ui.strong(category);
     egui::Grid::new(id)
@@ -247,24 +257,41 @@ fn delay_group(ui: &mut egui::Ui, id: &str, category: &str, fields: &mut [(&str,
         .show(ui, |ui| {
             for (label, value) in fields.iter_mut() {
                 ui.label(format!("  {} (ms):", label));
-                let mut v = **value as i64;
-                if ui
-                    .add(egui::DragValue::new(&mut v).range(0..=5000).speed(10))
-                    .changed()
-                {
-                    **value = v.max(0) as u64;
-                }
+                num_input_u64(ui, value, 60.0);
                 ui.end_row();
             }
         });
 }
 
 fn max_count_field(ui: &mut egui::Ui, value: &mut usize) {
-    let mut v = *value as i64;
-    if ui
-        .add(egui::DragValue::new(&mut v).range(0..=2000).speed(1))
-        .changed()
-    {
-        *value = v.max(0) as usize;
+    let mut buf = value.to_string();
+    let response = ui.add(
+        egui::TextEdit::singleline(&mut buf)
+            .desired_width(40.0)
+            .horizontal_align(egui::Align::RIGHT),
+    );
+    if response.changed() {
+        if let Ok(v) = buf.parse::<usize>() {
+            *value = v.min(2000);
+        } else if buf.is_empty() {
+            *value = 0;
+        }
+    }
+}
+
+/// Numeric text input for u64 values (no drag behavior).
+fn num_input_u64(ui: &mut egui::Ui, value: &mut u64, width: f32) {
+    let mut buf = value.to_string();
+    let response = ui.add(
+        egui::TextEdit::singleline(&mut buf)
+            .desired_width(width)
+            .horizontal_align(egui::Align::RIGHT),
+    );
+    if response.changed() {
+        if let Ok(v) = buf.parse::<u64>() {
+            *value = v.min(5000);
+        } else if buf.is_empty() {
+            *value = 0;
+        }
     }
 }

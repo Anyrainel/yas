@@ -145,6 +145,23 @@ All help text is bilingual (Chinese + English). Flags are grouped into four sect
 - GOOD v3 format spec: keys use PascalCase (e.g., `"SkywardHarp"`, `"Furina"`)
 - The `data/` directory (gitignored) caches remote mapping files
 
+## Fuzzy Matching (`fuzzy_match.rs`)
+
+5-tier fallback for matching OCR text against name→key maps:
+
+1. **OCR confusion substitution** — char-by-char replacement of known misreads (e.g., 稚→薙, 拉→菈). Tries each pair individually, then applies ALL applicable substitutions simultaneously (needed when OCR garbles multiple chars, e.g. 菈乌玛→拉鸟玛 requires both 拉→菈 and 鸟→乌).
+2. **Exact match** on cleaned/normalized text
+3. **Substring match** (both directions: OCR added noise, or OCR truncated)
+4. **Levenshtein distance** (30% threshold, char-level for CJK)
+5. **LCS uniqueness fallback** (≥2 shared CJK chars, unique to one candidate)
+
+### Adding OCR Confusion Pairs
+
+In `OCR_CONFUSIONS` array. Rules:
+- Only add `(wrong, correct)` where `wrong` does NOT appear as a standalone char in any legitimate name — otherwise exact match on that name would never be reached (the substitution would mangle it). Even if the substitution doesn't match, it wastes a lookup. Chars with collisions (菈↔莱, 鹮↔鹤/环) rely on Tier 4/5 instead.
+- All current pairs are single-char to single-char. The combined pass assumes this.
+- The combined pass applies all substitutions in one char-by-char sweep, avoiding cascading issues with bidirectional pairs (e.g., 茲↔兹).
+
 ## Artifact Scanner Details
 
 ### Dual-Engine OCR Pipeline

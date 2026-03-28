@@ -409,7 +409,7 @@ impl GoodWeaponScanner {
         skip_open_backpack: bool,
         start_at: usize,
     ) -> Result<Vec<GoodWeapon>> {
-        info!("[weapon] starting scan...");
+        debug!("[weapon] starting scan...");
         let now = SystemTime::now();
 
         if !skip_open_backpack {
@@ -456,7 +456,7 @@ impl GoodWeaponScanner {
             info!("[weapon] total: {} (capped to {} by max_count={})", total_count, capped, self.config.max_count);
             capped
         } else {
-            info!("[weapon] total: {}", total_count);
+            debug!("[weapon] total: {}", total_count);
             total_count
         };
 

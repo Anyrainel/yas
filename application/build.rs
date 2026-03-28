@@ -8,6 +8,7 @@ fn main() {
             res.set_ar_path("x86_64-w64-mingw32-ar");
             res.set_windres_path("x86_64-w64-mingw32-windres");
         }
+        res.set_icon("../assets/icon.ico");
         res.set_manifest_file("../assets/manifest.xml");
         res.compile().unwrap();
     }

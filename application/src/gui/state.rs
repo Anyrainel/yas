@@ -1,5 +1,6 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use yas_genshin::cli::{GoodUserConfig, ScanCoreConfig};
 
@@ -72,6 +73,11 @@ pub struct AppState {
     /// Forces the Character Names section open with a warning.
     pub names_need_attention: bool,
 
+    /// Snapshot of user_config for change detection (debounced auto-save).
+    pub config_snapshot: String,
+    /// When Some, a config change was detected and save is pending after 300ms.
+    pub config_dirty_since: Option<Instant>,
+
     // --- Scanner task ---
     pub scan_status: Arc<Mutex<TaskStatus>>,
 
@@ -91,6 +97,7 @@ impl AppState {
     pub fn new() -> Self {
         let user_config = yas_genshin::cli::load_config_or_default();
         let lang = Lang::from_str(&user_config.lang);
+        let config_snapshot = serde_json::to_string(&user_config).unwrap_or_default();
         Self {
             lang,
             user_config,
@@ -107,6 +114,8 @@ impl AppState {
             weapon_skip_delay: false,
             artifact_skip_delay: false,
             names_need_attention: false,
+            config_snapshot,
+            config_dirty_since: None,
             scan_status: Arc::new(Mutex::new(TaskStatus::Idle)),
             server_port: 8765,
             server_enabled: Arc::new(AtomicBool::new(true)),
@@ -119,6 +128,23 @@ impl AppState {
     /// Shorthand for language selection.
     pub fn t<'a>(&self, zh: &'a str, en: &'a str) -> &'a str {
         self.lang.t(zh, en)
+    }
+
+    /// Check if user_config changed, and if so, schedule a debounced save.
+    /// Call this once per frame from the main update loop.
+    pub fn auto_save_tick(&mut self) {
+        let current = serde_json::to_string(&self.user_config).unwrap_or_default();
+        if current != self.config_snapshot {
+            // Config changed — start/reset the debounce timer
+            self.config_dirty_since = Some(Instant::now());
+            self.config_snapshot = current;
+        }
+        if let Some(since) = self.config_dirty_since {
+            if since.elapsed() >= std::time::Duration::from_millis(300) {
+                let _ = yas_genshin::cli::save_config(&self.user_config);
+                self.config_dirty_since = None;
+            }
+        }
     }
 
     /// Build a ScanCoreConfig from current UI state.

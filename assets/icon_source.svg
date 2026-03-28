@@ -1,0 +1,21 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="gradG" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3B82F6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#8B5CF6;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- G letter with padding: stroke extends 34px each side from path center.
+       Path bbox roughly (97,82)-(374,414). With stroke: (63,48)-(408,448).
+       All within 512x512 with comfortable margins. -->
+  <path d="M 374 100
+           A 160 160 0 1 0 374 370
+           L 374 240
+           L 262 240"
+        fill="none"
+        stroke="url(#gradG)"
+        stroke-width="68"
+        stroke-linecap="round"
+        stroke-linejoin="round"/>
+</svg>

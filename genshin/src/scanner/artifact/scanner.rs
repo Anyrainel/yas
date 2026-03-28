@@ -3,7 +3,7 @@ use std::time::SystemTime;
 
 use anyhow::{bail, Result};
 use image::{GenericImageView, RgbImage};
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use regex::Regex;
 
 use yas::ocr::ImageToText;
@@ -514,7 +514,7 @@ impl GoodArtifactScanner {
         // 0. Detect rarity — stop on 3-star or below
         let rarity = pixel_utils::detect_artifact_rarity(image, scaler);
         if rarity <= 3 {
-            info!("[artifact] detected {}* item, stopping", rarity);
+            debug!("[artifact] detected {}* item, stopping", rarity);
             return Ok(ArtifactScanResult::Stop);
         }
 
@@ -1056,7 +1056,7 @@ impl GoodArtifactScanner {
         skip_open_backpack: bool,
         start_at: usize,
     ) -> Result<Vec<GoodArtifact>> {
-        info!("[artifact] starting scan...");
+        debug!("[artifact] starting scan...");
         let now = SystemTime::now();
 
         if !skip_open_backpack {
@@ -1103,7 +1103,7 @@ impl GoodArtifactScanner {
             info!("[artifact] total: {} (capped to {} by max_count={})", total_count, capped, self.config.max_count);
             capped
         } else {
-            info!("[artifact] total: {}", total_count);
+            debug!("[artifact] total: {}", total_count);
             total_count
         };
 
@@ -1132,7 +1132,7 @@ impl GoodArtifactScanner {
             move || ocr_factory::create_ocr_model(&substat_backend),
             pool_size,
         )?);
-        info!("[artifact] OCR pool: {} instances (level_engine={}, general_engine={})",
+        debug!("[artifact] OCR pool: {} instances (level_engine={}, general_engine={})",
             pool_size, self.config.ocr_backend, self.config.substat_ocr_backend);
 
         // Shared context for worker threads
@@ -1152,7 +1152,7 @@ impl GoodArtifactScanner {
                 // Note: returning Err with a special message to signal stop.
                 let rarity = pixel_utils::detect_artifact_rarity(&work_item.image, &worker_scaler);
                 if rarity <= 3 {
-                    info!("[artifact] detected {}* item at index {}, signaling stop", rarity, work_item.index);
+                    debug!("[artifact] detected {}* item at index {}, signaling stop", rarity, work_item.index);
                     // Signal stop via the worker handle's AtomicBool
                     return Ok(None);
                 }
@@ -1207,7 +1207,7 @@ impl GoodArtifactScanner {
                         // Quick rarity check on main thread to stop early
                         let rarity = pixel_utils::detect_artifact_rarity(&image, &scaler);
                         if rarity <= 3 {
-                            info!("[artifact] detected {}* item at idx={}, stopping capture", rarity, idx);
+                            debug!("[artifact] detected {}* item at idx={}, stopping capture", rarity, idx);
                             return ScanAction::Stop;
                         }
 

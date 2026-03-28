@@ -17,10 +17,14 @@ pub fn run_gui() {
     let logger = log_bridge::GuiLogger::new(state.log_lines.clone(), 2000);
     logger.init();
 
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon_64.png"))
+        .expect("Failed to load window icon");
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([720.0, 600.0])
-            .with_min_inner_size([600.0, 400.0]),
+            .with_min_inner_size([600.0, 400.0])
+            .with_icon(std::sync::Arc::new(icon)),
         ..Default::default()
     };
 
@@ -63,6 +67,9 @@ impl GuiApp {
 
 impl eframe::App for GuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Debounced auto-save: check if config changed and save after 300ms
+        self.state.auto_save_tick();
+
         let l = self.state.lang;
 
         // Top bar with tabs + language toggle
@@ -71,12 +78,12 @@ impl eframe::App for GuiApp {
                 ui.selectable_value(
                     &mut self.active_tab,
                     ActiveTab::Scanner,
-                    l.t("扫描器", "Scanner"),
+                    egui::RichText::new(l.t("扫描器", "Scanner")).size(20.0),
                 );
                 ui.selectable_value(
                     &mut self.active_tab,
                     ActiveTab::Manager,
-                    l.t("管理器", "Manager"),
+                    egui::RichText::new(l.t("管理器", "Manager")).size(20.0),
                 );
 
                 // Right-aligned language toggle
@@ -85,14 +92,12 @@ impl eframe::App for GuiApp {
                         Lang::Zh => "EN",
                         Lang::En => "中",
                     };
-                    if ui.small_button(label).clicked() {
+                    if ui.button(egui::RichText::new(label).size(16.0)).clicked() {
                         self.state.lang = match l {
                             Lang::Zh => Lang::En,
                             Lang::En => Lang::Zh,
                         };
-                        // Persist
                         self.state.user_config.lang = self.state.lang.to_str().to_string();
-                        let _ = yas_genshin::cli::save_config(&self.state.user_config);
                     }
                 });
             });
@@ -101,7 +106,7 @@ impl eframe::App for GuiApp {
         // Bottom panel: shared log area
         egui::TopBottomPanel::bottom("logs")
             .min_height(120.0)
-            .default_height(180.0)
+            .default_height(300.0)
             .resizable(true)
             .show(ctx, |ui| {
                 log_panel::show(ui, &self.state);
