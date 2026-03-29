@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use clap::{command, ArgMatches, Args, FromArgMatches};
-use log::{debug, info, warn};
+use log::{debug, info};
 use serde::{Deserialize, Serialize};
 
 use yas::game_info::{GameInfo, GameInfoBuilder};
@@ -87,7 +87,7 @@ fn download_onnxruntime_inner(dll_path: &std::path::Path) -> Result<()> {
             Ok(response) => {
                 if !response.status().is_success() {
                     last_error = format!("HTTP {}", response.status());
-                    warn!("源 {} 失败 / Source {} failed: {}", i + 1, i + 1, last_error);
+                    info!("源 {} 失败 / Source {} failed: {}", i + 1, i + 1, last_error);
                     continue;
                 }
                 match response.bytes() {
@@ -104,7 +104,7 @@ fn download_onnxruntime_inner(dll_path: &std::path::Path) -> Result<()> {
                             }
                             Err(e) => {
                                 last_error = format!("{}", e);
-                                warn!("解压失败 / Extract failed: {}", last_error);
+                                info!("解压失败 / Extract failed: {}", last_error);
                                 let _ = std::fs::remove_file(dll_path);
                                 continue;
                             }
@@ -112,14 +112,14 @@ fn download_onnxruntime_inner(dll_path: &std::path::Path) -> Result<()> {
                     }
                     Err(e) => {
                         last_error = format!("{}", e);
-                        warn!("下载失败 / Download failed: {}", last_error);
+                        info!("下载失败 / Download failed: {}", last_error);
                         continue;
                     }
                 }
             }
             Err(e) => {
                 last_error = format!("{}", e);
-                warn!("连接失败 / Connection failed: {}", last_error);
+                info!("连接失败 / Connection failed: {}", last_error);
                 continue;
             }
         }

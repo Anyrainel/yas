@@ -209,4 +209,41 @@ impl JobState {
             result: Some(result),
         }
     }
+
+    /// Lightweight JSON for polling — excludes the full result payload.
+    ///
+    /// Returns state + jobId + progress (when running) or summary (when completed).
+    /// The full result is only available via `GET /result`.
+    ///
+    /// 轻量级 JSON 用于轮询——不包含完整结果。完整结果通过 GET /result 获取。
+    pub fn status_json(&self) -> String {
+        // jobId is always a UUID v4 (hex + hyphens), safe to embed directly.
+        match self.state {
+            JobPhase::Idle => r#"{"state":"idle"}"#.to_string(),
+            JobPhase::Running => {
+                let job_id = self.job_id.as_deref().unwrap_or("");
+                if let Some(ref p) = self.progress {
+                    format!(
+                        r#"{{"state":"running","jobId":"{}","progress":{{"completed":{},"total":{}}}}}"#,
+                        job_id, p.completed, p.total
+                    )
+                } else {
+                    format!(r#"{{"state":"running","jobId":"{}"}}"#, job_id)
+                }
+            }
+            JobPhase::Completed => {
+                let job_id = self.job_id.as_deref().unwrap_or("");
+                if let Some(ref r) = self.result {
+                    let s = &r.summary;
+                    format!(
+                        r#"{{"state":"completed","jobId":"{}","summary":{{"total":{},"success":{},"already_correct":{},"not_found":{},"errors":{},"aborted":{}}}}}"#,
+                        job_id, s.total, s.success, s.already_correct,
+                        s.not_found, s.errors, s.aborted
+                    )
+                } else {
+                    format!(r#"{{"state":"completed","jobId":"{}"}}"#, job_id)
+                }
+            }
+        }
+    }
 }

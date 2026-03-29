@@ -163,7 +163,7 @@ impl GoodCharacterScanner {
             return Ok((name, element, text));
         }
 
-        warn!("[character] first name match failed: \u{300C}{}\u{300D}, retrying...", text);
+        debug!("[character] first name match failed: \u{300C}{}\u{300D}, retrying...", text);
         utils::sleep(1000);
 
         // Retry: v5 first, then v4
@@ -179,7 +179,7 @@ impl GoodCharacterScanner {
         let text2 = Self::ocr_rect(ocr, ctrl, CHAR_NAME_RECT)?;
         let (name2, element2) = self.parse_name_and_element(&text2);
         if name2.is_none() {
-            warn!("[character] second name match failed: \u{300C}{}\u{300D}", text2);
+            debug!("[character] second name match failed: \u{300C}{}\u{300D}", text2);
         }
         Ok((name2, element2, text2))
     }
@@ -287,7 +287,7 @@ impl GoodCharacterScanner {
                     }
                 }
                 if let Some((lv, mx, idx, _)) = best_noise {
-                    warn!(
+                    debug!(
                         "[character] level OCR noise-remove split: {:?} (remove idx {}) -> {}/{}",
                         digits, idx, lv, mx
                     );
@@ -300,7 +300,7 @@ impl GoodCharacterScanner {
                 if digits.len() >= len {
                     if let Ok(lv) = digits[..len].parse::<i32>() {
                         if (1..=100).contains(&lv) {
-                            warn!("[character] level OCR partial extract: {:?} -> {}", digits, lv);
+                            debug!("[character] level OCR partial extract: {:?} -> {}", digits, lv);
                             return Ok((lv, false));
                         }
                     }
@@ -314,7 +314,7 @@ impl GoodCharacterScanner {
             let ts = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs();
             let path = format!("debug_level_fail_{}.png", ts);
             let _ = im.save(&path);
-            warn!("[character] saved failed level region to {}", path);
+            info!("[character] saved failed level region to {}", path);
         }
         Ok((1, false))
     }
@@ -373,7 +373,7 @@ impl GoodCharacterScanner {
 
         if Self::is_level_suspicious(level, ascended) {
             let max_level = Self::derive_max_level(level, ascended);
-            warn!(
+            info!(
                 "[character] level {} (max={}, ascended={}) looks suspicious, will rescan in second pass",
                 level, max_level, ascended
             );
@@ -485,7 +485,7 @@ impl GoodCharacterScanner {
         if monotonic {
             Ok(constellation)
         } else {
-            warn!(
+            debug!(
                 "[constellation] pixel non-monotonic for {}, falling back to OCR binary search",
                 character_name
             );
@@ -702,7 +702,7 @@ impl GoodCharacterScanner {
             if auto_lv == 0 { missing.push("auto"); }
             if skill_lv == 0 { missing.push("skill"); }
             if burst_lv == 0 { missing.push("burst"); }
-            warn!(
+            debug!(
                 "[character] talent overview failed for: {}, using click fallback",
                 missing.join("/")
             );
@@ -1035,7 +1035,7 @@ impl GoodCharacterScanner {
                 Self::is_character_suspicious(c, meta)
             })
             .map(|(i, c)| {
-                warn!(
+                info!(
                     "[character] suspicious result at index {}: {} Lv.{} A{} C{} {}/{}/{}",
                     i, c.key, c.level, c.ascension, c.constellation,
                     c.talent.auto, c.talent.skill, c.talent.burst

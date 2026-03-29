@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use log::{debug, info, warn};
+use log::{debug, info};
 use serde::Deserialize;
 
 /// Asset filename to look for in each release.
@@ -135,7 +135,7 @@ fn get_tag_via_api() -> Option<String> {
     if parse_calver_tag(&release.tag_name).is_some() {
         Some(release.tag_name)
     } else {
-        warn!(
+        debug!(
             "无法解析版本号 / Cannot parse release tag: {}",
             release.tag_name
         );
@@ -325,7 +325,7 @@ pub fn download_and_replace(download_url: &str) -> Result<PathBuf> {
                     if bytes.get(..2) != Some(b"MZ") {
                         last_error =
                             "下载文件不是有效的exe / Not a valid PE executable".into();
-                        warn!("{}", last_error);
+                        info!("{}", last_error);
                         continue;
                     }
                     if bytes.len() < MIN_EXE_SIZE {
@@ -336,7 +336,7 @@ pub fn download_and_replace(download_url: &str) -> Result<PathBuf> {
                             bytes.len(),
                             MIN_EXE_SIZE,
                         );
-                        warn!("{}", last_error);
+                        info!("{}", last_error);
                         continue;
                     }
 
@@ -362,12 +362,12 @@ pub fn download_and_replace(download_url: &str) -> Result<PathBuf> {
                 }
                 Err(e) => {
                     last_error = format!("{}", e);
-                    warn!("下载失败 / Download failed: {}", last_error);
+                    info!("下载失败 / Download failed: {}", last_error);
                 }
             },
             Ok(resp) => {
                 last_error = format!("HTTP {}", resp.status());
-                warn!(
+                info!(
                     "源 {} 失败 / Source {} failed: {}",
                     i + 1,
                     i + 1,
@@ -376,7 +376,7 @@ pub fn download_and_replace(download_url: &str) -> Result<PathBuf> {
             }
             Err(e) => {
                 last_error = format!("{}", e);
-                warn!("连接失败 / Connection failed: {}", last_error);
+                info!("连接失败 / Connection failed: {}", last_error);
             }
         }
     }

@@ -126,7 +126,7 @@ pub fn detect_dark_icon(
     let d1 = is_pixel_dark(image, scaler, x1, y1);
     let d2 = is_pixel_dark(image, scaler, x2, y2);
     if d1 != d2 {
-        log::error!(
+        log::debug!(
             "[{}] detection inconsistent: ({},{})={} ({},{})={}",
             label, x1, y1, d1, x2, y2, d2
         );
@@ -439,7 +439,7 @@ pub fn detect_constellation_pixel(image: &RgbImage, scaler: &CoordScaler) -> (i3
 
     let det_str: String = active.iter().map(|&a| if a { 'A' } else { 'L' }).collect();
     if non_monotonic {
-        log::warn!(
+        log::debug!(
             "[constellation-pixel] NON-MONOTONIC: [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{}",
             det_str,
             brightnesses[0], brightnesses[1], brightnesses[2],

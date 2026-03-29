@@ -215,7 +215,7 @@ impl ImageToText<RgbImage> for PPOCRModel {
                     out_of_bounds_count += 1;
                     if out_of_bounds_count == 1 {
                         // 只在第一次越界时记录详细信息
-                        log::warn!("PaddleOCR 索引越界: index={}, 有效范围=[1, {}], 位置={}, 已跳过该字符", 
+                        log::debug!("PaddleOCR 索引越界: index={}, 有效范围=[1, {}], 位置={}, 已跳过该字符",
                                    index, self.index_to_word.len(), _pos);
                     }
                 } else {
@@ -229,7 +229,7 @@ impl ImageToText<RgbImage> for PPOCRModel {
         }
         
         if out_of_bounds_count > 0 {
-            log::warn!("PaddleOCR 本次识别共有 {} 个字符索引越界被跳过，最终识别结果: '{}'", out_of_bounds_count, s);
+            log::debug!("PaddleOCR 本次识别共有 {} 个字符索引越界被跳过，最终识别结果: '{}'", out_of_bounds_count, s);
         }
         
         // log::info!("[OCR调试] 最终识别结果: {}", s);

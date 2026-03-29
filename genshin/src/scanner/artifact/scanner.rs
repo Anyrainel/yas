@@ -675,11 +675,11 @@ impl GoodArtifactScanner {
                         }]);
                         did_extend = true;
                     } else if config.verbose {
-                        warn!("[artifact] sub[{}] rescue: found key={} but no valid number from raw 「{}」/「{}」",
+                        info!("[artifact] sub[{}] rescue: found key={} but no valid number from raw 「{}」/「{}」",
                             i, key, raw_texts[0].trim(), raw_texts[1].trim());
                     }
                 } else if config.verbose {
-                    warn!("[artifact] sub[{}] no candidates, no key found in raw OCR 「{}」/「{}」",
+                    info!("[artifact] sub[{}] no candidates, no key found in raw OCR 「{}」/「{}」",
                         i, raw_texts[0].trim(), raw_texts[1].trim());
                 }
             }
@@ -715,7 +715,7 @@ impl GoodArtifactScanner {
         };
         let non_empty_count = solver_candidates.iter().filter(|c| !c.is_empty()).count();
         if non_empty_count < min_required {
-            warn!("[artifact] {}* lv{} has only {} substat lines (expected ≥{}), retrying failed lines with fallback engine + shifts",
+            info!("[artifact] {}* lv{} has only {} substat lines (expected ≥{}), retrying failed lines with fallback engine + shifts",
                 rarity, level, non_empty_count, min_required);
 
             // Ensure we have exactly 4 slots (pad if the loop broke early on stop marker)
@@ -915,7 +915,7 @@ impl GoodArtifactScanner {
         //    c) Fallback: try the legacy Y positions (set_name_base_y - offset)
         let stat_count = (substats.len() + unactivated_substats.len()).clamp(1, 4);
         if stat_count < 4 && rarity == 5 && config.verbose {
-            warn!("[artifact] 5* only identified {} substats", stat_count);
+            info!("[artifact] 5* only identified {} substats", stat_count);
         }
 
         let mut set_key: Option<String> = None;
@@ -1129,7 +1129,7 @@ impl GoodArtifactScanner {
 
         // If count is 0, try reopening backpack (handles bad state after prior scan)
         let total_count = if current_count == 0 {
-            warn!("[artifact] count=0, reopening backpack...");
+            info!("[artifact] count=0, reopening backpack...");
             drop(bp);
             ctrl.return_to_main_ui(4);
             let mut bp2 = BackpackScanner::new(ctrl);
@@ -1144,7 +1144,7 @@ impl GoodArtifactScanner {
         };
 
         if total_count == 0 {
-            warn!("[artifact] no artifacts in backpack");
+            info!("[artifact] no artifacts in backpack");
             return Ok(Vec::new());
         }
 

@@ -297,7 +297,7 @@ impl GoodWeaponScanner {
         if let Some((lv, mx)) = Self::try_split_digits(&digits) {
             let max_level = Self::snap_max_level(mx);
             let ascended = lv >= 20 && lv < max_level;
-            warn!("[weapon] level OCR direct split: {:?} -> {}/{}", text, lv, max_level);
+            debug!("[weapon] level OCR direct split: {:?} -> {}/{}", text, lv, max_level);
             return (lv, ascended);
         }
 
@@ -321,7 +321,7 @@ impl GoodWeaponScanner {
             if let Some((lv, mx, idx, _)) = best {
                 let max_level = Self::snap_max_level(mx);
                 let ascended = lv >= 20 && lv < max_level;
-                warn!("[weapon] level OCR noise-remove: {:?} (rm idx {}) -> {}/{}", text, idx, lv, max_level);
+                debug!("[weapon] level OCR noise-remove: {:?} (rm idx {}) -> {}/{}", text, idx, lv, max_level);
                 return (lv, ascended);
             }
         }
@@ -329,13 +329,13 @@ impl GoodWeaponScanner {
         // Phase 3: partial extract — just the level number
         if let Some(caps) = LV_RE.captures(text) {
             let level: i32 = caps[1].parse().unwrap_or(1);
-            warn!("[weapon] level OCR partial (Lv): {:?} -> {}", text, level);
+            debug!("[weapon] level OCR partial (Lv): {:?} -> {}", text, level);
             return (level, false);
         }
 
         let level: i32 = digits.parse().unwrap_or(0);
         if (1..=90).contains(&level) {
-            warn!("[weapon] level OCR bare digits: {:?} -> {}", text, level);
+            debug!("[weapon] level OCR bare digits: {:?} -> {}", text, level);
             return (level, false);
         }
 
@@ -412,7 +412,7 @@ impl GoodWeaponScanner {
 
         // If count is 0, try reopening backpack
         let total_count = if current_count == 0 {
-            warn!("[weapon] count=0, reopening backpack...");
+            info!("[weapon] count=0, reopening backpack...");
             drop(bp);
             ctrl.return_to_main_ui(4);
             let mut bp2 = BackpackScanner::new(ctrl);
@@ -427,7 +427,7 @@ impl GoodWeaponScanner {
         };
 
         if total_count == 0 {
-            warn!("[weapon] no weapons in backpack");
+            info!("[weapon] no weapons in backpack");
             return Ok(Vec::new());
         }
 

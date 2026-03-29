@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{bail, Result};
-use log::{debug, info, warn};
+use log::{debug, info};
 use serde::Deserialize;
 
 const MAPPINGS_URL: &str = "https://ggartifact.com/good/mappings.json";
@@ -155,7 +155,7 @@ impl MappingManager {
                     debug!("游戏数据映射已更新 / Game data mappings updated");
                 } else {
                     if cache_exists {
-                        warn!(
+                        info!(
                             "获取数据失败（HTTP {}），使用本地缓存 / Fetch failed (HTTP {}), using local cache",
                             response.status(), response.status()
                         );
@@ -169,7 +169,7 @@ impl MappingManager {
             }
             Err(e) => {
                 if cache_exists {
-                    warn!(
+                    info!(
                         "获取数据失败（{}），使用本地缓存 / Fetch failed ({}), using local cache",
                         e, e
                     );
