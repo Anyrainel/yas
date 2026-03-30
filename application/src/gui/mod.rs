@@ -5,6 +5,8 @@ pub mod scanner_tab;
 pub mod manager_tab;
 pub mod log_panel;
 
+use std::path::PathBuf;
+
 use eframe::egui;
 use state::{AppState, Lang, UpdateState};
 use worker::TaskHandle;
@@ -179,7 +181,7 @@ impl eframe::App for GuiApp {
         // Request repaint while tasks or update check are in progress
         let update_busy = matches!(
             *self.state.update_state.lock().unwrap(),
-            UpdateState::Checking | UpdateState::Downloading,
+            UpdateState::Checking | UpdateState::Downloading | UpdateState::ShowingDialog,
         );
         let any_running =
             is_scan_running || is_server_running || is_manage_running || update_busy;
@@ -217,11 +219,14 @@ fn show_update_banner(ctx: &egui::Context, state: &AppState) {
                     if ui.button(l.t("下载更新", "Download Update")).clicked() {
                         let update_state_arc = state.update_state.clone();
                         let url = download_url.clone();
+                        let lang = l;
                         *state.update_state.lock().unwrap() = UpdateState::Downloading;
                         std::thread::spawn(move || {
                             match yas_genshin::updater::download_and_replace(&url) {
-                                Ok(_) => {
-                                    *update_state_arc.lock().unwrap() = UpdateState::Ready;
+                                Ok(exe_path) => {
+                                    *update_state_arc.lock().unwrap() =
+                                        UpdateState::ShowingDialog;
+                                    show_restart_dialog(exe_path, update_state_arc, lang);
                                 }
                                 Err(e) => {
                                     *update_state_arc.lock().unwrap() =
@@ -241,6 +246,18 @@ fn show_update_banner(ctx: &egui::Context, state: &AppState) {
                     ui.label(l.t("正在下载更新...", "Downloading update..."));
                 });
                 ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+            UpdateState::ShowingDialog => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(
+                        egui::RichText::new(l.t(
+                            "更新已就绪...",
+                            "Update ready...",
+                        ))
+                        .color(egui::Color32::from_rgb(100, 255, 100)),
+                    );
+                });
             }
             UpdateState::Ready => {
                 ui.horizontal(|ui| {
@@ -270,6 +287,52 @@ fn show_update_banner(ctx: &egui::Context, state: &AppState) {
             _ => {}
         }
     });
+}
+
+/// Show a native OS dialog asking the user to restart now or later.
+/// Called from the download background thread (blocking is fine).
+fn show_restart_dialog(
+    exe_path: PathBuf,
+    update_state: std::sync::Arc<std::sync::Mutex<UpdateState>>,
+    lang: Lang,
+) {
+    let (title, description) = match lang {
+        Lang::Zh => (
+            "更新完成",
+            "更新已下载完成。是否立即重启？",
+        ),
+        Lang::En => (
+            "Update Complete",
+            "The update has been downloaded. Restart now?",
+        ),
+    };
+
+    let result = rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Info)
+        .set_title(title)
+        .set_description(description)
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show();
+
+    match result {
+        rfd::MessageDialogResult::Yes => {
+            log::info!("用户选择立即重启 / User chose to restart now");
+            match std::process::Command::new(&exe_path).spawn() {
+                Ok(_) => std::process::exit(0),
+                Err(e) => {
+                    log::error!(
+                        "启动新版本失败 / Failed to launch new version: {}",
+                        e
+                    );
+                    *update_state.lock().unwrap() = UpdateState::Ready;
+                }
+            }
+        }
+        _ => {
+            log::info!("用户选择稍后重启 / User chose to restart later");
+            *update_state.lock().unwrap() = UpdateState::Ready;
+        }
+    }
 }
 
 /// Load system CJK font for Chinese text rendering.
