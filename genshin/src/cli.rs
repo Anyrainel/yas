@@ -982,7 +982,7 @@ impl GoodScannerApplication {
         let grid_delay = user_config.artifact_grid_delay;
         let scroll_delay = user_config.artifact_scroll_delay;
 
-        let init_game = move || -> anyhow::Result<(GenshinGameController, crate::manager::orchestrator::ArtifactManager)> {
+        let init_executor = move || -> anyhow::Result<Box<dyn crate::server::ManageExecutor>> {
             let game_info = Self::get_game_info()?;
             let ctrl = GenshinGameController::new(game_info)?;
             let mut manager = crate::manager::orchestrator::ArtifactManager::new(
@@ -992,13 +992,13 @@ impl GoodScannerApplication {
             );
             manager.delay_grid_item = grid_delay;
             manager.delay_scroll = scroll_delay;
-            Ok((ctrl, manager))
+            Ok(Box::new(crate::server::GameExecutor { ctrl, manager }))
         };
 
         // Start HTTP server (blocks forever, always enabled in CLI mode, no shutdown)
         let enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        crate::server::run_server(config.server_port, init_game, enabled, shutdown)
+        crate::server::run_server(config.server_port, init_executor, enabled, shutdown)
     }
 
     /// Standalone diff mode: compare two existing JSON files without game.
@@ -1319,7 +1319,7 @@ pub fn run_server_core(
     let scroll_delay = user_config.artifact_scroll_delay;
     let mappings_clone = mappings.clone();
 
-    let init_game = move || -> anyhow::Result<(GenshinGameController, crate::manager::orchestrator::ArtifactManager)> {
+    let init_executor = move || -> anyhow::Result<Box<dyn crate::server::ManageExecutor>> {
         let game_info = GoodScannerApplication::get_game_info()?;
         let ctrl = GenshinGameController::new(game_info)?;
         let mut manager = crate::manager::orchestrator::ArtifactManager::new(
@@ -1330,10 +1330,10 @@ pub fn run_server_core(
         manager.delay_grid_item = grid_delay;
         manager.delay_scroll = scroll_delay;
         manager.stop_on_all_matched = stop_on_all_matched;
-        Ok((ctrl, manager))
+        Ok(Box::new(crate::server::GameExecutor { ctrl, manager }))
     };
 
-    crate::server::run_server(server_port, init_game, enabled, shutdown)
+    crate::server::run_server(server_port, init_executor, enabled, shutdown)
 }
 
 /// Execute manage instructions from a JSON string.

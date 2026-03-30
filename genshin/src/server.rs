@@ -24,6 +24,33 @@ use tiny_http::{Header, Method, Response, Server};
 use crate::manager::models::*;
 use crate::manager::orchestrator::ArtifactManager;
 use crate::scanner::common::game_controller::GenshinGameController;
+use crate::manager::orchestrator::ProgressFn;
+use crate::scanner::common::models::GoodArtifact;
+
+/// Abstraction over game interaction for testability.
+pub trait ManageExecutor {
+    fn execute(
+        &mut self,
+        request: ArtifactManageRequest,
+        progress_fn: Option<&ProgressFn>,
+    ) -> (ManageResult, Option<Vec<GoodArtifact>>);
+}
+
+/// Real executor: wraps a game controller and artifact manager.
+pub struct GameExecutor {
+    pub ctrl: GenshinGameController,
+    pub manager: ArtifactManager,
+}
+
+impl ManageExecutor for GameExecutor {
+    fn execute(
+        &mut self,
+        request: ArtifactManageRequest,
+        progress_fn: Option<&ProgressFn>,
+    ) -> (ManageResult, Option<Vec<GoodArtifact>>) {
+        self.manager.execute(&mut self.ctrl, request, progress_fn)
+    }
+}
 
 /// Maximum request body size (5 MB).
 const MAX_BODY_SIZE: usize = 5 * 1024 * 1024;
@@ -137,12 +164,12 @@ fn respond_json(request: tiny_http::Request, status: u16, json: &str, origin: Op
 /// 当前线程成为执行线程，另起 HTTP 线程处理请求。
 pub fn run_server<F>(
     port: u16,
-    init_game: F,
+    init_executor: F,
     enabled: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()>
 where
-    F: FnOnce() -> anyhow::Result<(GenshinGameController, ArtifactManager)>,
+    F: FnOnce() -> anyhow::Result<Box<dyn ManageExecutor>>,
 {
     let addr = format!("127.0.0.1:{}", port);
     let server = Server::http(&addr)
@@ -340,8 +367,8 @@ where
     // Game controller + manager are created lazily on first job to avoid
     // focusing the game window at server startup.
     info!("执行线程就绪 / Execution thread ready");
-    let mut game_state: Option<(GenshinGameController, ArtifactManager)> = None;
-    let mut init_game = Some(init_game);
+    let mut executor: Option<Box<dyn ManageExecutor>> = None;
+    let mut init_executor = Some(init_executor);
 
     while let Ok((job_id, request)) = job_rx.recv() {
         if shutdown.load(Ordering::Relaxed) {
@@ -357,12 +384,12 @@ where
         // before the game window is focused and takes over the screen.
         yas::utils::sleep(1000);
 
-        // Lazy init: create game controller + manager on first job
-        if game_state.is_none() {
-            if let Some(init_fn) = init_game.take() {
+        // Lazy init: create executor on first job
+        if executor.is_none() {
+            if let Some(init_fn) = init_executor.take() {
                 match init_fn() {
-                    Ok(pair) => {
-                        game_state = Some(pair);
+                    Ok(e) => {
+                        executor = Some(e);
                     }
                     Err(e) => {
                         error!("游戏初始化失败 / Game init failed: {}", e);
@@ -389,7 +416,7 @@ where
             }
         }
 
-        let (ref mut ctrl, ref manager) = game_state.as_mut().unwrap();
+        let exec = executor.as_mut().unwrap();
 
         let progress_state = job_state.clone();
         let progress_fn = move |completed: usize, total: usize, current_id: &str, phase: &str| {
@@ -403,7 +430,7 @@ where
             }
         };
 
-        let (result, artifact_snapshot) = manager.execute(ctrl, request, Some(&progress_fn));
+        let (result, artifact_snapshot) = exec.execute(request, Some(&progress_fn));
 
         // Update artifact cache based on scan completeness
         match artifact_snapshot {
