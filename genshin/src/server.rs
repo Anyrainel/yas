@@ -598,3 +598,773 @@ fn handle_manage(
     let json = format!(r#"{{"jobId":"{}","total":{}}}"#, job_id, total);
     respond_json(request, 202, &json, cors_origin);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scanner::common::models::{GoodArtifact, GoodSubStat};
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    struct FakeExecutor {
+        responses: Arc<Mutex<VecDeque<(ManageResult, Option<Vec<GoodArtifact>>)>>>,
+        delay_ms: u64,
+    }
+
+    impl ManageExecutor for FakeExecutor {
+        fn execute(
+            &mut self,
+            _request: ArtifactManageRequest,
+            _progress_fn: Option<&ProgressFn>,
+        ) -> (ManageResult, Option<Vec<GoodArtifact>>) {
+            if self.delay_ms > 0 {
+                std::thread::sleep(Duration::from_millis(self.delay_ms));
+            }
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("FakeExecutor: no more responses queued")
+        }
+    }
+
+    fn make_result(statuses: &[(&str, InstructionStatus)]) -> ManageResult {
+        let results: Vec<InstructionResult> = statuses
+            .iter()
+            .map(|(id, status)| InstructionResult {
+                id: id.to_string(),
+                status: status.clone(),
+                detail: None,
+            })
+            .collect();
+        let summary = ManageSummary::from_results(&results);
+        ManageResult { results, summary }
+    }
+
+    fn make_artifact(set: &str, slot: &str, level: i32, locked: bool) -> GoodArtifact {
+        GoodArtifact {
+            set_key: set.to_string(),
+            slot_key: slot.to_string(),
+            rarity: 5,
+            level,
+            main_stat_key: "hp".to_string(),
+            substats: vec![GoodSubStat {
+                key: "critRate_".to_string(),
+                value: 3.9,
+                initial_value: None,
+            }],
+            location: String::new(),
+            lock: locked,
+            astral_mark: false,
+            elixir_crafted: false,
+            unactivated_substats: Vec::new(),
+            total_rolls: None,
+        }
+    }
+
+    fn make_manage_body(ids: &[&str]) -> String {
+        let instructions: Vec<String> = ids
+            .iter()
+            .map(|id| {
+                format!(
+                    r#"{{"id":"{}","target":{{"setKey":"GladiatorsFinale","slotKey":"flower","rarity":5,"level":20,"mainStatKey":"hp","substats":[]}},"changes":{{"lock":true}}}}"#,
+                    id
+                )
+            })
+            .collect();
+        format!(r#"{{"instructions":[{}]}}"#, instructions.join(","))
+    }
+
+    static NEXT_PORT: AtomicU16 = AtomicU16::new(19100);
+    fn next_port() -> u16 {
+        NEXT_PORT.fetch_add(1, Ordering::SeqCst)
+    }
+
+    fn start_test_server(
+        responses: VecDeque<(ManageResult, Option<Vec<GoodArtifact>>)>,
+        delay_ms: u64,
+    ) -> (u16, Arc<AtomicBool>, std::thread::JoinHandle<()>) {
+        let port = next_port();
+        let enabled = Arc::new(AtomicBool::new(true));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = shutdown.clone();
+        let responses = Arc::new(Mutex::new(responses));
+        let responses_clone = responses.clone();
+
+        let handle = std::thread::spawn(move || {
+            let init = move || -> anyhow::Result<Box<dyn ManageExecutor>> {
+                Ok(Box::new(FakeExecutor {
+                    responses: responses_clone,
+                    delay_ms,
+                }))
+            };
+            let _ = run_server(port, init, enabled, shutdown_clone);
+        });
+
+        let client = reqwest::blocking::Client::new();
+        let url = format!("http://127.0.0.1:{}/health", port);
+        for _ in 0..50 {
+            if client.get(&url).send().is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        (port, shutdown, handle)
+    }
+
+    fn start_test_server_with_enabled(
+        responses: VecDeque<(ManageResult, Option<Vec<GoodArtifact>>)>,
+        delay_ms: u64,
+        enabled: Arc<AtomicBool>,
+    ) -> (u16, Arc<AtomicBool>, std::thread::JoinHandle<()>) {
+        let port = next_port();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = shutdown.clone();
+        let responses = Arc::new(Mutex::new(responses));
+        let responses_clone = responses.clone();
+
+        let handle = std::thread::spawn(move || {
+            let init = move || -> anyhow::Result<Box<dyn ManageExecutor>> {
+                Ok(Box::new(FakeExecutor {
+                    responses: responses_clone,
+                    delay_ms,
+                }))
+            };
+            let _ = run_server(port, init, enabled, shutdown_clone);
+        });
+
+        let client = reqwest::blocking::Client::new();
+        let url = format!("http://127.0.0.1:{}/health", port);
+        for _ in 0..50 {
+            if client.get(&url).send().is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        (port, shutdown, handle)
+    }
+
+    fn stop_server(shutdown: &AtomicBool, handle: std::thread::JoinHandle<()>) {
+        shutdown.store(true, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = handle.join();
+    }
+
+    /// Poll /status until `state == "completed"` or timeout.
+    fn poll_until_completed(port: u16) {
+        let client = reqwest::blocking::Client::new();
+        let url = format!("http://127.0.0.1:{}/status", port);
+        for _ in 0..50 {
+            std::thread::sleep(Duration::from_millis(100));
+            let resp = client.get(&url).send().unwrap();
+            let body: serde_json::Value = resp.json().unwrap();
+            if body["state"] == "completed" {
+                return;
+            }
+        }
+        panic!("Job did not complete within timeout");
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_health_returns_ok_when_idle() {
+        let responses = VecDeque::new();
+        let (port, shutdown, handle) = start_test_server(responses, 0);
+
+        let client = reqwest::blocking::Client::new();
+        let resp = client
+            .get(format!("http://127.0.0.1:{}/health", port))
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        let body: serde_json::Value = resp.json().unwrap();
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["enabled"], true);
+        assert_eq!(body["busy"], false);
+
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_cors_allowed_origins() {
+        let responses = VecDeque::new();
+        let (port, shutdown, handle) = start_test_server(responses, 0);
+        let client = reqwest::blocking::Client::new();
+        let base = format!("http://127.0.0.1:{}/health", port);
+
+        // ggartifact.com
+        let resp = client
+            .get(&base)
+            .header("Origin", "https://ggartifact.com")
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        let acao = resp
+            .headers()
+            .get("Access-Control-Allow-Origin")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(acao, "https://ggartifact.com");
+
+        // localhost:3000
+        let resp = client
+            .get(&base)
+            .header("Origin", "http://localhost:3000")
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+
+        // 127.0.0.1:5173
+        let resp = client
+            .get(&base)
+            .header("Origin", "http://127.0.0.1:5173")
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+
+        // No Origin header
+        let resp = client.get(&base).send().unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_cors_disallowed_origin_returns_403() {
+        let responses = VecDeque::new();
+        let (port, shutdown, handle) = start_test_server(responses, 0);
+        let client = reqwest::blocking::Client::new();
+
+        let resp = client
+            .get(format!("http://127.0.0.1:{}/health", port))
+            .header("Origin", "https://evil.com")
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 403);
+        let body = resp.text().unwrap();
+        assert!(body.contains("Origin not allowed"));
+
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_cors_preflight_options() {
+        let responses = VecDeque::new();
+        let (port, shutdown, handle) = start_test_server(responses, 0);
+        let client = reqwest::blocking::Client::new();
+
+        let resp = client
+            .request(
+                reqwest::Method::OPTIONS,
+                format!("http://127.0.0.1:{}/manage", port),
+            )
+            .header("Origin", "https://ggartifact.com")
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 204);
+        let acao = resp
+            .headers()
+            .get("Access-Control-Allow-Origin")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(acao, "https://ggartifact.com");
+
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_manage_empty_instructions_returns_400() {
+        let responses = VecDeque::new();
+        let (port, shutdown, handle) = start_test_server(responses, 0);
+        let client = reqwest::blocking::Client::new();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{}/manage", port))
+            .header("Content-Type", "application/json")
+            .body(r#"{"instructions":[]}"#)
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 400);
+
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_manage_bad_json_returns_400() {
+        let responses = VecDeque::new();
+        let (port, shutdown, handle) = start_test_server(responses, 0);
+        let client = reqwest::blocking::Client::new();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{}/manage", port))
+            .header("Content-Type", "application/json")
+            .body("not json")
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 400);
+        let body = resp.text().unwrap();
+        assert!(body.contains("JSON"));
+
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_manage_accepts_valid_request() {
+        let mut responses = VecDeque::new();
+        responses.push_back((
+            make_result(&[("a", InstructionStatus::Success)]),
+            None,
+        ));
+        let (port, shutdown, handle) = start_test_server(responses, 0);
+        let client = reqwest::blocking::Client::new();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{}/manage", port))
+            .header("Content-Type", "application/json")
+            .body(make_manage_body(&["a"]))
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 202);
+        let body: serde_json::Value = resp.json().unwrap();
+        assert!(body["jobId"].is_string());
+        assert_eq!(body["total"], 1);
+
+        poll_until_completed(port);
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_manage_returns_503_when_disabled() {
+        let responses = VecDeque::new();
+        let enabled = Arc::new(AtomicBool::new(false));
+        let (port, shutdown, handle) =
+            start_test_server_with_enabled(responses, 0, enabled);
+        let client = reqwest::blocking::Client::new();
+
+        let resp = client
+            .post(format!("http://127.0.0.1:{}/manage", port))
+            .header("Content-Type", "application/json")
+            .body(make_manage_body(&["a"]))
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 503);
+
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_manage_returns_409_when_busy() {
+        let mut responses = VecDeque::new();
+        responses.push_back((
+            make_result(&[("a", InstructionStatus::Success)]),
+            None,
+        ));
+        // Second response in case first completes (shouldn't happen with 5s delay)
+        responses.push_back((
+            make_result(&[("b", InstructionStatus::Success)]),
+            None,
+        ));
+        let (port, shutdown, handle) = start_test_server(responses, 5000);
+        let client = reqwest::blocking::Client::new();
+
+        // Submit first job
+        let resp1 = client
+            .post(format!("http://127.0.0.1:{}/manage", port))
+            .header("Content-Type", "application/json")
+            .body(make_manage_body(&["a"]))
+            .send()
+            .unwrap();
+        assert_eq!(resp1.status().as_u16(), 202);
+
+        // Wait for the job to start processing
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Submit second job — should be 409
+        let resp2 = client
+            .post(format!("http://127.0.0.1:{}/manage", port))
+            .header("Content-Type", "application/json")
+            .body(make_manage_body(&["b"]))
+            .send()
+            .unwrap();
+        assert_eq!(resp2.status().as_u16(), 409);
+
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_health_shows_busy_during_job() {
+        let mut responses = VecDeque::new();
+        responses.push_back((
+            make_result(&[("a", InstructionStatus::Success)]),
+            None,
+        ));
+        let (port, shutdown, handle) = start_test_server(responses, 5000);
+        let client = reqwest::blocking::Client::new();
+
+        // Submit a job
+        client
+            .post(format!("http://127.0.0.1:{}/manage", port))
+            .header("Content-Type", "application/json")
+            .body(make_manage_body(&["a"]))
+            .send()
+            .unwrap();
+
+        std::thread::sleep(Duration::from_millis(500));
+
+        let resp = client
+            .get(format!("http://127.0.0.1:{}/health", port))
+            .send()
+            .unwrap();
+        let body: serde_json::Value = resp.json().unwrap();
+        assert_eq!(body["busy"], true);
+
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_status_idle_before_any_job() {
+        let responses = VecDeque::new();
+        let (port, shutdown, handle) = start_test_server(responses, 0);
+        let client = reqwest::blocking::Client::new();
+
+        let resp = client
+            .get(format!("http://127.0.0.1:{}/status", port))
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        let body: serde_json::Value = resp.json().unwrap();
+        assert_eq!(body["state"], "idle");
+
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_result_returns_404_when_idle() {
+        let responses = VecDeque::new();
+        let (port, shutdown, handle) = start_test_server(responses, 0);
+        let client = reqwest::blocking::Client::new();
+
+        let resp = client
+            .get(format!("http://127.0.0.1:{}/result", port))
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 404);
+
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_result_returns_409_when_running() {
+        let mut responses = VecDeque::new();
+        responses.push_back((
+            make_result(&[("a", InstructionStatus::Success)]),
+            None,
+        ));
+        let (port, shutdown, handle) = start_test_server(responses, 5000);
+        let client = reqwest::blocking::Client::new();
+
+        client
+            .post(format!("http://127.0.0.1:{}/manage", port))
+            .header("Content-Type", "application/json")
+            .body(make_manage_body(&["a"]))
+            .send()
+            .unwrap();
+
+        std::thread::sleep(Duration::from_millis(500));
+
+        let resp = client
+            .get(format!("http://127.0.0.1:{}/result", port))
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 409);
+
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_full_lifecycle_submit_poll_result() {
+        let mut responses = VecDeque::new();
+        responses.push_back((
+            make_result(&[
+                ("i1", InstructionStatus::Success),
+                ("i2", InstructionStatus::NotFound),
+                ("i3", InstructionStatus::AlreadyCorrect),
+            ]),
+            None,
+        ));
+        let (port, shutdown, handle) = start_test_server(responses, 0);
+        let client = reqwest::blocking::Client::new();
+        let base = format!("http://127.0.0.1:{}", port);
+
+        // Submit
+        let resp = client
+            .post(format!("{}/manage", base))
+            .header("Content-Type", "application/json")
+            .body(make_manage_body(&["i1", "i2", "i3"]))
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 202);
+
+        // Poll until completed
+        poll_until_completed(port);
+
+        // Check status summary
+        let resp = client.get(format!("{}/status", base)).send().unwrap();
+        let body: serde_json::Value = resp.json().unwrap();
+        assert_eq!(body["state"], "completed");
+        assert_eq!(body["summary"]["total"], 3);
+        assert_eq!(body["summary"]["success"], 1);
+        assert_eq!(body["summary"]["not_found"], 1);
+        assert_eq!(body["summary"]["already_correct"], 1);
+
+        // Get full result
+        let resp = client.get(format!("{}/result", base)).send().unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        let body: serde_json::Value = resp.json().unwrap();
+        assert_eq!(body["results"][0]["id"], "i1");
+        assert_eq!(body["results"][0]["status"], "success");
+        assert_eq!(body["results"][1]["id"], "i2");
+        assert_eq!(body["results"][1]["status"], "not_found");
+        assert_eq!(body["results"][2]["id"], "i3");
+        assert_eq!(body["results"][2]["status"], "already_correct");
+
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_artifacts_returns_404_before_any_scan() {
+        let responses = VecDeque::new();
+        let (port, shutdown, handle) = start_test_server(responses, 0);
+        let client = reqwest::blocking::Client::new();
+
+        let resp = client
+            .get(format!("http://127.0.0.1:{}/artifacts", port))
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 404);
+
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_artifacts_returns_200_after_complete_scan() {
+        let mut responses = VecDeque::new();
+        let artifacts = vec![
+            make_artifact("GladiatorsFinale", "flower", 20, true),
+            make_artifact("WanderersTroupe", "plume", 16, false),
+        ];
+        responses.push_back((
+            make_result(&[("a", InstructionStatus::Success)]),
+            Some(artifacts),
+        ));
+        let (port, shutdown, handle) = start_test_server(responses, 0);
+        let client = reqwest::blocking::Client::new();
+        let base = format!("http://127.0.0.1:{}", port);
+
+        // Submit and wait
+        client
+            .post(format!("{}/manage", base))
+            .header("Content-Type", "application/json")
+            .body(make_manage_body(&["a"]))
+            .send()
+            .unwrap();
+        poll_until_completed(port);
+
+        // Check artifacts
+        let resp = client.get(format!("{}/artifacts", base)).send().unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        let body: serde_json::Value = resp.json().unwrap();
+        assert!(body.is_array());
+        assert_eq!(body.as_array().unwrap().len(), 2);
+        assert_eq!(body[0]["setKey"], "GladiatorsFinale");
+        assert_eq!(body[1]["setKey"], "WanderersTroupe");
+
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_artifacts_stays_404_after_no_snapshot_job() {
+        let mut responses = VecDeque::new();
+        responses.push_back((
+            make_result(&[("a", InstructionStatus::Success)]),
+            None,
+        ));
+        let (port, shutdown, handle) = start_test_server(responses, 0);
+        let client = reqwest::blocking::Client::new();
+        let base = format!("http://127.0.0.1:{}", port);
+
+        client
+            .post(format!("{}/manage", base))
+            .header("Content-Type", "application/json")
+            .body(make_manage_body(&["a"]))
+            .send()
+            .unwrap();
+        poll_until_completed(port);
+
+        let resp = client.get(format!("{}/artifacts", base)).send().unwrap();
+        assert_eq!(resp.status().as_u16(), 404);
+
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_artifacts_returns_503_after_aborted_scan_invalidates_cache() {
+        let mut responses = VecDeque::new();
+        // Job 1: complete scan with snapshot
+        let artifacts = vec![make_artifact("GladiatorsFinale", "flower", 20, true)];
+        responses.push_back((
+            make_result(&[("a", InstructionStatus::Success)]),
+            Some(artifacts),
+        ));
+        // Job 2: aborted, no snapshot
+        responses.push_back((
+            make_result(&[("b", InstructionStatus::Aborted)]),
+            None,
+        ));
+        let (port, shutdown, handle) = start_test_server(responses, 0);
+        let client = reqwest::blocking::Client::new();
+        let base = format!("http://127.0.0.1:{}", port);
+
+        // Job 1
+        client
+            .post(format!("{}/manage", base))
+            .header("Content-Type", "application/json")
+            .body(make_manage_body(&["a"]))
+            .send()
+            .unwrap();
+        poll_until_completed(port);
+
+        // Verify cache is populated
+        let resp = client.get(format!("{}/artifacts", base)).send().unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+
+        // Job 2 (aborted)
+        client
+            .post(format!("{}/manage", base))
+            .header("Content-Type", "application/json")
+            .body(make_manage_body(&["b"]))
+            .send()
+            .unwrap();
+        poll_until_completed(port);
+
+        // Cache should now be 503 (Incomplete)
+        let resp = client.get(format!("{}/artifacts", base)).send().unwrap();
+        assert_eq!(resp.status().as_u16(), 503);
+
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_game_init_failure_produces_ui_error_results() {
+        let port = next_port();
+        let enabled = Arc::new(AtomicBool::new(true));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = shutdown.clone();
+
+        let handle = std::thread::spawn(move || {
+            let init = move || -> anyhow::Result<Box<dyn ManageExecutor>> {
+                Err(anyhow::anyhow!("Game window not found"))
+            };
+            let _ = run_server(port, init, enabled, shutdown_clone);
+        });
+
+        let client = reqwest::blocking::Client::new();
+        let base = format!("http://127.0.0.1:{}", port);
+        for _ in 0..50 {
+            if client.get(format!("{}/health", base)).send().is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        // Submit job
+        client
+            .post(format!("{}/manage", base))
+            .header("Content-Type", "application/json")
+            .body(make_manage_body(&["x", "y"]))
+            .send()
+            .unwrap();
+        poll_until_completed(port);
+
+        // Check result
+        let resp = client.get(format!("{}/result", base)).send().unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        let body: serde_json::Value = resp.json().unwrap();
+        let results = body["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["status"], "ui_error");
+        assert_eq!(results[1]["status"], "ui_error");
+
+        shutdown.store(true, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn test_unknown_route_returns_404() {
+        let responses = VecDeque::new();
+        let (port, shutdown, handle) = start_test_server(responses, 0);
+        let client = reqwest::blocking::Client::new();
+
+        let resp = client
+            .get(format!("http://127.0.0.1:{}/nonexistent", port))
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 404);
+
+        stop_server(&shutdown, handle);
+    }
+
+    #[test]
+    fn test_sequential_jobs_reset_state() {
+        let mut responses = VecDeque::new();
+        responses.push_back((
+            make_result(&[("j1", InstructionStatus::Success)]),
+            None,
+        ));
+        responses.push_back((
+            make_result(&[("j2", InstructionStatus::NotFound)]),
+            None,
+        ));
+        let (port, shutdown, handle) = start_test_server(responses, 0);
+        let client = reqwest::blocking::Client::new();
+        let base = format!("http://127.0.0.1:{}", port);
+
+        // Job 1
+        client
+            .post(format!("{}/manage", base))
+            .header("Content-Type", "application/json")
+            .body(make_manage_body(&["j1"]))
+            .send()
+            .unwrap();
+        poll_until_completed(port);
+
+        let resp = client.get(format!("{}/result", base)).send().unwrap();
+        let body: serde_json::Value = resp.json().unwrap();
+        assert_eq!(body["results"][0]["id"], "j1");
+        assert_eq!(body["results"][0]["status"], "success");
+
+        // Job 2
+        client
+            .post(format!("{}/manage", base))
+            .header("Content-Type", "application/json")
+            .body(make_manage_body(&["j2"]))
+            .send()
+            .unwrap();
+        poll_until_completed(port);
+
+        let resp = client.get(format!("{}/result", base)).send().unwrap();
+        let body: serde_json::Value = resp.json().unwrap();
+        assert_eq!(body["results"][0]["id"], "j2");
+        assert_eq!(body["results"][0]["status"], "not_found");
+
+        stop_server(&shutdown, handle);
+    }
+}
