@@ -145,14 +145,12 @@ fn ensure_onnxruntime() -> Result<()> {
 
     println!();
     println!("=======================================================");
-    println!("  未找到 {} / {} not found", ORT_DLL_NAME, ORT_DLL_NAME);
+    println!("  {} {}", yas::lang::localize("未找到 / Not found:"), ORT_DLL_NAME);
     println!("=======================================================");
     println!();
-    println!("OCR引擎需要ONNX Runtime运行库。");
-    println!("The OCR engine requires the ONNX Runtime library.");
+    println!("{}", yas::lang::localize("OCR引擎需要ONNX Runtime运行库。 / The OCR engine requires the ONNX Runtime library."));
     println!();
-    println!("按回车自动下载（约70MB），或按 Ctrl+C 退出。");
-    println!("Press Enter to download automatically (~70MB), or Ctrl+C to exit.");
+    println!("{}", yas::lang::localize("按回车自动下载（约70MB），或按 Ctrl+C 退出。 / Press Enter to download automatically (~70MB), or Ctrl+C to exit."));
     let _ = std::io::stdin().read_line(&mut String::new());
 
     download_onnxruntime()
@@ -380,13 +378,13 @@ fn load_or_create_config() -> Result<GoodUserConfig> {
     let contents = std::fs::read_to_string(&path)?;
     let config: GoodUserConfig = serde_json::from_str(&contents)
         .map_err(|e| anyhow!("配置解析失败 / Failed to parse {}: {}", path.display(), e))?;
-    debug!("Loaded config from {}", path.display());
+    debug!("已加载配置 / Loaded config from {}", path.display());
 
     // Re-save to add any new default fields that didn't exist in the old file
     let updated_json = serde_json::to_string_pretty(&config)?;
     if updated_json != contents {
         let _ = std::fs::write(&path, &updated_json);
-        debug!("Config updated with new default fields");
+        debug!("配置已更新（添加了新的默认字段） / Config updated with new default fields");
     }
 
     Ok(config)
@@ -630,7 +628,7 @@ impl GoodScannerApplication {
     }
 
     pub fn run(&self) -> Result<()> {
-        println!("正在启动扫描器... / GOOD Scanner starting...");
+        println!("{}", yas::lang::localize("正在启动扫描器... / GOOD Scanner starting..."));
 
         // Check for ONNX Runtime before doing anything else
         #[cfg(target_os = "windows")]
@@ -691,9 +689,9 @@ impl GoodScannerApplication {
 
         // Find and focus the game window
         let game_info = Self::get_game_info()?;
-        debug!("window: {:?}", game_info.window);
-        debug!("ui: {:?}", game_info.ui);
-        debug!("cloud: {}", game_info.is_cloud);
+        debug!("窗口 / window: {:?}", game_info.window);
+        debug!("界面 / ui: {:?}", game_info.ui);
+        debug!("云游戏 / cloud: {}", game_info.is_cloud);
 
         let mut ctrl = GenshinGameController::new(game_info)?;
         ctrl.focus_game_window();
@@ -719,7 +717,7 @@ impl GoodScannerApplication {
             if config.debug_timing {
                 let elapsed = t.elapsed();
                 let avg = if result.is_empty() { 0 } else { elapsed.as_millis() as usize / result.len() };
-                debug!("[timing] characters: {} items in {:?} (avg {}ms/item)", result.len(), elapsed, avg);
+                debug!("[timing] 角色: {}项 耗时{:?}（平均{}ms/项） / [timing] characters: {} items in {:?} (avg {}ms/item)", result.len(), elapsed, avg, result.len(), elapsed, avg);
             }
             info!("已扫描 / Scanned {} characters", result.len());
             characters = Some(result);
@@ -741,7 +739,7 @@ impl GoodScannerApplication {
             if config.debug_timing {
                 let elapsed = t.elapsed();
                 let avg = if result.is_empty() { 0 } else { elapsed.as_millis() as usize / result.len() };
-                debug!("[timing] weapons: {} items in {:?} (avg {}ms/item)", result.len(), elapsed, avg);
+                debug!("[timing] 武器: {}项 耗时{:?}（平均{}ms/项） / [timing] weapons: {} items in {:?} (avg {}ms/item)", result.len(), elapsed, avg, result.len(), elapsed, avg);
             }
             info!("已扫描 / Scanned {} weapons", result.len());
             weapons = Some(result);
@@ -760,7 +758,7 @@ impl GoodScannerApplication {
             if config.debug_timing {
                 let elapsed = t.elapsed();
                 let avg = if result.is_empty() { 0 } else { elapsed.as_millis() as usize / result.len() };
-                debug!("[timing] artifacts: {} items in {:?} (avg {}ms/item)", result.len(), elapsed, avg);
+                debug!("[timing] 圣遗物: {}项 耗时{:?}（平均{}ms/项） / [timing] artifacts: {} items in {:?} (avg {}ms/item)", result.len(), elapsed, avg, result.len(), elapsed, avg);
             }
             info!("已扫描 / Scanned {} artifacts", result.len());
             artifacts = Some(result);
@@ -819,7 +817,8 @@ impl GoodScannerApplication {
         let col: usize = parts[1].trim().parse()
             .map_err(|_| anyhow!("无效的列号 / Invalid col in rescan pos"))?;
 
-        info!("=== Re-scan mode: type={} pos=({},{}) count={} ===",
+        info!("=== 重扫模式: type={} pos=({},{}) count={} / Re-scan mode: type={} pos=({},{}) count={} ===",
+            config.debug_rescan_type, row, col, config.debug_rescan_count,
             config.debug_rescan_type, row, col, config.debug_rescan_count);
 
         let game_info = Self::get_game_info()?;
@@ -887,7 +886,7 @@ impl GoodScannerApplication {
                     let items_per_page = GRID_COLS * GRID_ROWS;
                     let pages_to_skip = config.debug_start_at / items_per_page;
                     if pages_to_skip > 0 {
-                        debug!("[rescan] scrolling {} pages ({} rows)...", pages_to_skip, pages_to_skip * GRID_ROWS);
+                        debug!("[rescan] 滚动{}页（{}行）... / [rescan] scrolling {} pages ({} rows)...", pages_to_skip, pages_to_skip * GRID_ROWS, pages_to_skip, pages_to_skip * GRID_ROWS);
                         let estimated_ticks = pages_to_skip * GRID_ROWS * 5;
                         for _ in 0..estimated_ticks {
                             ctrl.mouse_scroll(-1);
@@ -977,31 +976,36 @@ impl GoodScannerApplication {
             mappings.artifact_set_map.len(),
         );
 
-        // Find game window
-        let game_info = Self::get_game_info()?;
-        let mut ctrl = GenshinGameController::new(game_info)?;
-
         // Create artifact manager
         let ocr_backend = config.ocr_backend.clone().unwrap_or_else(|| "ppocrv5".to_string());
         let substat_ocr_backend = config.artifact_substat_ocr.clone();
-        let mut manager = crate::manager::orchestrator::ArtifactManager::new(
-            mappings,
-            ocr_backend,
-            substat_ocr_backend,
-        );
-        manager.delay_grid_item = user_config.artifact_grid_delay;
-        manager.delay_scroll = user_config.artifact_scroll_delay;
+        let grid_delay = user_config.artifact_grid_delay;
+        let scroll_delay = user_config.artifact_scroll_delay;
 
-        // Start HTTP server (blocks forever, always enabled in CLI mode)
+        let init_game = move || -> anyhow::Result<(GenshinGameController, crate::manager::orchestrator::ArtifactManager)> {
+            let game_info = Self::get_game_info()?;
+            let ctrl = GenshinGameController::new(game_info)?;
+            let mut manager = crate::manager::orchestrator::ArtifactManager::new(
+                mappings,
+                ocr_backend,
+                substat_ocr_backend,
+            );
+            manager.delay_grid_item = grid_delay;
+            manager.delay_scroll = scroll_delay;
+            Ok((ctrl, manager))
+        };
+
+        // Start HTTP server (blocks forever, always enabled in CLI mode, no shutdown)
         let enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        crate::server::run_server(config.server_port, &mut ctrl, &manager, enabled)
+        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        crate::server::run_server(config.server_port, init_game, enabled, shutdown)
     }
 
     /// Standalone diff mode: compare two existing JSON files without game.
     fn run_standalone_diff(compare_path: &str, actual_path: &str) -> Result<()> {
         info!("=== 离线对比模式 / Standalone diff mode ===");
-        info!("Groundtruth: {}", compare_path);
-        info!("Actual:      {}", actual_path);
+        info!("真值文件 / Groundtruth: {}", compare_path);
+        info!("实际文件 / Actual: {}", actual_path);
 
         let gt_json = std::fs::read_to_string(compare_path)?;
         let groundtruth: GoodExport = serde_json::from_str(&gt_json)?;
@@ -1289,6 +1293,8 @@ pub fn run_server_core(
     ocr_backend: Option<&str>,
     artifact_substat_ocr: &str,
     enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stop_on_all_matched: bool,
 ) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
@@ -1307,19 +1313,27 @@ pub fn run_server_core(
         mappings.artifact_set_map.len(),
     );
 
-    let game_info = GoodScannerApplication::get_game_info()?;
-    let mut ctrl = GenshinGameController::new(game_info)?;
-
     let ocr_be = ocr_backend.unwrap_or("ppocrv5").to_string();
-    let mut manager = crate::manager::orchestrator::ArtifactManager::new(
-        mappings,
-        ocr_be,
-        artifact_substat_ocr.to_string(),
-    );
-    manager.delay_grid_item = user_config.artifact_grid_delay;
-    manager.delay_scroll = user_config.artifact_scroll_delay;
+    let substat_ocr = artifact_substat_ocr.to_string();
+    let grid_delay = user_config.artifact_grid_delay;
+    let scroll_delay = user_config.artifact_scroll_delay;
+    let mappings_clone = mappings.clone();
 
-    crate::server::run_server(server_port, &mut ctrl, &manager, enabled)
+    let init_game = move || -> anyhow::Result<(GenshinGameController, crate::manager::orchestrator::ArtifactManager)> {
+        let game_info = GoodScannerApplication::get_game_info()?;
+        let ctrl = GenshinGameController::new(game_info)?;
+        let mut manager = crate::manager::orchestrator::ArtifactManager::new(
+            mappings_clone,
+            ocr_be,
+            substat_ocr,
+        );
+        manager.delay_grid_item = grid_delay;
+        manager.delay_scroll = scroll_delay;
+        manager.stop_on_all_matched = stop_on_all_matched;
+        Ok((ctrl, manager))
+    };
+
+    crate::server::run_server(server_port, init_game, enabled, shutdown)
 }
 
 /// Execute manage instructions from a JSON string.
@@ -1360,6 +1374,6 @@ pub fn run_manage_json(
     manager.delay_grid_item = user_config.artifact_grid_delay;
     manager.delay_scroll = user_config.artifact_scroll_delay;
 
-    let result = manager.execute(&mut ctrl, request, None);
+    let (result, _artifact_snapshot) = manager.execute(&mut ctrl, request, None);
     Ok(result)
 }

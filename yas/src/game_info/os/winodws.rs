@@ -41,7 +41,7 @@ fn get_window(window_names: &[&str]) -> Result<(HWND, bool)> {
         return Err(anyhow!("未找到游戏窗口，请确认{:?}已经开启 / Game window not found, please make sure {:?} is running", window_names, window_names));
     }
 
-    println!("找到多个符合名称的窗口，请手动选择窗口：/ Multiple matching windows found, please select one:");
+    println!("{}", crate::lang::localize("找到多个符合名称的窗口，请手动选择窗口 / Multiple matching windows found, please select one:"));
     for (i, (_hwnd, title)) in viable_handles.iter().enumerate() {
         println!("{}: {}", i, title);
     }

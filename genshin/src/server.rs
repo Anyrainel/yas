@@ -28,6 +28,16 @@ use crate::scanner::common::game_controller::GenshinGameController;
 /// Maximum request body size (5 MB).
 const MAX_BODY_SIZE: usize = 5 * 1024 * 1024;
 
+/// State of the in-memory artifact inventory cache.
+enum ArtifactCache {
+    /// No scan has been performed yet.
+    Empty,
+    /// Last scan completed fully — data is available.
+    Complete(Vec<crate::scanner::common::models::GoodArtifact>),
+    /// Last scan was interrupted or incomplete — data is not reliable.
+    Incomplete,
+}
+
 /// Allowed production origins.
 const ALLOWED_ORIGINS: &[&str] = &[
     "https://ggartifact.com",
@@ -125,12 +135,15 @@ fn respond_json(request: tiny_http::Request, status: u16, json: &str, origin: Op
 ///
 /// 运行异步圣遗物管理 HTTP 服务器。
 /// 当前线程成为执行线程，另起 HTTP 线程处理请求。
-pub fn run_server(
+pub fn run_server<F>(
     port: u16,
-    ctrl: &mut GenshinGameController,
-    manager: &ArtifactManager,
+    init_game: F,
     enabled: Arc<AtomicBool>,
-) -> Result<()> {
+    shutdown: Arc<AtomicBool>,
+) -> Result<()>
+where
+    F: FnOnce() -> anyhow::Result<(GenshinGameController, ArtifactManager)>,
+{
     let addr = format!("127.0.0.1:{}", port);
     let server = Server::http(&addr)
         .map_err(|e| {
@@ -150,6 +163,7 @@ pub fn run_server(
                 )
             }
         })?;
+    let server = Arc::new(server);
 
     info!(
         "HTTP服务器已启动：http://{} / HTTP server running at http://{}",
@@ -159,16 +173,38 @@ pub fn run_server(
     // Shared state for async job tracking
     let job_state: Arc<Mutex<JobState>> = Arc::new(Mutex::new(JobState::idle()));
 
+    // Latest artifact inventory state (populated by manager after backpack scan).
+    let artifact_cache: Arc<Mutex<ArtifactCache>> =
+        Arc::new(Mutex::new(ArtifactCache::Empty));
+
     // Channel for submitting jobs from HTTP thread to execution thread
     let (job_tx, job_rx) = mpsc::channel::<(String, ArtifactManageRequest)>();
 
     // Clone shared refs for the HTTP thread
     let http_state = job_state.clone();
     let http_enabled = enabled.clone();
+    let http_artifact_cache = artifact_cache.clone();
+
+    // Clone job_tx for the HTTP thread before moving the original
+    let http_job_tx = job_tx.clone();
+
+    // Spawn shutdown watcher: polls the flag and calls server.unblock()
+    let shutdown_server = server.clone();
+    let shutdown_flag = shutdown.clone();
+    std::thread::spawn(move || {
+        while !shutdown_flag.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        info!("收到关闭信号 / Shutdown signal received, stopping HTTP server");
+        shutdown_server.unblock();
+        // Drop the original sender so job_rx.recv() unblocks once the HTTP thread also exits
+        drop(job_tx);
+    });
 
     // Spawn HTTP handler thread
+    let http_server = server.clone();
     let _http_thread = std::thread::spawn(move || {
-        for request in server.incoming_requests() {
+        for request in http_server.incoming_requests() {
             let method = request.method().clone();
             let url = request.url().to_string();
 
@@ -203,7 +239,7 @@ pub fn run_server(
 
             match (method, url.as_str()) {
                 (Method::Post, "/manage") => {
-                    handle_manage(request, &http_enabled, &http_state, &job_tx, cors_ref);
+                    handle_manage(request, &http_enabled, &http_state, &http_job_tx, cors_ref);
                 }
 
                 // Lightweight poll — no result payload.
@@ -223,26 +259,26 @@ pub fn run_server(
                         JobPhase::Completed => {
                             if let Some(ref result) = state.result {
                                 let json = serde_json::to_string(result).unwrap_or_else(|_| {
-                                    r#"{"error":"序列化失败 / Serialization failed"}"#.to_string()
+                                    format!(r#"{{"error":"{}"}}"#, yas::lang::localize("序列化失败 / Serialization failed"))
                                 });
                                 drop(state);
                                 respond_json(request, 200, &json, cors_ref);
                             } else {
                                 drop(state);
                                 respond_json(request, 500,
-                                    r#"{"error":"结果丢失 / Result data missing"}"#, cors_ref);
+                                    &format!(r#"{{"error":"{}"}}"#, yas::lang::localize("结果丢失 / Result data missing")), cors_ref);
                             }
                         }
                         JobPhase::Running => {
                             drop(state);
                             respond_json(request, 409,
-                                r#"{"error":"任务仍在执行 / Job still running. Poll GET /status."}"#,
+                                &format!(r#"{{"error":"{}"}}"#, yas::lang::localize("任务仍在执行 / Job still running. Poll GET /status.")),
                                 cors_ref);
                         }
                         JobPhase::Idle => {
                             drop(state);
                             respond_json(request, 404,
-                                r#"{"error":"没有已完成的任务 / No completed job available"}"#,
+                                &format!(r#"{{"error":"{}"}}"#, yas::lang::localize("没有已完成的任务 / No completed job available")),
                                 cors_ref);
                         }
                     }
@@ -262,6 +298,36 @@ pub fn run_server(
                     respond_json(request, 200, &json, cors_ref);
                 }
 
+                // Latest artifact inventory from the most recent complete scan.
+                (Method::Get, "/artifacts") => {
+                    let cache = http_artifact_cache.lock().unwrap();
+                    match &*cache {
+                        ArtifactCache::Complete(ref artifacts) => {
+                            let json = serde_json::to_string(artifacts).unwrap_or_else(|_| {
+                                format!(r#"{{"error":"{}"}}"#, yas::lang::localize("序列化失败 / Serialization failed"))
+                            });
+                            drop(cache);
+                            respond_json(request, 200, &json, cors_ref);
+                        }
+                        ArtifactCache::Incomplete => {
+                            drop(cache);
+                            respond_json(request, 503,
+                                &format!(r#"{{"error":"{}"}}"#, yas::lang::localize(
+                                    "上次扫描未完成，数据不可用 / Last scan was incomplete. Data unavailable."
+                                )),
+                                cors_ref);
+                        }
+                        ArtifactCache::Empty => {
+                            drop(cache);
+                            respond_json(request, 404,
+                                &format!(r#"{{"error":"{}"}}"#, yas::lang::localize(
+                                    "没有可用的圣遗物数据，请先执行管理任务 / No artifact data available. Run a manage job first."
+                                )),
+                                cors_ref);
+                        }
+                    }
+                }
+
                 _ => {
                     respond_json(request, 404, r#"{"error":"Not Found"}"#, cors_ref);
                 }
@@ -271,8 +337,17 @@ pub fn run_server(
 
     // Block on channel — zero CPU when idle, wakes instantly on job arrival.
     // This thread owns ctrl (which is !Send) so it must be the original thread.
+    // Game controller + manager are created lazily on first job to avoid
+    // focusing the game window at server startup.
     info!("执行线程就绪 / Execution thread ready");
+    let mut game_state: Option<(GenshinGameController, ArtifactManager)> = None;
+    let mut init_game = Some(init_game);
+
     while let Ok((job_id, request)) = job_rx.recv() {
+        if shutdown.load(Ordering::Relaxed) {
+            info!("[job {}] 服务器关闭中，跳过 / Server shutting down, skipping job", job_id);
+            break;
+        }
         info!(
             "[job {}] 收到任务，1秒后开始执行 / Job received, starting in 1 second",
             job_id
@@ -281,6 +356,40 @@ pub fn run_server(
         // 1-second delay: let the client see the "running" state update
         // before the game window is focused and takes over the screen.
         yas::utils::sleep(1000);
+
+        // Lazy init: create game controller + manager on first job
+        if game_state.is_none() {
+            if let Some(init_fn) = init_game.take() {
+                match init_fn() {
+                    Ok(pair) => {
+                        game_state = Some(pair);
+                    }
+                    Err(e) => {
+                        error!("游戏初始化失败 / Game init failed: {}", e);
+                        let mut state = job_state.lock().unwrap();
+                        let err_results: Vec<_> = request.instructions.iter().map(|i| {
+                            crate::manager::models::InstructionResult {
+                                id: i.id.clone(),
+                                status: crate::manager::models::InstructionStatus::UiError,
+                                detail: Some(format!(
+                                    "游戏初始化失败 / Game init failed: {}", e
+                                )),
+                            }
+                        }).collect();
+                        let summary = crate::manager::models::ManageSummary::from_results(&err_results);
+                        let result = crate::manager::models::ManageResult {
+                            results: err_results,
+                            summary,
+                        };
+                        *state = JobState::completed(job_id.clone(), result);
+                        info!("[job {}] 执行失败（游戏初始化）/ Failed (game init)", job_id);
+                        continue;
+                    }
+                }
+            }
+        }
+
+        let (ref mut ctrl, ref manager) = game_state.as_mut().unwrap();
 
         let progress_state = job_state.clone();
         let progress_fn = move |completed: usize, total: usize, current_id: &str, phase: &str| {
@@ -294,7 +403,29 @@ pub fn run_server(
             }
         };
 
-        let result = manager.execute(ctrl, request, Some(&progress_fn));
+        let (result, artifact_snapshot) = manager.execute(ctrl, request, Some(&progress_fn));
+
+        // Update artifact cache based on scan completeness
+        match artifact_snapshot {
+            Some(snapshot) => {
+                let count = snapshot.len();
+                *artifact_cache.lock().unwrap() = ArtifactCache::Complete(snapshot);
+                info!("[job {}] 圣遗物快照已更新（{} 个）/ Artifact snapshot updated ({} items)", job_id, count, count);
+            }
+            None => {
+                // Scan was incomplete (interrupted, early stop, or no lock changes)
+                // Mark as incomplete so GET /artifacts returns 503 instead of stale data
+                let mut cache = artifact_cache.lock().unwrap();
+                if !matches!(*cache, ArtifactCache::Empty) {
+                    // Only mark incomplete if we previously had data — don't downgrade Empty
+                    // if this was an equip-only job (no scan at all).
+                    if result.results.iter().any(|r| r.status == InstructionStatus::Aborted) {
+                        *cache = ArtifactCache::Incomplete;
+                        info!("[job {}] 扫描被中断，圣遗物快照已失效 / Scan interrupted, artifact snapshot invalidated", job_id);
+                    }
+                }
+            }
+        }
 
         {
             let mut state = job_state.lock().unwrap();
@@ -323,7 +454,7 @@ fn handle_manage(
         respond_json(
             request,
             503,
-            r#"{"error":"管理器已暂停 / Manager is paused. Enable it in the GUI to accept requests."}"#,
+            &format!(r#"{{"error":"{}"}}"#, yas::lang::localize("管理器已暂停 / Manager is paused. Enable it in the GUI to accept requests.")),
             cors_origin,
         );
         return;
@@ -336,7 +467,7 @@ fn handle_manage(
             respond_json(
                 request,
                 409,
-                r#"{"error":"正在执行其他任务 / Another job is already running. Poll GET /status for progress."}"#,
+                &format!(r#"{{"error":"{}"}}"#, yas::lang::localize("正在执行其他任务 / Another job is already running. Poll GET /status for progress.")),
                 cors_origin,
             );
             return;
@@ -349,10 +480,10 @@ fn handle_manage(
             respond_json(
                 request,
                 413,
-                &format!(
-                    r#"{{"error":"请求体过大（{} 字节，上限 {} 字节）/ Request body too large: {} bytes (max {})"}}"#,
+                &format!(r#"{{"error":"{}"}}"#, yas::lang::localize(&format!(
+                    "请求体过大（{} 字节，上限 {} 字节）/ Request body too large: {} bytes (max {})",
                     len, MAX_BODY_SIZE, len, MAX_BODY_SIZE
-                ),
+                ))),
                 cors_origin,
             );
             return;
@@ -365,7 +496,7 @@ fn handle_manage(
         respond_json(
             request,
             400,
-            &format!(r#"{{"error":"读取请求体失败 / Failed to read body: {}"}}"#, e),
+            &format!(r#"{{"error":"{}"}}"#, yas::lang::localize(&format!("读取请求体失败: {} / Failed to read body: {}", e, e))),
             cors_origin,
         );
         return;
@@ -376,10 +507,10 @@ fn handle_manage(
         respond_json(
             request,
             413,
-            &format!(
-                r#"{{"error":"请求体过大（{} 字节，上限 {} 字节）/ Request body too large: {} bytes (max {})"}}"#,
+            &format!(r#"{{"error":"{}"}}"#, yas::lang::localize(&format!(
+                "请求体过大（{} 字节，上限 {} 字节）/ Request body too large: {} bytes (max {})",
                 body.len(), MAX_BODY_SIZE, body.len(), MAX_BODY_SIZE
-            ),
+            ))),
             cors_origin,
         );
         return;
@@ -392,7 +523,7 @@ fn handle_manage(
             respond_json(
                 request,
                 400,
-                &format!(r#"{{"error":"JSON解析失败 / JSON parse error: {}"}}"#, e),
+                &format!(r#"{{"error":"{}"}}"#, yas::lang::localize(&format!("JSON解析失败: {} / JSON parse error: {}", e, e))),
                 cors_origin,
             );
             return;
@@ -403,7 +534,7 @@ fn handle_manage(
         respond_json(
             request,
             400,
-            r#"{"error":"指令列表为空 / Instructions list is empty"}"#,
+            &format!(r#"{{"error":"{}"}}"#, yas::lang::localize("指令列表为空 / Instructions list is empty")),
             cors_origin,
         );
         return;
@@ -430,7 +561,7 @@ fn handle_manage(
         respond_json(
             request,
             500,
-            r#"{"error":"执行线程不可用 / Execution thread unavailable"}"#,
+            &format!(r#"{{"error":"{}"}}"#, yas::lang::localize("执行线程不可用 / Execution thread unavailable")),
             cors_origin,
         );
         return;

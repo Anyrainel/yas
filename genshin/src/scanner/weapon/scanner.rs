@@ -160,25 +160,25 @@ impl GoodWeaponScanner {
         let name_text = Self::ocr_image_region(ocr, image, ocr_regions.name, scaler)?;
         let weapon_key = fuzzy_match_map(&name_text, &mappings.weapon_name_map);
         if config.verbose {
-            debug!("[weapon] name OCR: {:?} -> {:?}", name_text, weapon_key);
+            debug!("[weapon] 名称OCR: {:?} -> {:?} / [weapon] name OCR: {:?} -> {:?}", name_text, weapon_key, name_text, weapon_key);
         }
 
         if weapon_key.is_none() {
             // Check if it's a stop-signal weapon/material
             for &stop_name in WEAPON_STOP_NAMES.iter().chain(WEAPON_FORGING_STOP_NAMES.iter()) {
                 if name_text.contains(stop_name) {
-                    info!("[weapon] detected \u{300C}{}\u{300D}, stopping", stop_name);
+                    info!("[weapon] 检测到「{}」，停止扫描 / [weapon] detected 「{}」, stopping", stop_name, stop_name);
                     return Ok(WeaponScanResult::Stop);
                 }
             }
 
             if pixel_utils::detect_weapon_rarity(image, scaler) <= 2 {
-                info!("[weapon] detected low-star item, stopping");
+                info!("[weapon] 检测到低星级物品，停止扫描 / [weapon] detected low-star item, stopping");
                 return Ok(WeaponScanResult::Stop);
             }
 
             if config.continue_on_failure {
-                warn!("[weapon] cannot match: \u{300C}{}\u{300D}, skipping", name_text);
+                warn!("[weapon] 无法匹配「{}」，跳过 / [weapon] cannot match: 「{}」, skipping", name_text, name_text);
                 return Ok(WeaponScanResult::Skip);
             }
             bail!("无法匹配武器 / Cannot match weapon: \u{300C}{}\u{300D}", name_text);
@@ -203,12 +203,12 @@ impl GoodWeaponScanner {
                 let equip_text_v5 = Self::ocr_image_region(fallback, image, ocr_regions.equip, scaler)?;
                 location = Self::parse_equip_location(&equip_text_v5, mappings);
                 if !location.is_empty() {
-                    debug!("[weapon] {} equip: v4「{}」failed, v5「{}」→ {}", weapon_key, equip_text.trim(), equip_text_v5.trim(), location);
+                    debug!("[weapon] {} 装备: v4「{}」失败, v5「{}」→ {} / [weapon] {} equip: v4「{}」failed, v5「{}」→ {}", weapon_key, equip_text.trim(), equip_text_v5.trim(), location, weapon_key, equip_text.trim(), equip_text_v5.trim(), location);
                 }
             }
         }
         if !equip_text.is_empty() {
-            debug!("[weapon] {} equip OCR: {:?} -> {:?}", weapon_key, equip_text, location);
+            debug!("[weapon] {} 装备OCR: {:?} -> {:?} / [weapon] {} equip OCR: {:?} -> {:?}", weapon_key, equip_text, location, weapon_key, equip_text, location);
         }
 
         // Pixel-based detections
@@ -297,7 +297,7 @@ impl GoodWeaponScanner {
         if let Some((lv, mx)) = Self::try_split_digits(&digits) {
             let max_level = Self::snap_max_level(mx);
             let ascended = lv >= 20 && lv < max_level;
-            debug!("[weapon] level OCR direct split: {:?} -> {}/{}", text, lv, max_level);
+            debug!("[weapon] 等级OCR直接分割: {:?} -> {}/{} / [weapon] level OCR direct split: {:?} -> {}/{}", text, lv, max_level, text, lv, max_level);
             return (lv, ascended);
         }
 
@@ -321,7 +321,7 @@ impl GoodWeaponScanner {
             if let Some((lv, mx, idx, _)) = best {
                 let max_level = Self::snap_max_level(mx);
                 let ascended = lv >= 20 && lv < max_level;
-                debug!("[weapon] level OCR noise-remove: {:?} (rm idx {}) -> {}/{}", text, idx, lv, max_level);
+                debug!("[weapon] 等级OCR去噪: {:?} (移除索引 {}) -> {}/{} / [weapon] level OCR noise-remove: {:?} (rm idx {}) -> {}/{}", text, idx, lv, max_level, text, idx, lv, max_level);
                 return (lv, ascended);
             }
         }
@@ -329,17 +329,17 @@ impl GoodWeaponScanner {
         // Phase 3: partial extract — just the level number
         if let Some(caps) = LV_RE.captures(text) {
             let level: i32 = caps[1].parse().unwrap_or(1);
-            debug!("[weapon] level OCR partial (Lv): {:?} -> {}", text, level);
+            debug!("[weapon] 等级OCR部分匹配(Lv): {:?} -> {} / [weapon] level OCR partial (Lv): {:?} -> {}", text, level, text, level);
             return (level, false);
         }
 
         let level: i32 = digits.parse().unwrap_or(0);
         if (1..=90).contains(&level) {
-            debug!("[weapon] level OCR bare digits: {:?} -> {}", text, level);
+            debug!("[weapon] 等级OCR纯数字: {:?} -> {} / [weapon] level OCR bare digits: {:?} -> {}", text, level, text, level);
             return (level, false);
         }
 
-        warn!("[weapon] level OCR failed: {:?}", text);
+        warn!("[weapon] 等级OCR失败: {:?} / [weapon] level OCR failed: {:?}", text, text);
         (1, false)
     }
 
@@ -389,7 +389,7 @@ impl GoodWeaponScanner {
         skip_open_backpack: bool,
         start_at: usize,
     ) -> Result<Vec<GoodWeapon>> {
-        debug!("[weapon] starting scan...");
+        debug!("[weapon] 开始扫描... / [weapon] starting scan...");
         let now = SystemTime::now();
 
         if !skip_open_backpack {
@@ -412,7 +412,7 @@ impl GoodWeaponScanner {
 
         // If count is 0, try reopening backpack
         let total_count = if current_count == 0 {
-            info!("[weapon] count=0, reopening backpack...");
+            info!("[weapon] 数量=0，重新打开背包... / [weapon] count=0, reopening backpack...");
             drop(bp);
             ctrl.return_to_main_ui(4);
             let mut bp2 = BackpackScanner::new(ctrl);
@@ -427,16 +427,16 @@ impl GoodWeaponScanner {
         };
 
         if total_count == 0 {
-            info!("[weapon] no weapons in backpack");
+            info!("[weapon] 背包中无武器 / [weapon] no weapons in backpack");
             return Ok(Vec::new());
         }
 
         let total_count = if self.config.max_count > 0 {
             let capped = (total_count as usize).min(self.config.max_count + start_at) as i32;
-            info!("[weapon] total: {} (capped to {} by max_count={})", total_count, capped, self.config.max_count);
+            info!("[weapon] 总计: {} (受max_count={}限制，截取为{}) / [weapon] total: {} (capped to {} by max_count={})", total_count, self.config.max_count, capped, total_count, capped, self.config.max_count);
             capped
         } else {
-            debug!("[weapon] total: {}", total_count);
+            debug!("[weapon] 总计: {} / [weapon] total: {}", total_count, total_count);
             total_count
         };
 
@@ -455,7 +455,7 @@ impl GoodWeaponScanner {
             || ocr_factory::create_ocr_model("ppocrv5"),
             1,
         )?);
-        debug!("[weapon] OCR pool: v4=4, equip_fallback(v5)=1");
+        debug!("[weapon] OCR池: v4=4, 装备回退(v5)=1 / [weapon] OCR pool: v4=4, equip_fallback(v5)=1");
 
         // Shared context for worker threads
         let worker_mappings = self.mappings.clone();
@@ -516,14 +516,14 @@ impl GoodWeaponScanner {
                         // Quick rarity check on main thread
                         let rarity = pixel_utils::detect_weapon_rarity(&image, &scaler);
                         if rarity <= 2 {
-                            debug!("[weapon] detected {}* item, stopping capture", rarity);
+                            debug!("[weapon] 检测到{}星物品，停止捕获 / [weapon] detected {}* item, stopping capture", rarity, rarity);
                             return ScanAction::Stop;
                         }
 
                         // Normalize index to 0-based so the worker's BTreeMap drain works correctly.
                         let worker_idx = idx - start_at;
                         if item_tx.send(WorkItem { index: worker_idx, image, metadata: () }).is_err() {
-                            error!("[weapon] worker channel closed");
+                            error!("[weapon] 工作通道已关闭 / [weapon] worker channel closed");
                             return ScanAction::Stop;
                         }
 
@@ -537,7 +537,9 @@ impl GoodWeaponScanner {
         let weapons = worker_handle.join();
 
         info!(
-            "[weapon] complete, {} weapons scanned in {:?}",
+            "[weapon] 完成，扫描了{}把武器，耗时{:?} / [weapon] complete, {} weapons scanned in {:?}",
+            weapons.len(),
+            now.elapsed().unwrap_or_default(),
             weapons.len(),
             now.elapsed().unwrap_or_default()
         );

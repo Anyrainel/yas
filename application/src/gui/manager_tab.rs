@@ -57,11 +57,15 @@ pub fn show(
             if scan_running && !is_server_running {
                 ui.add_enabled(false, egui::Button::new(l.t("▶ 启动", "▶ Start")));
             } else if is_server_running {
-                ui.spinner();
+                if ui.button(l.t("■ 停止", "■ Stop")).clicked() {
+                    if let Some(ref h) = server_handle {
+                        h.stop();
+                    }
+                }
                 ui.colored_label(
                     egui::Color32::from_rgb(100, 200, 100),
                     format!(
-                        "{} {}",
+                        "● {} {}",
                         l.t("运行中", "Running on port"),
                         state.server_port
                     ),
@@ -74,34 +78,16 @@ pub fn show(
             }
         });
 
-        // Enabled toggle
-        if is_server_running {
-            ui.add_space(2.0);
-            let mut enabled = state.server_enabled.load(Ordering::Relaxed);
-            if ui
-                .checkbox(
-                    &mut enabled,
-                    l.t("接受管理请求", "Accept manage requests"),
-                )
-                .changed()
-            {
-                state.server_enabled.store(enabled, Ordering::Relaxed);
-                if enabled {
-                    log::info!("{} {}", l.t("管理器已启用", "Manager enabled on port"), state.server_port);
-                } else {
-                    log::info!("{}", l.t("管理器已暂停，请求将返回503", "Manager paused — requests return 503"));
-                }
-            }
-            if !enabled {
-                ui.colored_label(
-                    egui::Color32::from_rgb(255, 200, 50),
-                    l.t(
-                        "  已暂停：POST /manage → 503",
-                        "  Paused: POST /manage → 503",
-                    ),
-                );
-            }
-        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.checkbox(
+                &mut state.stop_on_all_matched,
+                l.t(
+                    "匹配完成后停止扫描（更快，但无法提供完整圣遗物快照）",
+                    "Stop after all matched (faster, but no full inventory snapshot)",
+                ),
+            );
+        });
 
         // Error from previous run
         if !is_server_running {

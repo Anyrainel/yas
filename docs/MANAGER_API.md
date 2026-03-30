@@ -172,6 +172,44 @@ Full execution result — only available after job completes. Call once after `G
 | `aborted` | User cancelled (right-click in game or GUI) |
 | `skipped` | Skipped (earlier failure or abort) |
 
+### `GET /artifacts`
+
+Latest complete artifact inventory snapshot. Updated after each manage job that performs a full backpack scan without interruption. Each element is a full GOOD v3 artifact object with lock states reflecting the latest toggles.
+
+#### 200 OK
+
+```json
+[
+  {
+    "setKey": "GladiatorsFinale",
+    "slotKey": "flower",
+    "level": 20,
+    "rarity": 5,
+    "mainStatKey": "hp",
+    "substats": [{"key": "critRate_", "value": 3.9}, {"key": "critDMG_", "value": 7.8}],
+    "location": "",
+    "lock": true,
+    "astralMark": false,
+    "elixirCrafted": false
+  }
+]
+```
+
+#### Other responses
+
+| Code | When |
+|------|------|
+| 404 | No scan has been performed yet |
+| 503 | Last scan was interrupted or incomplete — data is unavailable |
+
+**Notes:**
+- The snapshot is only updated when a manage job completes a **full** backpack scan (all items visited, no user abort, no early stop).
+- If the "stop after all matched" option is enabled in the GUI, the scan stops early after finding all targeted artifacts — this produces an incomplete snapshot and `GET /artifacts` will return 503.
+- If a scan is interrupted (user right-click abort), any previously cached data is invalidated (transitions to 503).
+- Lock states in the snapshot reflect the post-toggle state for successfully changed artifacts.
+- The snapshot persists in memory for the server's lifetime. It is not written to disk.
+- Equip-only jobs (no lock changes) do not trigger a backpack scan and do not affect the cache.
+
 ## Client Flow
 
 ```
@@ -182,7 +220,8 @@ Full execution result — only available after job completes. Call once after `G
    → "completed": proceed to step 4
    → no response: server crashed or game interrupted
 4. GET /result → full per-instruction results
-5. Done. Next POST /manage will reset state.
+5. GET /artifacts → latest artifact inventory (optional, for syncing client state)
+6. Done. Next POST /manage will reset state.
 ```
 
 ## Cancellation
@@ -231,3 +270,10 @@ Batch:
 ```
 
 All instructions execute sequentially. Invalid ones are filtered and reported individually; valid ones still run.
+
+## Changelog
+
+### 2026-03-29
+
+- **`GET /artifacts`**: New endpoint — returns the latest complete artifact inventory as a flat JSON array of GOOD v3 artifacts. Updated after each manage job that completes a full backpack scan without interruption. Lock states reflect post-toggle values. Returns 404 if no scan has been performed yet.
+- **Lock manager**: OCR is now pipelined (async) — captured images are dispatched to rayon workers immediately, running in parallel with subsequent grid captures. Results are collected at page boundaries before applying lock toggles.

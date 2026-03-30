@@ -26,8 +26,18 @@ fn init_cli() {
     #[cfg(windows)]
     attach_console();
 
+    // Set global language from config before logger init
+    let config = yas_genshin::cli::load_config_or_default();
+    yas::lang::set_lang(&config.lang);
+
     env_logger::Builder::new()
         .filter_level(log::LevelFilter::Info)
+        .format(|buf, record| {
+            use std::io::Write;
+            let raw = format!("{}", record.args());
+            let msg = yas::lang::localize(&raw);
+            writeln!(buf, "{}", msg)
+        })
         .init();
 
     // Install a custom panic hook so that panics (from unwrap, expect, panic!, etc.)

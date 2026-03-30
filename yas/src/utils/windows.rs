@@ -177,7 +177,7 @@ pub fn set_dpi_awareness() {
             let addr = GetProcAddress(h_lib, encode_lpcstr("SetProcessDpiAwareness").as_ptr());
             println!("{:?}", addr);
             if addr.is_none() {
-                warn!("cannot find process `SetProcessDpiAwareness`, but `Shcore.dll` exists");
+                warn!("找不到函数SetProcessDpiAwareness，但Shcore.dll存在 / cannot find process SetProcessDpiAwareness, but Shcore.dll exists");
                 SetProcessDPIAware();
             } else {
                 let proc = addr.unwrap();

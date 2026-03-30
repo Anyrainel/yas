@@ -31,7 +31,7 @@ impl ExportAssets {
             let mut file = match File::create(&item.filename) {
                 Err(why) => {
                     stat.failed_items.push(StatisticItem::from_export_item(item));
-                    error!("无法创建文件 {:?}: {}", &item.filename, why);
+                    error!("无法创建文件 {:?}: {} / Cannot create file {:?}: {}", &item.filename, why, &item.filename, why);
                     continue;
                 },
                 Ok(file) => {
@@ -42,7 +42,7 @@ impl ExportAssets {
             match file.write_all(&item.contents) {
                 Err(why) => {
                     stat.failed_items.push(StatisticItem::from_export_item(item));
-                    error!("无法写入文件 {:?}: {}", &item.filename, why);
+                    error!("无法写入文件 {:?}: {} / Cannot write file {:?}: {}", &item.filename, why, &item.filename, why);
                     continue;
                 },
                 Ok(_) => (),

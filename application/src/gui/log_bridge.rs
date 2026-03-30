@@ -28,9 +28,10 @@ impl Log for GuiLogger {
 
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
+            let raw = format!("{}", record.args());
             let entry = LogEntry {
                 level: record.level(),
-                message: format!("{}", record.args()),
+                message: yas::lang::localize(&raw),
                 timestamp: format_timestamp(),
             };
             if let Ok(mut lines) = self.lines.lock() {

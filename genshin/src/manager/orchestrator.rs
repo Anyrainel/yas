@@ -1,9 +1,11 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use log::{info, warn};
 
 use crate::scanner::common::game_controller::GenshinGameController;
 use crate::scanner::common::mappings::MappingManager;
+use crate::scanner::common::models::GoodArtifact;
 
 use super::lock_manager::LockManager;
 use super::equip_manager::EquipManager;
@@ -23,6 +25,10 @@ pub struct ArtifactManager {
     pub delay_grid_item: u64,
     /// Delay (ms) after scrolling during backpack scan.
     pub delay_scroll: u64,
+    /// If true, stop scanning as soon as all instructions are matched (faster,
+    /// but produces an incomplete inventory snapshot).
+    /// If false (default), always scan the full backpack for a complete snapshot.
+    pub stop_on_all_matched: bool,
 }
 
 impl ArtifactManager {
@@ -37,6 +43,7 @@ impl ArtifactManager {
             substat_ocr_backend,
             delay_grid_item: 60,
             delay_scroll: 200,
+            stop_on_all_matched: false,
         }
     }
 
@@ -46,17 +53,20 @@ impl ArtifactManager {
     /// via character screens). The backpack scan results from Phase 1 are reused
     /// in Phase 2 for pre-flight validation.
     ///
-    /// If `progress_fn` is provided, it is called after each instruction result
-    /// with (completed_count, total_count, current_instruction_id, phase).
+    /// Returns `(ManageResult, Option<Vec<GoodArtifact>>)`. The second value is
+    /// a complete artifact inventory snapshot (with lock states updated for
+    /// successful toggles) if the backpack scan completed without interruption.
+    /// `None` if no scan was performed or the scan was interrupted.
     ///
     /// 执行请求中的所有指令。先执行阶段一（通过背包扫描更改锁定），
     /// 再执行阶段二（通过角色界面更改装备）。
+    /// 返回管理结果和完整圣遗物快照（如果背包扫描完成且未被中断）。
     pub fn execute(
         &self,
         ctrl: &mut GenshinGameController,
         request: ArtifactManageRequest,
         progress_fn: Option<&ProgressFn>,
-    ) -> ManageResult {
+    ) -> (ManageResult, Option<Vec<GoodArtifact>>) {
         let mut all_results: Vec<InstructionResult> = Vec::new();
 
         // Validate instructions before touching the game
@@ -85,7 +95,7 @@ impl ArtifactManager {
         if valid_instructions.is_empty() {
             info!("[manager] 没有有效指令 / No valid instructions to execute");
             let summary = ManageSummary::from_results(&all_results);
-            return ManageResult { results: all_results, summary };
+            return (ManageResult { results: all_results, summary }, None);
         }
 
         let total = valid_instructions.len();
@@ -123,6 +133,8 @@ impl ArtifactManager {
 
         // Phase 1: Lock changes (iterate artifact backpack)
         let mut scanned_artifacts = Vec::new();
+        let mut matched_ids: HashMap<String, usize> = HashMap::new();
+        let mut scan_complete = false;
         let lock_instructions: Vec<ArtifactInstruction> = request.instructions.iter()
             .filter(|i| i.changes.lock.is_some())
             .cloned()
@@ -136,13 +148,16 @@ impl ArtifactManager {
                 self.ocr_backend.clone(),
                 self.substat_ocr_backend.clone(),
             );
-            let (lock_results, artifacts) = lock_mgr.execute(
+            let (lock_results, artifacts, ids_map, complete) = lock_mgr.execute(
                 ctrl,
                 &lock_instructions,
                 self.delay_grid_item,
                 self.delay_scroll,
+                self.stop_on_all_matched,
             );
             scanned_artifacts = artifacts;
+            matched_ids = ids_map;
+            scan_complete = complete;
 
             // Report progress for each lock result
             for r in &lock_results {
@@ -182,20 +197,21 @@ impl ArtifactManager {
         }
 
         // Mark any remaining instructions as aborted
-        let processed_ids: std::collections::HashSet<String> = all_results.iter()
+        let processed_ids: HashSet<String> = all_results.iter()
             .map(|r| r.id.clone())
             .collect();
 
+        let was_aborted = yas::utils::was_aborted();
         for instr in &request.instructions {
             if !processed_ids.contains(&instr.id) {
                 all_results.push(InstructionResult {
                     id: instr.id.clone(),
-                    status: if yas::utils::was_aborted() {
+                    status: if was_aborted {
                         InstructionStatus::Aborted
                     } else {
                         InstructionStatus::Skipped
                     },
-                    detail: Some(if yas::utils::was_aborted() {
+                    detail: Some(if was_aborted {
                         "用户中断 / User aborted".to_string()
                     } else {
                         "未处理 / Not processed".to_string()
@@ -212,10 +228,24 @@ impl ArtifactManager {
             summary.success, summary.already_correct, summary.not_found, summary.errors, summary.aborted,
         );
 
-        ManageResult {
+        // Build artifact snapshot only if scan completed fully (all items visited,
+        // no RMB abort, no early stop). Partial scans are not served.
+        let artifact_snapshot = if scan_complete && !scanned_artifacts.is_empty() {
+            Some(build_artifact_snapshot(
+                &scanned_artifacts,
+                &matched_ids,
+                &all_results,
+            ))
+        } else {
+            None
+        };
+
+        let result = ManageResult {
             results: all_results,
             summary,
-        }
+        };
+
+        (result, artifact_snapshot)
     }
 }
 
@@ -250,4 +280,32 @@ fn validate_instruction(instr: &ArtifactInstruction) -> Option<String> {
         ));
     }
     None
+}
+
+/// Build a flat artifact inventory snapshot with lock states updated for
+/// successful toggles. Returns all scanned artifacts in grid order.
+fn build_artifact_snapshot(
+    scanned_artifacts: &[(usize, GoodArtifact)],
+    matched_ids: &HashMap<String, usize>,
+    results: &[InstructionResult],
+) -> Vec<GoodArtifact> {
+    // Build reverse map: scanned artifact index → status
+    let mut index_to_status: HashMap<usize, &InstructionStatus> = HashMap::new();
+    for (instr_id, &artifact_idx) in matched_ids {
+        if let Some(r) = results.iter().find(|r| r.id == *instr_id) {
+            index_to_status.insert(artifact_idx, &r.status);
+        }
+    }
+
+    scanned_artifacts.iter().map(|(idx, artifact)| {
+        match index_to_status.get(idx) {
+            Some(InstructionStatus::Success) => {
+                // Lock was toggled — reflect the new state
+                let mut updated = artifact.clone();
+                updated.lock = !updated.lock;
+                updated
+            }
+            _ => artifact.clone(),
+        }
+    }).collect()
 }

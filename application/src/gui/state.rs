@@ -109,6 +109,9 @@ pub struct AppState {
     /// Controls whether POST /manage requests are executed or rejected (503).
     /// Shared with the server thread via Arc.
     pub server_enabled: Arc<AtomicBool>,
+    /// If true, stop scanning after all instructions are matched (faster but
+    /// no full inventory snapshot via GET /artifacts).
+    pub stop_on_all_matched: bool,
     pub server_status: Arc<Mutex<TaskStatus>>,
     pub manage_status: Arc<Mutex<TaskStatus>>,
 
@@ -143,6 +146,7 @@ impl AppState {
             scan_status: Arc::new(Mutex::new(TaskStatus::Idle)),
             server_port: 8765,
             server_enabled: Arc::new(AtomicBool::new(true)),
+            stop_on_all_matched: false,
             server_status: Arc::new(Mutex::new(TaskStatus::Idle)),
             manage_status: Arc::new(Mutex::new(TaskStatus::Idle)),
             log_lines: Arc::new(Mutex::new(Vec::with_capacity(1000))),

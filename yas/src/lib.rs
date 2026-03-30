@@ -6,6 +6,7 @@ compile_error!("feature \"ort\" and \"tract_onnx\" cannot be enabled at the same
 extern crate log;
 extern crate lazy_static;
 
+pub mod lang;
 pub mod common;
 pub mod export;
 pub mod draw_capture_region;

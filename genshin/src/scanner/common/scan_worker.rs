@@ -116,10 +116,10 @@ where
                         consecutive_errors = 0;
                     }
                     Err(e) => {
-                        error!("[worker] item {} error: {}", next_index - 1, e);
+                        error!("[worker] 第{}项错误: {} / [worker] item {} error: {}", next_index - 1, e, next_index - 1, e);
                         consecutive_errors += 1;
                         if consecutive_errors >= 10 {
-                            error!("[worker] {} consecutive errors, signaling stop", consecutive_errors);
+                            error!("[worker] 连续{}个错误，发送停止信号 / [worker] {} consecutive errors, signaling stop", consecutive_errors, consecutive_errors);
                             should_stop_clone.store(true, Ordering::Relaxed);
                         }
                     }

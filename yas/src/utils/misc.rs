@@ -9,6 +9,6 @@ pub fn color_distance(c1: &image::Rgb<u8>, c2: &image::Rgb<u8>) -> usize {
 }
 
 pub fn press_any_key_to_continue() {
-    println!("按任意键继续... / Press any key to continue...");
+    println!("{}", crate::lang::localize("按任意键继续... / Press any key to continue..."));
     let _ = std::io::stdin().read(&mut [0u8]).unwrap();
 }

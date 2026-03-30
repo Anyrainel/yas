@@ -9,7 +9,7 @@ use regex::Regex;
 use yas::ocr::ImageToText;
 
 use super::GoodArtifactScannerConfig;
-use crate::scanner::common::backpack_scanner::{BackpackScanConfig, BackpackScanner, GridEvent, ScanAction};
+use crate::scanner::common::backpack_scanner::{self as backpack_scanner, BackpackScanConfig, BackpackScanner, GridEvent, ScanAction};
 use crate::scanner::common::constants::*;
 use crate::scanner::common::coord_scaler::CoordScaler;
 use crate::scanner::common::equip_parser;
@@ -337,18 +337,18 @@ impl GoodArtifactScanner {
             .trim_end_matches(';')
             .trim();
 
-        debug!("[find_set_key] text={:?} cleaned={:?} map_size={}", text, cleaned, mappings.artifact_set_map.len());
+        debug!("[find_set_key] 文本={:?} 清洗={:?} 大小={} / [find_set_key] text={:?} cleaned={:?} map_size={}", text, cleaned, mappings.artifact_set_map.len(), text, cleaned, mappings.artifact_set_map.len());
 
         // Try cleaned text first
         if let Some(key) = fuzzy_match_map(cleaned, &mappings.artifact_set_map) {
-            debug!("[find_set_key] matched cleaned={:?} → {:?}", cleaned, key);
+            debug!("[find_set_key] 清洗匹配={:?} → {:?} / [find_set_key] matched cleaned={:?} → {:?}", cleaned, key, cleaned, key);
             return Some(key);
         }
 
         // Try full text (in case cleaning removed something needed)
         if cleaned != text.trim() {
             if let Some(key) = fuzzy_match_map(text.trim(), &mappings.artifact_set_map) {
-                debug!("[find_set_key] matched full text={:?} → {:?}", text.trim(), key);
+                debug!("[find_set_key] 全文匹配={:?} → {:?} / [find_set_key] matched full text={:?} → {:?}", text.trim(), key, text.trim(), key);
                 return Some(key);
             }
         }
@@ -363,12 +363,12 @@ impl GoodArtifactScanner {
                 continue;
             }
             if let Some(key) = fuzzy_match_map(line, &mappings.artifact_set_map) {
-                debug!("[find_set_key] matched line={:?} → {:?}", line, key);
+                debug!("[find_set_key] 行匹配={:?} → {:?} / [find_set_key] matched line={:?} → {:?}", line, key, line, key);
                 return Some(key);
             }
         }
 
-        debug!("[find_set_key] NO MATCH for text={:?}", text);
+        debug!("[find_set_key] 未匹配 text={:?} / [find_set_key] NO MATCH for text={:?}", text, text);
         None
     }
 
@@ -485,7 +485,7 @@ impl GoodArtifactScanner {
         // 0. Detect rarity — stop on 3-star or below
         let rarity = pixel_utils::detect_artifact_rarity(image, scaler);
         if rarity <= 3 {
-            debug!("[artifact] detected {}* item, stopping", rarity);
+            debug!("[artifact] 检测到{}星物品，停止 / [artifact] detected {}* item, stopping", rarity, rarity);
             return Ok(ArtifactScanResult::Stop);
         }
 
@@ -498,11 +498,11 @@ impl GoodArtifactScanner {
             None => {
                 // 4-star with unrecognizable slot = possibly elixir essence, skip
                 if rarity == 4 {
-                    info!("[artifact] 4* unrecognizable slot (possibly elixir essence), skipping");
+                    info!("[artifact] 4星无法识别栏位（可能是精炼素材），跳过 / [artifact] 4* unrecognizable slot (possibly elixir essence), skipping");
                     return Ok(ArtifactScanResult::Skip);
                 }
                 if config.continue_on_failure {
-                    warn!("[artifact] cannot identify slot: \u{300C}{}\u{300D}, skipping", part_text);
+                    warn!("[artifact] 无法识别栏位: 「{}」，跳过 / [artifact] cannot identify slot: 「{}」, skipping", part_text, part_text);
                     return Ok(ArtifactScanResult::Skip);
                 }
                 bail!("无法识别圣遗物部位 / Cannot identify artifact slot: \u{300C}{}\u{300D}", part_text);
@@ -527,7 +527,7 @@ impl GoodArtifactScanner {
             Some(k) => k,
             None => {
                 if config.continue_on_failure {
-                    warn!("[artifact] cannot identify main stat: \u{300C}{}\u{300D}, skipping", main_stat_text);
+                    warn!("[artifact] 无法识别主属性: 「{}」，跳过 / [artifact] cannot identify main stat: 「{}」, skipping", main_stat_text, main_stat_text);
                     return Ok(ArtifactScanResult::Skip);
                 }
                 bail!("无法识别主词条 / Cannot identify main stat: \u{300C}{}\u{300D}", main_stat_text);
@@ -597,8 +597,8 @@ impl GoodArtifactScanner {
             0
         };
         if lv1 != lv2 && config.verbose {
-            info!("[artifact] level dual-OCR: engine1=「{}」→{} engine2=「{}」→{} → {}",
-                level_text1.trim(), lv1, level_text2.trim(), lv2, level);
+            info!("[artifact] 等级双引擎OCR: 引擎1=「{}」→{} 引擎2=「{}」→{} → {} / [artifact] level dual-OCR: engine1=「{}」→{} engine2=「{}」→{} → {}",
+                level_text1.trim(), lv1, level_text2.trim(), lv2, level, level_text1.trim(), lv1, level_text2.trim(), lv2, level);
         }
 
         // 5. Lock and astral mark (pixel-based, instant — done early so solver
@@ -608,7 +608,7 @@ impl GoodArtifactScanner {
         // All astraled artifacts are locked in-game. If we still see
         // astral=true + lock=false after the two-phase capture, force lock=true.
         if astral_mark && !lock {
-            info!("[artifact] astral=true but lock=false — forcing lock=true (game invariant)");
+            info!("[artifact] 星辉=true 但锁定=false — 强制锁定=true（游戏规则） / [artifact] astral=true but lock=false — forcing lock=true (game invariant)");
             lock = true;
         }
 
@@ -667,20 +667,20 @@ impl GoodArtifactScanner {
                     }
                     if let Some(val) = rescue_val {
                         if config.verbose {
-                            info!("[artifact] sub[{}] RESCUE: key={} val={} from raw OCR 「{}」/「{}」",
-                                i, key, val, raw_texts[0].trim(), raw_texts[1].trim());
+                            info!("[artifact] sub[{}] 抢救成功: key={} val={} 原始OCR 「{}」/「{}」 / [artifact] sub[{}] RESCUE: key={} val={} from raw OCR 「{}」/「{}」",
+                                i, key, val, raw_texts[0].trim(), raw_texts[1].trim(), i, key, val, raw_texts[0].trim(), raw_texts[1].trim());
                         }
                         solver_candidates.push(vec![OcrCandidate {
                             key, value: val, inactive: is_inactive,
                         }]);
                         did_extend = true;
                     } else if config.verbose {
-                        info!("[artifact] sub[{}] rescue: found key={} but no valid number from raw 「{}」/「{}」",
-                            i, key, raw_texts[0].trim(), raw_texts[1].trim());
+                        info!("[artifact] sub[{}] 抢救: 找到key={} 但无有效数值，原始「{}」/「{}」 / [artifact] sub[{}] rescue: found key={} but no valid number from raw 「{}」/「{}」",
+                            i, key, raw_texts[0].trim(), raw_texts[1].trim(), i, key, raw_texts[0].trim(), raw_texts[1].trim());
                     }
                 } else if config.verbose {
-                    info!("[artifact] sub[{}] no candidates, no key found in raw OCR 「{}」/「{}」",
-                        i, raw_texts[0].trim(), raw_texts[1].trim());
+                    info!("[artifact] sub[{}] 无候选且未找到key，原始OCR「{}」/「{}」 / [artifact] sub[{}] no candidates, no key found in raw OCR 「{}」/「{}」",
+                        i, raw_texts[0].trim(), raw_texts[1].trim(), i, raw_texts[0].trim(), raw_texts[1].trim());
                 }
             }
 
@@ -693,8 +693,8 @@ impl GoodArtifactScanner {
                 let cand_str: Vec<String> = solver_candidates.last().unwrap()
                     .iter().map(|c| format!("{}={}{}", c.key, c.value,
                         if c.inactive { "(inactive)" } else { "" })).collect();
-                info!("[artifact] sub[{}] candidates: [{}] raw: 「{}」/「{}」",
-                    i, cand_str.join(", "), raw_texts[0].trim(), raw_texts[1].trim());
+                info!("[artifact] sub[{}] 候选: [{}] 原始: 「{}」/「{}」 / [artifact] sub[{}] candidates: [{}] raw: 「{}」/「{}」",
+                    i, cand_str.join(", "), raw_texts[0].trim(), raw_texts[1].trim(), i, cand_str.join(", "), raw_texts[0].trim(), raw_texts[1].trim());
             }
         }
 
@@ -715,8 +715,8 @@ impl GoodArtifactScanner {
         };
         let non_empty_count = solver_candidates.iter().filter(|c| !c.is_empty()).count();
         if non_empty_count < min_required {
-            info!("[artifact] {}* lv{} has only {} substat lines (expected ≥{}), retrying failed lines with fallback engine + shifts",
-                rarity, level, non_empty_count, min_required);
+            info!("[artifact] {}星 lv{} 仅有{}条副词条（期望≥{}），使用备选引擎重试 / [artifact] {}* lv{} has only {} substat lines (expected ≥{}), retrying failed lines with fallback engine + shifts",
+                rarity, level, non_empty_count, min_required, rarity, level, non_empty_count, min_required);
 
             // Ensure we have exactly 4 slots (pad if the loop broke early on stop marker)
             while solver_candidates.len() < 4 {
@@ -765,8 +765,8 @@ impl GoodArtifactScanner {
                                 .any(|c| c.key == p.key && (c.value - p.value).abs() < 0.01);
                             if !already {
                                 let eng_name = if std::ptr::eq(engine, ocr) { "v5" } else { "v4" };
-                                info!("[artifact] sub[{}] RECOVERED via {} (dy={}, dw={}): {}={:.1}",
-                                    i, eng_name, dy, dw, p.key, p.value);
+                                info!("[artifact] sub[{}] 恢复成功 via {} (dy={}, dw={}): {}={:.1} / [artifact] sub[{}] RECOVERED via {} (dy={}, dw={}): {}={:.1}",
+                                    i, eng_name, dy, dw, p.key, p.value, i, eng_name, dy, dw, p.key, p.value);
                                 solver_candidates[i].push(OcrCandidate {
                                     key: p.key, value: p.value, inactive: p.inactive,
                                 });
@@ -779,7 +779,7 @@ impl GoodArtifactScanner {
                 }
 
                 if !found {
-                    warn!("[artifact] sub[{}] STILL EMPTY after fallback retries ({}* lv{})", i, rarity, level);
+                    warn!("[artifact] sub[{}] 备选重试后仍为空（{}星 lv{}） / [artifact] sub[{}] STILL EMPTY after fallback retries ({}* lv{})", i, rarity, level, i, rarity, level);
                 }
             }
         }
@@ -835,7 +835,7 @@ impl GoodArtifactScanner {
                 solved = roll_solver::solve(&retry_input);
                 if solved.is_some() {
                     if config.verbose {
-                        info!("[artifact] solver succeeded on crop attempt {} (-{}px)", crop_attempt, crop_px);
+                        info!("[artifact] 求解器在裁剪尝试{}成功（-{}px） / [artifact] solver succeeded on crop attempt {} (-{}px)", crop_attempt, crop_px, crop_attempt, crop_px);
                     }
                     break;
                 }
@@ -863,8 +863,8 @@ impl GoodArtifactScanner {
                     .map(|s| format!("{}={} ({}r{})", s.key, s.value, s.roll_count,
                         if s.inactive { " inactive" } else { "" }))
                     .collect();
-                info!("[artifact] solver: total_rolls={} init={} [{}]",
-                    result.total_rolls, result.initial_substat_count, roll_str.join(", "));
+                info!("[artifact] 求解器: total_rolls={} init={} [{}] / [artifact] solver: total_rolls={} init={} [{}]",
+                    result.total_rolls, result.initial_substat_count, roll_str.join(", "), result.total_rolls, result.initial_substat_count, roll_str.join(", "));
             }
             (subs, unact, Some(result.total_rolls))
         } else {
@@ -881,9 +881,13 @@ impl GoodArtifactScanner {
                 };
                 line_details.push(detail);
             }
-            warn!("[artifact] SOLVER FAILED on {}* lv{} {} / {} (lock={}, astral={}, elixir={})\n\
+            warn!("[artifact] 求解失败 {}星 lv{} {}·{} (锁定={}, 星辉={}, 精炼={})\n\
+                   检测到{}条副词条但无法找到有效roll分配:\n{}\n\
+                   使用启发式回退——副词条数值可能不准确。 / [artifact] SOLVER FAILED on {}* lv{} {}·{} (lock={}, astral={}, elixir={})\n\
                    Detected {} substat lines but cannot find valid roll assignment:\n{}\n\
                    Using heuristic fallback — substat values may be inaccurate.",
+                rarity, level, slot_key, main_stat_key, lock, astral_mark, elixir_crafted,
+                non_empty_candidates.len(), line_details.join("\n"),
                 rarity, level, slot_key, main_stat_key, lock, astral_mark, elixir_crafted,
                 non_empty_candidates.len(), line_details.join("\n"));
 
@@ -915,7 +919,7 @@ impl GoodArtifactScanner {
         //    c) Fallback: try the legacy Y positions (set_name_base_y - offset)
         let stat_count = (substats.len() + unactivated_substats.len()).clamp(1, 4);
         if stat_count < 4 && rarity == 5 && config.verbose {
-            info!("[artifact] 5* only identified {} substats", stat_count);
+            info!("[artifact] 5星仅识别到{}条副词条 / [artifact] 5* only identified {} substats", stat_count, stat_count);
         }
 
         let mut set_key: Option<String> = None;
@@ -951,7 +955,7 @@ impl GoodArtifactScanner {
                 .map(|c| format!("U+{:04X}", c as u32))
                 .collect::<Vec<_>>()
                 .join(" ");
-            info!("[artifact] set probe: primary stat_count={} set_y={:.0} text=「{}」 hex=[{}]", stat_count, primary_y, primary_text, hex_repr);
+            info!("[artifact] 套装探测: 主stat_count={} set_y={:.0} text=「{}」 hex=[{}] / [artifact] set probe: primary stat_count={} set_y={:.0} text=「{}」 hex=[{}]", stat_count, primary_y, primary_text, hex_repr, stat_count, primary_y, primary_text, hex_repr);
         }
         if let Some(key) = primary_key {
             set_key = Some(key);
@@ -987,7 +991,7 @@ impl GoodArtifactScanner {
                 let set_rect = (ocr_regions.set_name_x, set_y, ocr_regions.set_name_w, ocr_regions.set_name_h);
                 let (maybe_key, text) = try_set_ocr(set_rect)?;
                 if config.verbose {
-                    info!("[artifact] set probe: fallback set_y={:.0} text=「{}」", set_y, text);
+                    info!("[artifact] 套装探测: 备选 set_y={:.0} text=「{}」 / [artifact] set probe: fallback set_y={:.0} text=「{}」", set_y, text, set_y, text);
                 }
                 if let Some(key) = maybe_key {
                     set_key = Some(key);
@@ -1011,7 +1015,10 @@ impl GoodArtifactScanner {
                     .chain(unactivated_substats.iter().map(|s| format!("{}(inactive)", s.key)))
                     .collect();
                 warn!(
-                    "[artifact] cannot identify set: setY={} stats=[{}] text=\u{300C}{}\u{300D}",
+                    "[artifact] 无法识别套装: setY={} stats=[{}] text=「{}」 / [artifact] cannot identify set: setY={} stats=[{}] text=「{}」",
+                    tried_y,
+                    stat_keys.join(", "),
+                    set_name_text,
                     tried_y,
                     stat_keys.join(", "),
                     set_name_text
@@ -1035,7 +1042,7 @@ impl GoodArtifactScanner {
             let equip_text_v5 = Self::ocr_image_region(ocr, image, ocr_regions.equip, scaler)?;
             location = Self::parse_equip_location(&equip_text_v5, mappings);
             if !location.is_empty() {
-                debug!("[artifact] equip: v4「{}」failed, v5「{}」→ {}", equip_text.trim(), equip_text_v5.trim(), location);
+                debug!("[artifact] 装备: v4「{}」失败, v5「{}」→ {} / [artifact] equip: v4「{}」failed, v5「{}」→ {}", equip_text.trim(), equip_text_v5.trim(), location, equip_text.trim(), equip_text_v5.trim(), location);
             }
         }
 
@@ -1106,54 +1113,40 @@ impl GoodArtifactScanner {
         skip_open_backpack: bool,
         start_at: usize,
     ) -> Result<Vec<GoodArtifact>> {
-        debug!("[artifact] starting scan...");
+        debug!("[artifact] 开始扫描... / [artifact] starting scan...");
         let now = SystemTime::now();
-
-        if !skip_open_backpack {
-            // Return to main world using BGI-style strategy:
-            // press Escape one at a time, verify after each press.
-            ctrl.focus_game_window();
-            ctrl.return_to_main_ui(8);
-        }
-
-        let mut bp = BackpackScanner::new(ctrl);
-
-        if !skip_open_backpack {
-            bp.open_backpack(self.config.open_delay);
-        }
-        bp.select_tab("artifact", self.config.delay_tab);
 
         // Create a temporary OCR model just for reading item count
         let count_ocr = ocr_factory::create_ocr_model(&self.config.ocr_backend)?;
-        let (current_count, _max_capacity) = bp.read_item_count(count_ocr.as_ref())?;
 
-        // If count is 0, try reopening backpack (handles bad state after prior scan)
-        let total_count = if current_count == 0 {
-            info!("[artifact] count=0, reopening backpack...");
-            drop(bp);
-            ctrl.return_to_main_ui(4);
-            let mut bp2 = BackpackScanner::new(ctrl);
-            bp2.open_backpack(self.config.open_delay);
-            bp2.select_tab("artifact", self.config.delay_tab);
-            let (count, _) = bp2.read_item_count(count_ocr.as_ref())?;
-            drop(bp2);
-            bp = BackpackScanner::new(ctrl);
+        let total_count = if !skip_open_backpack {
+            // Use shared opening sequence (focus → main UI → open → tab → count with retry)
+            let (count, _) = backpack_scanner::open_backpack_to_tab(
+                ctrl, "artifact", self.config.open_delay, self.config.delay_tab,
+                count_ocr.as_ref(),
+            )?;
             count
         } else {
-            current_count
+            // Already in backpack — just select tab and read count
+            let mut bp = BackpackScanner::new(ctrl);
+            bp.select_tab("artifact", self.config.delay_tab);
+            let (count, _) = bp.read_item_count(count_ocr.as_ref())?;
+            count
         };
 
+        let mut bp = BackpackScanner::new(ctrl);
+
         if total_count == 0 {
-            info!("[artifact] no artifacts in backpack");
+            info!("[artifact] 背包中没有圣遗物 / [artifact] no artifacts in backpack");
             return Ok(Vec::new());
         }
 
         let total_count = if self.config.max_count > 0 {
             let capped = (total_count as usize).min(self.config.max_count + start_at) as i32;
-            info!("[artifact] total: {} (capped to {} by max_count={})", total_count, capped, self.config.max_count);
+            info!("[artifact] 总计: {}（限制为{}，max_count={}） / [artifact] total: {} (capped to {} by max_count={})", total_count, capped, self.config.max_count, total_count, capped, self.config.max_count);
             capped
         } else {
-            debug!("[artifact] total: {}", total_count);
+            debug!("[artifact] 总计: {} / [artifact] total: {}", total_count, total_count);
             total_count
         };
 
@@ -1182,8 +1175,8 @@ impl GoodArtifactScanner {
             move || ocr_factory::create_ocr_model(&substat_backend),
             5,
         )?);
-        debug!("[artifact] OCR pool: v5(level)=2, v4(general)=5 (level_engine={}, general_engine={})",
-            self.config.ocr_backend, self.config.substat_ocr_backend);
+        debug!("[artifact] OCR池: v5(等级)=2, v4(通用)=5 (level_engine={}, general_engine={}) / [artifact] OCR pool: v5(level)=2, v4(general)=5 (level_engine={}, general_engine={})",
+            self.config.ocr_backend, self.config.substat_ocr_backend, self.config.ocr_backend, self.config.substat_ocr_backend);
 
         // Shared context for worker threads
         let worker_mappings = self.mappings.clone();
@@ -1202,7 +1195,7 @@ impl GoodArtifactScanner {
                 // Note: returning Err with a special message to signal stop.
                 let rarity = pixel_utils::detect_artifact_rarity(&work_item.image, &worker_scaler);
                 if rarity <= 3 {
-                    debug!("[artifact] detected {}* item at index {}, signaling stop", rarity, work_item.index);
+                    debug!("[artifact] 检测到{}星物品在索引{}，信号停止 / [artifact] detected {}* item at index {}, signaling stop", rarity, work_item.index, rarity, work_item.index);
                     // Signal stop via the worker handle's AtomicBool
                     return Ok(None);
                 }
@@ -1258,7 +1251,7 @@ impl GoodArtifactScanner {
                         // Quick rarity check on main thread to stop early
                         let rarity = pixel_utils::detect_artifact_rarity(&image, &scaler);
                         if rarity <= 3 {
-                            debug!("[artifact] detected {}* item at idx={}, stopping capture", rarity, idx);
+                            debug!("[artifact] 检测到{}星物品 idx={}，停止截图 / [artifact] detected {}* item at idx={}, stopping capture", rarity, idx, rarity, idx);
                             return ScanAction::Stop;
                         }
 
@@ -1266,7 +1259,7 @@ impl GoodArtifactScanner {
                         // Normalize index to 0-based so the worker's BTreeMap drain works correctly.
                         let worker_idx = idx - start_at;
                         if item_tx.send(WorkItem { index: worker_idx, image, metadata: () }).is_err() {
-                            error!("[artifact] worker channel closed");
+                            error!("[artifact] 工作通道已关闭 / [artifact] worker channel closed");
                             return ScanAction::Stop;
                         }
 
@@ -1287,7 +1280,10 @@ impl GoodArtifactScanner {
         // All scanned artifacts are now kept regardless.
 
         info!(
-            "[artifact] complete, {} artifacts scanned (>={}*) in {:?}",
+            "[artifact] 完成，扫描了{}个圣遗物（≥{}星），耗时{:?} / [artifact] complete, {} artifacts scanned (>={}*) in {:?}",
+            artifacts.len(),
+            self.config.min_rarity,
+            now.elapsed().unwrap_or_default(),
             artifacts.len(),
             self.config.min_rarity,
             now.elapsed().unwrap_or_default()

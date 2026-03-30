@@ -127,8 +127,8 @@ pub fn detect_dark_icon(
     let d2 = is_pixel_dark(image, scaler, x2, y2);
     if d1 != d2 {
         log::debug!(
-            "[{}] detection inconsistent: ({},{})={} ({},{})={}",
-            label, x1, y1, d1, x2, y2, d2
+            "[{}] 检测不一致: ({},{})={} ({},{})={} / [{}] detection inconsistent: ({},{})={} ({},{})={}",
+            label, x1, y1, d1, x2, y2, d2, label, x1, y1, d1, x2, y2, d2
         );
     }
     d1
@@ -240,7 +240,7 @@ pub fn detect_artifact_rarity(image: &RgbImage, scaler: &CoordScaler) -> i32 {
         }
     };
 
-    log::debug!("[rarity] rightmost_x={}, count={}, result={}*", rightmost_star_x, star_pixel_count, rarity);
+    log::debug!("[rarity] 最右x={}, 数量={}, 结果={}星 / [rarity] rightmost_x={}, count={}, result={}*", rightmost_star_x, star_pixel_count, rarity, rightmost_star_x, star_pixel_count, rarity);
     rarity
 }
 
@@ -440,7 +440,11 @@ pub fn detect_constellation_pixel(image: &RgbImage, scaler: &CoordScaler) -> (i3
     let det_str: String = active.iter().map(|&a| if a { 'A' } else { 'L' }).collect();
     if non_monotonic {
         log::debug!(
-            "[constellation-pixel] NON-MONOTONIC: [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{}",
+            "[constellation-pixel] 非单调: [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{} / [constellation-pixel] NON-MONOTONIC: [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{}",
+            det_str,
+            brightnesses[0], brightnesses[1], brightnesses[2],
+            brightnesses[3], brightnesses[4], brightnesses[5],
+            constellation,
             det_str,
             brightnesses[0], brightnesses[1], brightnesses[2],
             brightnesses[3], brightnesses[4], brightnesses[5],
@@ -448,7 +452,11 @@ pub fn detect_constellation_pixel(image: &RgbImage, scaler: &CoordScaler) -> (i3
         );
     } else {
         log::debug!(
-            "[constellation-pixel] [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{}",
+            "[constellation-pixel] [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{} / [constellation-pixel] [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{}",
+            det_str,
+            brightnesses[0], brightnesses[1], brightnesses[2],
+            brightnesses[3], brightnesses[4], brightnesses[5],
+            constellation,
             det_str,
             brightnesses[0], brightnesses[1], brightnesses[2],
             brightnesses[3], brightnesses[4], brightnesses[5],

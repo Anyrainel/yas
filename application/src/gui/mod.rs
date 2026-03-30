@@ -16,6 +16,9 @@ pub fn run_gui() {
 
     let state = AppState::new();
 
+    // Set global language from config
+    yas::lang::set_lang(state.lang.to_str());
+
     // Init GUI logger (replaces env_logger in GUI mode)
     let logger = log_bridge::GuiLogger::new(state.log_lines.clone(), 2000);
     logger.init();
@@ -127,6 +130,7 @@ impl eframe::App for GuiApp {
                             Lang::En => Lang::Zh,
                         };
                         self.state.user_config.lang = self.state.lang.to_str().to_string();
+                        yas::lang::set_lang(self.state.lang.to_str());
                     }
                 });
             });

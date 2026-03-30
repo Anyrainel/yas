@@ -9,6 +9,56 @@ use yas::utils;
 use super::constants::*;
 use super::game_controller::GenshinGameController;
 
+/// Open the backpack to a specific tab with the same proven sequence as the
+/// artifact/weapon scanners.
+///
+/// 1. Focus game window
+/// 2. Return to main world (Escape × 8)
+/// 3. Press B to open backpack
+/// 4. Click the requested tab
+/// 5. Read item count; if 0, retry from step 2
+///
+/// Returns `(current_count, max_capacity)` on success.
+///
+/// This is a free function (not a method) so callers can use `ctrl` freely
+/// after it returns without keeping a `BackpackScanner` borrow alive.
+pub fn open_backpack_to_tab(
+    ctrl: &mut GenshinGameController,
+    tab: &str,
+    open_delay: u64,
+    tab_delay: u64,
+    count_ocr: &dyn ImageToText<RgbImage>,
+) -> Result<(i32, i32)> {
+    ctrl.focus_game_window();
+    ctrl.return_to_main_ui(8);
+
+    {
+        let mut bp = BackpackScanner::new(ctrl);
+        bp.open_backpack(open_delay);
+        bp.select_tab(tab, tab_delay);
+    }
+
+    // Read item count (need a fresh BackpackScanner for the borrow)
+    let (count, max) = {
+        let bp = BackpackScanner::new(ctrl);
+        bp.read_item_count(count_ocr)?
+    };
+
+    if count == 0 {
+        info!("[backpack] 标签'{}'数量=0，重新打开背包... / [backpack] count=0 on tab '{}', reopening backpack...", tab, tab);
+        ctrl.return_to_main_ui(4);
+        {
+            let mut bp = BackpackScanner::new(ctrl);
+            bp.open_backpack(open_delay);
+            bp.select_tab(tab, tab_delay);
+        }
+        let bp = BackpackScanner::new(ctrl);
+        return bp.read_item_count(count_ocr);
+    }
+
+    Ok((count, max))
+}
+
 /// What the scan callback should do after processing an item.
 pub enum ScanAction {
     /// Continue scanning.
@@ -89,7 +139,7 @@ impl<'a> BackpackScanner<'a> {
             "weapon" => TAB_WEAPON,
             "artifact" => TAB_ARTIFACT,
             _ => {
-                error!("[backpack] unknown tab: {}", tab);
+                error!("[backpack] 未知标签: {} / [backpack] unknown tab: {}", tab, tab);
                 return;
             }
         };
@@ -140,15 +190,15 @@ impl<'a> BackpackScanner<'a> {
             {
                 ticks -= 1;
                 debug!(
-                    "[backpack] scroll correction at page {} (-1 tick)",
-                    self.pages_scrolled
+                    "[backpack] 第{}页滚动修正(-1刻度) / [backpack] scroll correction at page {} (-1 tick)",
+                    self.pages_scrolled, self.pages_scrolled
                 );
             }
         }
 
         debug!(
-            "[backpack] scroll {} rows ({} ticks, page {})",
-            row_count, ticks, self.pages_scrolled
+            "[backpack] 滚动{}行({}刻度，第{}页) / [backpack] scroll {} rows ({} ticks, page {})",
+            row_count, ticks, self.pages_scrolled, row_count, ticks, self.pages_scrolled
         );
 
         // Send scroll ticks with small delays to avoid overwhelming the game
@@ -192,8 +242,8 @@ impl<'a> BackpackScanner<'a> {
         let last_row_col = if total % GRID_COLS == 0 { GRID_COLS } else { total % GRID_COLS };
 
         info!(
-            "[backpack] total={} items, {} rows, last row has {} items",
-            total, total_row, last_row_col
+            "[backpack] 总计={}个物品，{}行，最后一行有{}个 / [backpack] total={} items, {} rows, last row has {} items",
+            total, total_row, last_row_col, total, total_row, last_row_col
         );
 
         // Click the first grid position to ensure focus
@@ -211,8 +261,8 @@ impl<'a> BackpackScanner<'a> {
             let full_pages = skip_rows / GRID_ROWS;
             if full_pages > 0 {
                 info!(
-                    "[backpack] jumping to item {} ({} rows to skip)",
-                    start_at, skip_rows
+                    "[backpack] 跳转到第{}个物品(跳过{}行) / [backpack] jumping to item {} ({} rows to skip)",
+                    start_at, skip_rows, start_at, skip_rows
                 );
                 let rows_to_scroll = full_pages * GRID_ROWS;
                 if !self.scroll_rows(rows_to_scroll) {
@@ -269,7 +319,7 @@ impl<'a> BackpackScanner<'a> {
                     let mut image = match self.ctrl.capture_game() {
                         Ok(img) => img,
                         Err(e) => {
-                            error!("[backpack] capture failed: {}", e);
+                            error!("[backpack] 截图失败: {} / [backpack] capture failed: {}", e, e);
                             scanned_count += 1;
                             continue;
                         }
@@ -282,7 +332,7 @@ impl<'a> BackpackScanner<'a> {
                         image = match self.ctrl.capture_game() {
                             Ok(img) => img,
                             Err(e) => {
-                                error!("[backpack] retry capture failed: {}", e);
+                                error!("[backpack] 重试截图失败: {} / [backpack] retry capture failed: {}", e, e);
                                 scanned_count += 1;
                                 continue;
                             }

@@ -185,13 +185,13 @@ pub fn open_character_screen(
             .unwrap_or_default();
         let has_cjk = name_text.chars().any(|c| c >= '\u{4e00}' && c <= '\u{9fff}');
         if has_cjk {
-            info!("[open_character_screen] character screen opened (attempt {}), name='{}'",
-                attempt, name_text.trim());
+            info!("[open_character_screen] 角色界面已打开（第{}次尝试），名称='{}' / character screen opened (attempt {}), name='{}'",
+                attempt, name_text.trim(), attempt, name_text.trim());
             char_screen_opened = true;
             break;
         }
         // Not on character screen — try Escape + retry
-        info!("[open_character_screen] attempt {} failed, pressing Escape and retrying", attempt);
+        info!("[open_character_screen] 第{}次尝试失败，按Escape重试 / attempt {} failed, pressing Escape and retrying", attempt, attempt);
         ctrl.key_press(enigo::Key::Escape);
         yas::utils::sleep(800);
     }
@@ -210,7 +210,7 @@ pub fn open_character_screen(
         // OCR character name
         let name_text = ctrl.ocr_region(ocr.as_ref(), CHAR_NAME_RECT)?;
         let name_trimmed = name_text.trim().to_string();
-        debug!("[open_character_screen] #{}: OCR name = '{}'", i, name_trimmed);
+        debug!("[open_character_screen] #{}: OCR识别名称='{}' / OCR name = '{}'", i, name_trimmed, name_trimmed);
 
         // Check for full cycle (returned to first character).
         // Use cleaned names (stripped of trailing garbage) for robust comparison.
@@ -218,7 +218,7 @@ pub fn open_character_screen(
             if let Some(ref first) = first_name {
                 let cur_name = clean_char_name(&name_trimmed);
                 let first_char_name = clean_char_name(first);
-                debug!("[open_character_screen] #{}: cur='{}' vs first='{}'", i, cur_name, first_char_name);
+                debug!("[open_character_screen] #{}: 当前='{}' vs 首个='{}' / cur='{}' vs first='{}'", i, cur_name, first_char_name, cur_name, first_char_name);
                 if !cur_name.is_empty() && cur_name == first_char_name {
                     bail!(
                         "角色 {} 未找到（已遍历全部角色）/ \
@@ -237,7 +237,7 @@ pub fn open_character_screen(
 
         // Match against GOOD key directly (OCR might return English name)
         if name_trimmed.contains(char_key) {
-            info!("[open_character_screen] found {} at position {}", char_key, i);
+            info!("[open_character_screen] 在位置{}找到{} / found {} at position {}", i, char_key, char_key, i);
             return Ok(());
         }
 
@@ -245,13 +245,13 @@ pub fn open_character_screen(
         let mut found = false;
         for cn in &cn_names {
             if name_trimmed.contains(cn.as_str()) {
-                info!("[open_character_screen] found {} (cn: {}) at position {}", char_key, cn, i);
+                info!("[open_character_screen] 在位置{}找到{}（中文: {}） / found {} (cn: {}) at position {}", i, char_key, cn, char_key, cn, i);
                 return Ok(());
             }
             // Fuzzy match: allow 1 character difference for names >= 2 chars
             if fuzzy_char_match(&clean_name, cn) {
-                info!("[open_character_screen] found {} (cn: {}, fuzzy match '{}') at position {}",
-                    char_key, cn, clean_name, i);
+                info!("[open_character_screen] 在位置{}找到{}（中文: {}，模糊匹配'{}'） / found {} (cn: {}, fuzzy match '{}') at position {}",
+                    i, char_key, cn, clean_name, char_key, cn, clean_name, i);
                 found = true;
                 break;
             }
@@ -264,7 +264,7 @@ pub fn open_character_screen(
         for try_name in &[&name_trimmed, &clean_name] {
             if let Some(matched_key) = mappings.character_name_map.get(try_name.as_str()) {
                 if matched_key == char_key {
-                    info!("[open_character_screen] found {} via mapping at position {}", char_key, i);
+                    info!("[open_character_screen] 通过映射在位置{}找到{} / found {} via mapping at position {}", i, char_key, char_key, i);
                     return Ok(());
                 }
             }
@@ -307,18 +307,18 @@ pub fn click_equipment_slot(
     yas::utils::sleep(200);
 
     // Step 1: Click 圣遗物 menu to show artifact circles
-    debug!("[click_equipment_slot] clicking 圣遗物 menu");
+    debug!("[click_equipment_slot] 点击圣遗物菜单 / clicking artifact menu");
     ctrl.click_at(CHAR_ARTIFACT_MENU_X, CHAR_ARTIFACT_MENU_Y);
     yas::utils::sleep(1200); // wait for circle animation
 
     // Step 2: Click "替换" button to open the artifact selection list.
     // The button appears at the bottom-right of the character artifact view.
-    debug!("[click_equipment_slot] clicking 替换 button at ({}, {})", CHAR_REPLACE_BUTTON_X, CHAR_REPLACE_BUTTON_Y);
+    debug!("[click_equipment_slot] 点击替换按钮({}, {}) / clicking replace button at ({}, {})", CHAR_REPLACE_BUTTON_X, CHAR_REPLACE_BUTTON_Y, CHAR_REPLACE_BUTTON_X, CHAR_REPLACE_BUTTON_Y);
     ctrl.click_at(CHAR_REPLACE_BUTTON_X, CHAR_REPLACE_BUTTON_Y);
     yas::utils::sleep(2000); // wait for selection view to load
 
     // Step 3: Click the correct slot tab
-    debug!("[click_equipment_slot] clicking {} tab at ({}, {})", slot_key, tab_pos.0, tab_pos.1);
+    debug!("[click_equipment_slot] 点击{}标签({}, {}) / clicking {} tab at ({}, {})", slot_key, tab_pos.0, tab_pos.1, slot_key, tab_pos.0, tab_pos.1);
     ctrl.click_at(tab_pos.0, tab_pos.1);
     yas::utils::sleep(800);
 
@@ -359,12 +359,12 @@ pub fn apply_set_filter(
     {
         Some(name) => name,
         None => {
-            info!("[set_filter] set key '{}' not found in mappings, skipping filter", set_key);
+            info!("[set_filter] 套装'{}'未在映射中找到，跳过筛选 / set key '{}' not found in mappings, skipping filter", set_key, set_key);
             return Ok(false);
         }
     };
 
-    info!("[set_filter] applying filter for {} ({})", set_key, cn_name);
+    info!("[set_filter] 正在筛选{}（{}） / applying filter for {} ({})", set_key, cn_name, set_key, cn_name);
 
     // Open filter panel
     ctrl.click_at(FILTER_FUNNEL_X, FILTER_FUNNEL_Y);
@@ -391,12 +391,12 @@ pub fn apply_set_filter(
             ).unwrap_or_default();
 
             if left_text.contains(&cn_name) {
-                debug!("[set_filter] found '{}' in left col row {} (OCR: '{}')", cn_name, row, left_text);
+                debug!("[set_filter] 在左列第{}行找到'{}' (OCR: '{}') / found '{}' in left col row {} (OCR: '{}')", row, cn_name, left_text, cn_name, row, left_text);
                 ctrl.click_at(FILTER_LEFT_CLICK_X, y);
                 yas::utils::sleep(300);
                 ctrl.click_at(FILTER_CONFIRM_X, FILTER_CONFIRM_Y);
                 yas::utils::sleep(800);
-                info!("[set_filter] filter applied for {}", set_key);
+                info!("[set_filter] 已应用筛选: {} / filter applied for {}", set_key, set_key);
                 return Ok(true);
             }
 
@@ -407,12 +407,12 @@ pub fn apply_set_filter(
             ).unwrap_or_default();
 
             if right_text.contains(&cn_name) {
-                debug!("[set_filter] found '{}' in right col row {} (OCR: '{}')", cn_name, row, right_text);
+                debug!("[set_filter] 在右列第{}行找到'{}' (OCR: '{}') / found '{}' in right col row {} (OCR: '{}')", row, cn_name, right_text, cn_name, row, right_text);
                 ctrl.click_at(FILTER_RIGHT_CLICK_X, y);
                 yas::utils::sleep(300);
                 ctrl.click_at(FILTER_CONFIRM_X, FILTER_CONFIRM_Y);
                 yas::utils::sleep(800);
-                info!("[set_filter] filter applied for {}", set_key);
+                info!("[set_filter] 已应用筛选: {} / filter applied for {}", set_key, set_key);
                 return Ok(true);
             }
         }
@@ -427,7 +427,7 @@ pub fn apply_set_filter(
     }
 
     // Set not found — close filter panel without applying
-    info!("[set_filter] set '{}' ({}) not found in filter list", set_key, cn_name);
+    info!("[set_filter] 套装'{}'（{}）未在筛选列表中找到 / set '{}' ({}) not found in filter list", set_key, cn_name, set_key, cn_name);
     ctrl.click_at(FILTER_CLOSE_X, FILTER_CLOSE_Y);
     yas::utils::sleep(500);
     Ok(false)
@@ -486,16 +486,16 @@ pub fn find_and_click_artifact_in_selection(
         };
         ctrl.click_at(tab_pos.0, tab_pos.1);
         yas::utils::sleep(800);
-        info!("[selection] set filter applied, re-clicked slot tab, scanning filtered grid");
+        info!("[selection] 已应用套装筛选，重新点击栏位标签，扫描筛选后的列表 / set filter applied, re-clicked slot tab, scanning filtered grid");
     } else {
-        info!("[selection] set filter not applied, scanning full grid");
+        info!("[selection] 未应用套装筛选，扫描完整列表 / set filter not applied, scanning full grid");
     }
 
     let max_pages = 20; // safety limit
     let mut total_checked = 0;
     let mut consecutive_empty = 0;
 
-    info!("[selection] starting grid scan for set={}, lv={}", target.set_key, target.level);
+    info!("[selection] 开始网格扫描: set={}, lv={} / starting grid scan for set={}, lv={}", target.set_key, target.level, target.set_key, target.level);
 
     for page in 0..max_pages {
         for row in 0..SEL_ROWS {
@@ -515,7 +515,7 @@ pub fn find_and_click_artifact_in_selection(
                 let level_text = match ocr_region_enhanced(ctrl, ocr, SEL_LEVEL_RECT) {
                     Ok(t) => t,
                     Err(e) => {
-                        debug!("[selection] level OCR failed at ({},{}): {}", row, col, e);
+                        debug!("[selection] 等级OCR失败({},{})：{} / level OCR failed at ({},{}): {}", row, col, e, row, col, e);
                         total_checked += 1;
                         continue;
                     }
@@ -525,7 +525,7 @@ pub fn find_and_click_artifact_in_selection(
                 if level < 0 {
                     consecutive_empty += 1;
                     if consecutive_empty >= SEL_COLS {
-                        info!("[selection] {} consecutive unreadable slots, stopping", consecutive_empty);
+                        info!("[selection] 连续{}个无法读取的栏位，停止扫描 / {} consecutive unreadable slots, stopping", consecutive_empty, consecutive_empty);
                         return Ok(false);
                     }
                     continue;
@@ -533,7 +533,7 @@ pub fn find_and_click_artifact_in_selection(
                 consecutive_empty = 0;
                 total_checked += 1;
 
-                debug!("[selection] ({},{}) level='{}' parsed={}", row, col, level_text, level);
+                debug!("[selection] ({},{}) 等级='{}' 解析={} / level='{}' parsed={}", row, col, level_text, level, level_text, level);
 
                 if level != target.level {
                     continue; // Quick skip — wrong level
@@ -580,7 +580,8 @@ pub fn find_and_click_artifact_in_selection(
 
                 if substat_matched {
                     info!(
-                        "[selection] MATCH at page={} row={} col={} (checked {}), lv={}, sub='{}'",
+                        "[selection] 匹配成功: page={} row={} col={}（已检查{}个），lv={}，sub='{}' / MATCH at page={} row={} col={} (checked {}), lv={}, sub='{}'",
+                        page, row, col, total_checked, level, sub_text,
                         page, row, col, total_checked, level, sub_text
                     );
                     // Click "替换" (Replace) button
@@ -588,7 +589,7 @@ pub fn find_and_click_artifact_in_selection(
                     yas::utils::sleep(800);
                     return Ok(true);
                 } else {
-                    debug!("[selection] ({},{}) lv={} sub mismatch: '{}' expected_vals={:?}", row, col, level, sub_text, expected_vals);
+                    debug!("[selection] ({},{}) lv={} 副词条不匹配: '{}' 期望值={:?} / sub mismatch: '{}' expected_vals={:?}", row, col, level, sub_text, expected_vals, sub_text, expected_vals);
                 }
             }
         }
@@ -602,7 +603,7 @@ pub fn find_and_click_artifact_in_selection(
         yas::utils::sleep(300);
     }
 
-    info!("[selection] target not found after checking {} artifacts", total_checked);
+    info!("[selection] 检查了{}个圣遗物后未找到目标 / target not found after checking {} artifacts", total_checked, total_checked);
     Ok(false)
 }
 
