@@ -1349,6 +1349,7 @@ pub fn run_manage_json(
     json_str: &str,
     ocr_backend: Option<&str>,
     artifact_substat_ocr: &str,
+    cancel_token: Option<yas::cancel::CancelToken>,
 ) -> Result<crate::manager::models::ManageResult> {
     #[cfg(target_os = "windows")]
     {
@@ -1371,8 +1372,7 @@ pub fn run_manage_json(
 
     let game_info = GoodScannerApplication::get_game_info()?;
     let mut ctrl = GenshinGameController::new(game_info)?;
-    let token = yas::cancel::CancelToken::new();
-    ctrl.set_cancel_token(token.clone());
+    let token = cancel_token.unwrap_or_else(yas::cancel::CancelToken::new);
 
     let ocr_be = ocr_backend.unwrap_or("ppocrv5").to_string();
     let mut manager = crate::manager::orchestrator::ArtifactManager::new(
@@ -1383,6 +1383,6 @@ pub fn run_manage_json(
     manager.delay_grid_item = user_config.artifact_grid_delay;
     manager.delay_scroll = user_config.artifact_scroll_delay;
 
-    let (result, _artifact_snapshot) = manager.execute(&mut ctrl, request, None);
+    let (result, _artifact_snapshot) = manager.execute(&mut ctrl, request, None, token);
     Ok(result)
 }

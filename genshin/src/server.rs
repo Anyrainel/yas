@@ -33,6 +33,7 @@ pub trait ManageExecutor {
         &mut self,
         request: ArtifactManageRequest,
         progress_fn: Option<&ProgressFn>,
+        cancel_token: yas::cancel::CancelToken,
     ) -> (ManageResult, Option<Vec<GoodArtifact>>);
 }
 
@@ -47,8 +48,9 @@ impl ManageExecutor for GameExecutor {
         &mut self,
         request: ArtifactManageRequest,
         progress_fn: Option<&ProgressFn>,
+        cancel_token: yas::cancel::CancelToken,
     ) -> (ManageResult, Option<Vec<GoodArtifact>>) {
-        self.manager.execute(&mut self.ctrl, request, progress_fn)
+        self.manager.execute(&mut self.ctrl, request, progress_fn, cancel_token)
     }
 }
 
@@ -434,7 +436,8 @@ where
         let has_lock_instructions = request.instructions.iter()
             .any(|i| i.changes.lock.is_some());
 
-        let (result, artifact_snapshot) = exec.execute(request, Some(&progress_fn));
+        let cancel_token = yas::cancel::CancelToken::new();
+        let (result, artifact_snapshot) = exec.execute(request, Some(&progress_fn), cancel_token);
 
         // Update artifact cache based on scan completeness
         match artifact_snapshot {
@@ -622,6 +625,7 @@ mod tests {
             &mut self,
             _request: ArtifactManageRequest,
             _progress_fn: Option<&ProgressFn>,
+            _cancel_token: yas::cancel::CancelToken,
         ) -> (ManageResult, Option<Vec<GoodArtifact>>) {
             if self.delay_ms > 0 {
                 std::thread::sleep(Duration::from_millis(self.delay_ms));

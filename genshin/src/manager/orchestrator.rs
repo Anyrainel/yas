@@ -68,6 +68,7 @@ impl ArtifactManager {
         ctrl: &mut GenshinGameController,
         request: ArtifactManageRequest,
         progress_fn: Option<&ProgressFn>,
+        cancel_token: CancelToken,
     ) -> (ManageResult, Option<Vec<GoodArtifact>>) {
         let mut all_results: Vec<InstructionResult> = Vec::new();
 
@@ -108,7 +109,7 @@ impl ArtifactManager {
         // Focus the game window before any UI interactions
         ctrl.focus_game_window();
 
-        let token = CancelToken::new();
+        let token = cancel_token;
         ctrl.set_cancel_token(token.clone());
 
         // Partition instructions

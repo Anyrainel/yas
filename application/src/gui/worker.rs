@@ -187,6 +187,9 @@ pub fn spawn_manage_json(
         lang.t("正在执行管理指令...", "Executing manage instructions...").into(),
     );
 
+    let token = yas::cancel::CancelToken::new();
+    let stop_token = token.clone();
+
     let handle = thread::spawn(move || {
         let status_for_panic = status.clone();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -201,7 +204,7 @@ pub fn spawn_manage_json(
                 }
             }
 
-            match yas_genshin::cli::run_manage_json(&user_config, &json_str, None, "ppocrv4") {
+            match yas_genshin::cli::run_manage_json(&user_config, &json_str, None, "ppocrv4", Some(token)) {
                 Ok(result) => {
                     let s = &result.summary;
                     let msg = match lang {
@@ -231,5 +234,5 @@ pub fn spawn_manage_json(
         }
     });
 
-    TaskHandle { _handle: handle, shutdown: None, cancel_token: None }
+    TaskHandle { _handle: handle, shutdown: None, cancel_token: Some(stop_token) }
 }

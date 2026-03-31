@@ -3,6 +3,9 @@ name = "yas-application"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+test = false
+
 [features]
 default = []
 dev-tools = []
@@ -27,6 +30,7 @@ winres = "0.1"
 [[bin]]
 name = "GOODScanner"
 path = "src/bin/yas.rs"
+test = false
 
 [[bin]]
 name = "ocr_test"
