@@ -15,3 +15,6 @@ pub mod diff;
 pub mod debug_dump;
 pub mod roll_solver;
 pub mod equip_parser;
+
+#[cfg(test)]
+pub(crate) mod test_utils;
