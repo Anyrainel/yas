@@ -122,46 +122,6 @@ pub fn is_admin() -> bool {
     unsafe { is_admin_unsafe() }
 }
 
-/// Global abort flag — set to true when right-click is detected.
-/// Once set, all subsequent `is_rmb_down()` and `was_aborted()` calls return true.
-static ABORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Check if the right mouse button was just clicked.
-/// If detected, also sets the global abort flag so that `was_aborted()` returns true.
-pub fn is_rmb_down() -> bool {
-    if ABORTED.load(std::sync::atomic::Ordering::Relaxed) {
-        return true;
-    }
-    unsafe {
-        let state = GetAsyncKeyState(VK_RBUTTON as i32);
-        if state == 0 {
-            return false;
-        }
-
-        if state & 1 > 0 {
-            ABORTED.store(true, std::sync::atomic::Ordering::Relaxed);
-            true
-        } else {
-            false
-        }
-    }
-}
-
-/// Returns true if a right-click abort was detected at any point during this run.
-pub fn was_aborted() -> bool {
-    ABORTED.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Reset the abort flag. Called before starting a new scan (for GUI re-run).
-pub fn reset_abort() {
-    ABORTED.store(false, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// Set the abort flag programmatically. Called from GUI stop button.
-pub fn set_abort() {
-    ABORTED.store(true, std::sync::atomic::Ordering::Relaxed);
-}
-
 pub fn set_dpi_awareness() {
     let h_lib = unsafe {
         let utf16 = encode_lpcstr("Shcore.dll");

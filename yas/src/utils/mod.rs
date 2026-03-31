@@ -46,22 +46,6 @@ macro_rules! error_and_quit {
     );
 }
 
-#[cfg(not(windows))]
-pub fn is_rmb_down() -> bool {
-    false
-}
-
-#[cfg(not(windows))]
-pub fn was_aborted() -> bool {
-    false
-}
-
-#[cfg(not(windows))]
-pub fn reset_abort() {}
-
-#[cfg(not(windows))]
-pub fn set_abort() {}
-
 #[derive(Deserialize)]
 pub struct GithubTag {
     pub name: String,
