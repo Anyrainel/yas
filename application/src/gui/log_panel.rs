@@ -1,27 +1,33 @@
+use std::sync::{Arc, Mutex};
+
 use eframe::egui;
 
-use super::state::AppState;
+use super::state::{AppState, Lang, LogEntry};
 
+/// Show the log panel using an AppState reference (convenience wrapper).
 pub fn show(ui: &mut egui::Ui, state: &AppState) {
-    let l = state.lang;
+    show_with(ui, state.lang, &state.log_lines);
+}
 
+/// Show the log panel with explicit parameters (used by standalone binaries).
+pub fn show_with(ui: &mut egui::Ui, l: Lang, log_lines: &Arc<Mutex<Vec<LogEntry>>>) {
     ui.horizontal(|ui| {
         ui.strong(l.t("日志", "Log"));
-        let count = state.log_lines.lock().unwrap().len();
+        let count = log_lines.lock().unwrap().len();
         if count > 0 {
             ui.colored_label(
                 egui::Color32::from_rgb(120, 120, 120),
                 format!("({})", count),
             );
             if ui.small_button(l.t("清除", "Clear")).clicked() {
-                state.log_lines.lock().unwrap().clear();
+                log_lines.lock().unwrap().clear();
             }
         }
     });
 
     ui.separator();
 
-    let lines = state.log_lines.lock().unwrap();
+    let lines = log_lines.lock().unwrap();
 
     egui::ScrollArea::vertical()
         .auto_shrink([false; 2])

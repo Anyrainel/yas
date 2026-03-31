@@ -1,15 +1,77 @@
 use std::collections::HashMap;
+use std::fs;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Result};
 use log::{debug, info};
-use serde::Deserialize;
-
-use crate::cache_meta;
+use serde::{Deserialize, Serialize};
 
 const MAPPINGS_URL: &str = "https://ggartifact.com/good/mappings.json";
 const MAPPINGS_CACHE_PATH: &str = "data/mappings.json";
+const MAPPINGS_META_PATH: &str = "data/mappings_meta.json";
 const MAPPINGS_TTL_SECS: u64 = 24 * 3600; // 1 day
+
+/// Unified metadata file written by the old cache_meta module.
+/// Used for one-time migration only.
+const UNIFIED_META_PATH: &str = "data/metadata.json";
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+struct MappingsMeta {
+    #[serde(rename = "lastFetchTime")]
+    last_fetch_time: u64,
+}
+
+/// Shape of the old unified metadata.json (read-only, for migration).
+#[derive(Deserialize)]
+struct UnifiedMeta {
+    #[serde(default, rename = "mappingsLastFetchTime")]
+    mappings_last_fetch_time: u64,
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn load_meta() -> MappingsMeta {
+    // Try reading the per-file meta
+    if let Ok(content) = fs::read_to_string(MAPPINGS_META_PATH) {
+        if let Ok(meta) = serde_json::from_str::<MappingsMeta>(&content) {
+            return meta;
+        }
+    }
+
+    // Migrate from unified metadata.json if it exists
+    if let Ok(content) = fs::read_to_string(UNIFIED_META_PATH) {
+        if let Ok(unified) = serde_json::from_str::<UnifiedMeta>(&content) {
+            if unified.mappings_last_fetch_time > 0 {
+                let meta = MappingsMeta {
+                    last_fetch_time: unified.mappings_last_fetch_time,
+                };
+                save_meta(&meta);
+                return meta;
+            }
+        }
+    }
+
+    MappingsMeta::default()
+}
+
+fn save_meta(meta: &MappingsMeta) {
+    if let Some(parent) = Path::new(MAPPINGS_META_PATH).parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string(meta) {
+        let _ = fs::write(MAPPINGS_META_PATH, json);
+    }
+}
+
+fn is_fresh(last_fetch_time: u64, ttl_secs: u64) -> bool {
+    last_fetch_time > 0 && (now_secs() - last_fetch_time) < ttl_secs
+}
 
 /// Constellation bonus info for a character
 #[derive(Debug, Clone)]
@@ -108,11 +170,11 @@ impl MappingManager {
 
     /// Check cache freshness and fetch from remote if needed.
     fn fetch_if_needed() -> Result<()> {
-        let meta = cache_meta::load();
+        let meta = load_meta();
         let cache_exists = Path::new(MAPPINGS_CACHE_PATH).exists();
 
         // Skip fetch if cache is fresh
-        if cache_exists && cache_meta::is_fresh(meta.mappings_last_fetch_time, MAPPINGS_TTL_SECS) {
+        if cache_exists && is_fresh(meta.last_fetch_time, MAPPINGS_TTL_SECS) {
             return Ok(());
         }
 
@@ -130,9 +192,9 @@ impl MappingManager {
                     // Validate JSON
                     let _: serde_json::Value = serde_json::from_str(&body)?;
                     std::fs::write(MAPPINGS_CACHE_PATH, &body)?;
-                    let mut meta = cache_meta::load();
-                    meta.mappings_last_fetch_time = cache_meta::now();
-                    cache_meta::save(&meta);
+                    save_meta(&MappingsMeta {
+                        last_fetch_time: now_secs(),
+                    });
                     debug!("游戏数据映射已更新 / Game data mappings updated");
                 } else {
                     if cache_exists {

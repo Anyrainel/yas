@@ -205,7 +205,7 @@ impl eframe::App for GuiApp {
                 ActiveTab::Capture => {
                     capture_tab::show(
                         ui,
-                        &self.state,
+                        self.state.lang,
                         &mut self.capture_tab,
                         is_scan_running || is_server_running || is_manage_running,
                     );

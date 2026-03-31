@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 
-use super::state::{AppState, Lang};
+use super::state::Lang;
 
 use yas_genshin::capture::monitor::{CaptureCommand, CaptureState};
 use yas_genshin::capture::player_data::CaptureExportSettings;
@@ -137,11 +137,10 @@ fn spawn_capture(
 
 pub fn show(
     ui: &mut egui::Ui,
-    state: &AppState,
+    l: Lang,
     tab: &mut CaptureTabState,
     game_busy: bool,
 ) {
-    let l = state.lang;
 
     // --- Phase transitions driven by shared state ---
     update_phase(tab, l);

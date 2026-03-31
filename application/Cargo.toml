@@ -35,6 +35,11 @@ path = "src/bin/yas.rs"
 test = false
 
 [[bin]]
+name = "GOODCapture"
+path = "src/bin/capture.rs"
+required-features = ["capture"]
+
+[[bin]]
 name = "ocr_test"
 path = "src/bin/ocr_test.rs"
 required-features = ["dev-tools"]
