@@ -466,3 +466,128 @@ pub fn detect_constellation_pixel(image: &RgbImage, scaler: &CoordScaler) -> (i3
 
     (constellation, !non_monotonic)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scanner::common::test_utils::*;
+
+    #[test]
+    fn test_artifact_rarity_5_star() {
+        let mut image = make_1080p_image();
+        paint_rarity_stars(&mut image, 5);
+        let scaler = make_1080p_scaler();
+        assert_eq!(detect_artifact_rarity(&image, &scaler), 5);
+    }
+
+    #[test]
+    fn test_artifact_rarity_4_star() {
+        let mut image = make_1080p_image();
+        paint_rarity_stars(&mut image, 4);
+        let scaler = make_1080p_scaler();
+        assert_eq!(detect_artifact_rarity(&image, &scaler), 4);
+    }
+
+    #[test]
+    fn test_artifact_rarity_3_star() {
+        let mut image = make_1080p_image();
+        paint_rarity_stars(&mut image, 3);
+        let scaler = make_1080p_scaler();
+        assert_eq!(detect_artifact_rarity(&image, &scaler), 3);
+    }
+
+    #[test]
+    fn test_artifact_rarity_blank_image() {
+        let image = make_1080p_image();
+        let scaler = make_1080p_scaler();
+        // Blank image has no star pixels; fallback single-pixel checks also fail → returns 3
+        assert_eq!(detect_artifact_rarity(&image, &scaler), 3);
+    }
+
+    #[test]
+    fn test_weapon_rarity_5_star() {
+        let mut image = make_1080p_image();
+        paint_rarity_stars(&mut image, 5);
+        let scaler = make_1080p_scaler();
+        assert_eq!(detect_weapon_rarity(&image, &scaler), 5);
+    }
+
+    #[test]
+    fn test_artifact_lock_detected() {
+        let mut image = make_1080p_image();
+        paint_artifact_lock(&mut image, true, 0.0);
+        let scaler = make_1080p_scaler();
+        assert!(detect_artifact_lock(&image, &scaler, 0.0));
+    }
+
+    #[test]
+    fn test_artifact_unlock_detected() {
+        let mut image = make_1080p_image();
+        paint_artifact_lock(&mut image, false, 0.0);
+        let scaler = make_1080p_scaler();
+        assert!(!detect_artifact_lock(&image, &scaler, 0.0));
+    }
+
+    #[test]
+    fn test_artifact_lock_with_elixir_shift() {
+        let mut image = make_1080p_image();
+        // Paint unlocked at base position so black pixels don't read as "dark"
+        paint_artifact_lock(&mut image, false, 0.0);
+        // Paint locked at shifted position
+        paint_artifact_lock(&mut image, true, 40.0);
+        let scaler = make_1080p_scaler();
+        assert!(!detect_artifact_lock(&image, &scaler, 0.0));
+        assert!(detect_artifact_lock(&image, &scaler, 40.0));
+    }
+
+    #[test]
+    fn test_artifact_astral_mark_detected() {
+        let mut image = make_1080p_image();
+        paint_artifact_astral(&mut image, true, 0.0);
+        let scaler = make_1080p_scaler();
+        assert!(detect_artifact_astral_mark(&image, &scaler, 0.0));
+    }
+
+    #[test]
+    fn test_artifact_astral_mark_absent() {
+        let mut image = make_1080p_image();
+        paint_artifact_astral(&mut image, false, 0.0);
+        let scaler = make_1080p_scaler();
+        assert!(!detect_artifact_astral_mark(&image, &scaler, 0.0));
+    }
+
+    #[test]
+    fn test_weapon_lock_detected() {
+        let mut image = make_1080p_image();
+        paint_weapon_lock(&mut image, true);
+        let scaler = make_1080p_scaler();
+        assert!(detect_weapon_lock(&image, &scaler));
+    }
+
+    #[test]
+    fn test_weapon_unlock_detected() {
+        let mut image = make_1080p_image();
+        paint_weapon_lock(&mut image, false);
+        let scaler = make_1080p_scaler();
+        assert!(!detect_weapon_lock(&image, &scaler));
+    }
+
+    #[test]
+    fn test_icon_ambiguous_mid_animation() {
+        let mut image = make_1080p_image();
+        let scaler = make_1080p_scaler();
+        let mid: [u8; 3] = [150, 150, 150];
+        set_pixel(&mut image, 1683, 428, mid);
+        assert!(is_artifact_icon_ambiguous(&image, &scaler));
+    }
+
+    #[test]
+    fn test_icon_not_ambiguous_when_clearly_locked() {
+        let mut image = make_1080p_image();
+        let scaler = make_1080p_scaler();
+        let dark: [u8; 3] = [60, 60, 60];
+        set_pixel(&mut image, 1683, 428, dark);
+        set_pixel(&mut image, 1768, 428, dark);
+        assert!(!is_artifact_icon_ambiguous(&image, &scaler));
+    }
+}
