@@ -319,9 +319,12 @@ impl LockManager {
                     scanned_artifacts.push((*idx, artifact.clone()));
 
                     // Match against unmatched instructions
-                    let unmatched: Vec<(usize, &ArtifactTarget)> = targets.iter()
+                    let unmatched_converted: Vec<(usize, GoodArtifact)> = targets.iter()
                         .filter(|(i, _)| !matched.contains_key(i))
-                        .map(|&(i, t)| (i, t))
+                        .map(|&(i, t)| (i, GoodArtifact::from(t)))
+                        .collect();
+                    let unmatched: Vec<(usize, &GoodArtifact)> = unmatched_converted.iter()
+                        .map(|(i, a)| (*i, a))
                         .collect();
 
                     if let Some((instr_idx, _score)) = matching::find_best_match(artifact, &unmatched) {

@@ -57,6 +57,25 @@ pub struct ArtifactTarget {
     pub substats: Vec<GoodSubStat>,
 }
 
+impl From<&ArtifactTarget> for GoodArtifact {
+    fn from(t: &ArtifactTarget) -> Self {
+        GoodArtifact {
+            set_key: t.set_key.clone(),
+            slot_key: t.slot_key.clone(),
+            rarity: t.rarity,
+            level: t.level,
+            main_stat_key: t.main_stat_key.clone(),
+            substats: t.substats.clone(),
+            location: String::new(),
+            lock: false,
+            astral_mark: false,
+            elixir_crafted: false,
+            unactivated_substats: Vec::new(),
+            total_rolls: None,
+        }
+    }
+}
+
 /// DEPRECATED: Use list membership in `LockManageRequest` instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArtifactChanges {

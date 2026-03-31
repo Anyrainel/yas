@@ -90,7 +90,7 @@ impl EquipManager {
                 // For unequip, we need to know which character currently has it.
                 // Check Phase 1 scan data for the artifact's current location.
                 let current_location = scanned_artifacts.iter()
-                    .find(|(_, a)| super::matching::match_score(a, &instr.target).is_some())
+                    .find(|(_, a)| super::matching::match_score(a, &GoodArtifact::from(&instr.target)).is_some())
                     .map(|(_, a)| a.location.clone());
 
                 match current_location {
@@ -140,7 +140,7 @@ impl EquipManager {
             // Pre-check: are any already equipped on this character?
             for instr in char_instrs {
                 if let Some((_, ref scanned)) = scanned_artifacts.iter()
-                    .find(|(_, a)| super::matching::match_score(a, &instr.target).is_some())
+                    .find(|(_, a)| super::matching::match_score(a, &GoodArtifact::from(&instr.target)).is_some())
                 {
                     if scanned.location == *char_key {
                         results.push(InstructionResult {
