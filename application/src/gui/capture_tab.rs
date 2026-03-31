@@ -1,0 +1,454 @@
+use std::sync::{Arc, Mutex};
+
+use eframe::egui;
+
+use super::state::{AppState, Lang};
+
+use yas_genshin::capture::monitor::{CaptureCommand, CaptureState};
+use yas_genshin::capture::player_data::CaptureExportSettings;
+use yas_genshin::scanner::common::models::GoodExport;
+
+/// Handle to the capture monitor running on a background tokio runtime.
+pub struct CaptureHandle {
+    _thread: std::thread::JoinHandle<()>,
+    cmd_tx: tokio::sync::mpsc::UnboundedSender<CaptureCommand>,
+}
+
+impl CaptureHandle {
+    pub fn send(&self, cmd: CaptureCommand) {
+        let _ = self.cmd_tx.send(cmd);
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self._thread.is_finished()
+    }
+}
+
+/// Pending export result (polled each frame).
+struct PendingExport {
+    rx: tokio::sync::oneshot::Receiver<anyhow::Result<GoodExport>>,
+}
+
+/// Lifecycle phases for the capture tab.
+#[derive(Clone, Debug, PartialEq)]
+enum Phase {
+    /// Nothing running yet. Show Start button.
+    Idle,
+    /// Background thread initializing (downloading data cache, loading keys).
+    Initializing,
+    /// Capture active, waiting for game packets.
+    Waiting,
+    /// All data received — auto-exporting.
+    Exporting,
+    /// Done — file written.
+    Done { summary: String, path: String },
+    /// Something failed.
+    Failed(String),
+}
+
+/// State specific to the capture tab (lives in GuiApp, not AppState).
+pub struct CaptureTabState {
+    pub handle: Option<CaptureHandle>,
+    pub capture_state: Arc<Mutex<CaptureState>>,
+    phase: Phase,
+    pending_export: Option<PendingExport>,
+
+    // Export settings
+    pub include_characters: bool,
+    pub include_weapons: bool,
+    pub include_artifacts: bool,
+    pub min_artifact_rarity: u32,
+    pub min_weapon_rarity: u32,
+    pub output_dir: String,
+}
+
+impl CaptureTabState {
+    pub fn new(output_dir: String) -> Self {
+        Self {
+            handle: None,
+            capture_state: Arc::new(Mutex::new(CaptureState::default())),
+            phase: Phase::Idle,
+            pending_export: None,
+            include_characters: true,
+            include_weapons: true,
+            include_artifacts: true,
+            min_artifact_rarity: 4,
+            min_weapon_rarity: 3,
+            output_dir,
+        }
+    }
+
+    pub fn is_busy(&self) -> bool {
+        matches!(
+            self.phase,
+            Phase::Initializing | Phase::Waiting | Phase::Exporting
+        )
+    }
+}
+
+/// Spawn the capture monitor on a background thread with a tokio runtime.
+fn spawn_capture(
+    capture_state: Arc<Mutex<CaptureState>>,
+    cmd_tx_out: &mut Option<tokio::sync::mpsc::UnboundedSender<CaptureCommand>>,
+) -> std::thread::JoinHandle<()> {
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    *cmd_tx_out = Some(cmd_tx.clone());
+
+    let state = capture_state.clone();
+
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt,
+            Err(e) => {
+                log::error!(
+                    "创建运行时失败: {} / Failed to create runtime: {}",
+                    e, e
+                );
+                if let Ok(mut s) = state.lock() {
+                    s.error = Some(format!("{}", e));
+                }
+                return;
+            }
+        };
+
+        rt.block_on(async {
+            let monitor =
+                match yas_genshin::capture::monitor::CaptureMonitor::new(state.clone()) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        log::error!(
+                            "初始化抓包监控失败: {} / Failed to initialize capture monitor: {}",
+                            e, e
+                        );
+                        if let Ok(mut s) = state.lock() {
+                            s.error = Some(format!("{}", e));
+                        }
+                        return;
+                    }
+                };
+
+            // Initialization succeeded — immediately start capture
+            let _ = cmd_tx.send(CaptureCommand::StartCapture);
+
+            monitor.run(cmd_rx).await;
+        });
+    })
+}
+
+pub fn show(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    tab: &mut CaptureTabState,
+    game_busy: bool,
+) {
+    let l = state.lang;
+
+    // --- Phase transitions driven by shared state ---
+    update_phase(tab, l);
+
+    ui.add_space(4.0);
+    ui.label(l.t(
+        "通过抓包获取游戏数据（角色/武器/圣遗物），需管理员权限。",
+        "Capture game data (characters/weapons/artifacts) via packet sniffing. Requires admin.",
+    ));
+    ui.add_space(8.0);
+
+    // === Main action area ===
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        match &tab.phase {
+            Phase::Idle => {
+                if game_busy {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(255, 200, 50),
+                        l.t(
+                            "其他任务正在运行，请等待完成",
+                            "Another task is running. Please wait for it to finish.",
+                        ),
+                    );
+                }
+                if ui
+                    .add_enabled(
+                        !game_busy,
+                        egui::Button::new(l.t("▶ 开始抓包", "▶ Start Capture")),
+                    )
+                    .clicked()
+                {
+                    tab.capture_state = Arc::new(Mutex::new(CaptureState::default()));
+                    let mut cmd_tx = None;
+                    let thread = spawn_capture(tab.capture_state.clone(), &mut cmd_tx);
+                    tab.handle = Some(CaptureHandle {
+                        _thread: thread,
+                        cmd_tx: cmd_tx.unwrap(),
+                    });
+                    tab.phase = Phase::Initializing;
+                }
+            }
+
+            Phase::Initializing => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(l.t(
+                        "正在初始化（下载数据缓存）...",
+                        "Initializing (downloading data cache)...",
+                    ));
+                });
+            }
+
+            Phase::Waiting => {
+                ui.horizontal(|ui| {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(100, 200, 100),
+                        "●",
+                    );
+                    ui.label(l.t(
+                        "正在等待游戏数据... 请关闭游戏并重新启动，登录（过门）。",
+                        "Waiting for game data... Please close the game, relaunch, and log in (enter door).",
+                    ));
+                });
+
+                // Show partial progress
+                if let Ok(cs) = tab.capture_state.lock() {
+                    if cs.has_characters || cs.has_items {
+                        ui.add_space(4.0);
+                        let mut parts = Vec::new();
+                        if cs.has_characters {
+                            parts.push(match l {
+                                Lang::Zh => format!("角色: {}", cs.character_count),
+                                Lang::En => format!("Characters: {}", cs.character_count),
+                            });
+                        }
+                        if cs.has_items {
+                            parts.push(match l {
+                                Lang::Zh => format!(
+                                    "武器: {}, 圣遗物: {}",
+                                    cs.weapon_count, cs.artifact_count
+                                ),
+                                Lang::En => format!(
+                                    "Weapons: {}, Artifacts: {}",
+                                    cs.weapon_count, cs.artifact_count
+                                ),
+                            });
+                        }
+                        ui.colored_label(
+                            egui::Color32::from_rgb(100, 200, 100),
+                            parts.join("  |  "),
+                        );
+
+                        let missing = match (cs.has_characters, cs.has_items) {
+                            (true, false) => Some(l.t(
+                                "等待物品数据...",
+                                "Waiting for item data...",
+                            )),
+                            (false, true) => Some(l.t(
+                                "等待角色数据...",
+                                "Waiting for character data...",
+                            )),
+                            _ => None,
+                        };
+                        if let Some(hint) = missing {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(255, 200, 50),
+                                hint,
+                            );
+                        }
+                    }
+                }
+            }
+
+            Phase::Exporting => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(l.t("正在导出...", "Exporting..."));
+                });
+            }
+
+            Phase::Done { summary, path } => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(100, 200, 100),
+                    summary.as_str(),
+                );
+                ui.label(
+                    egui::RichText::new(format!("→ {}", path))
+                        .size(11.0)
+                        .weak(),
+                );
+                ui.add_space(4.0);
+                if ui
+                    .button(l.t("↻ 重新抓包", "↻ Recapture"))
+                    .clicked()
+                {
+                    tab.phase = Phase::Idle;
+                    tab.handle = None;
+                }
+            }
+
+            Phase::Failed(msg) => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(255, 100, 100),
+                    msg.as_str(),
+                );
+                ui.add_space(4.0);
+                if ui
+                    .button(l.t("↻ 重试", "↻ Retry"))
+                    .clicked()
+                {
+                    tab.phase = Phase::Idle;
+                    tab.handle = None;
+                }
+            }
+        }
+    });
+
+    ui.add_space(12.0);
+
+    // === Config section (always visible) ===
+    egui::CollapsingHeader::new(l.t("导出设置", "Export Settings"))
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut tab.include_characters, l.t("角色", "Characters"));
+                ui.add_space(12.0);
+                ui.checkbox(&mut tab.include_weapons, l.t("武器", "Weapons"));
+                ui.add_space(12.0);
+                ui.checkbox(&mut tab.include_artifacts, l.t("圣遗物", "Artifacts"));
+            });
+
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(l.t("最低武器稀有度:", "Min weapon rarity:"));
+                ui.add(egui::Slider::new(&mut tab.min_weapon_rarity, 1..=5));
+                ui.add_space(16.0);
+                ui.label(l.t("最低圣遗物稀有度:", "Min artifact rarity:"));
+                ui.add(egui::Slider::new(&mut tab.min_artifact_rarity, 1..=5));
+            });
+        });
+}
+
+/// Drive phase transitions based on shared capture state.
+fn update_phase(tab: &mut CaptureTabState, l: Lang) {
+    // Poll pending export
+    if let Some(ref mut pending) = tab.pending_export {
+        match pending.rx.try_recv() {
+            Ok(Ok(export)) => {
+                let timestamp = yas_genshin::cli::chrono_timestamp();
+                let filename = format!("genshin_export_{}.json", timestamp);
+                let path = std::path::Path::new(&tab.output_dir).join(&filename);
+                match serde_json::to_string_pretty(&export) {
+                    Ok(json) => match std::fs::write(&path, &json) {
+                        Ok(_) => {
+                            let cc = export.characters.as_ref().map_or(0, |v| v.len());
+                            let wc = export.weapons.as_ref().map_or(0, |v| v.len());
+                            let ac = export.artifacts.as_ref().map_or(0, |v| v.len());
+                            let summary = match l {
+                                Lang::Zh => format!(
+                                    "已导出: {} 角色, {} 武器, {} 圣遗物",
+                                    cc, wc, ac
+                                ),
+                                Lang::En => format!(
+                                    "Exported: {} characters, {} weapons, {} artifacts",
+                                    cc, wc, ac
+                                ),
+                            };
+                            log::info!(
+                                "{} → {} / {} → {}",
+                                summary, path.display(), summary, path.display()
+                            );
+                            tab.phase = Phase::Done {
+                                summary,
+                                path: path.display().to_string(),
+                            };
+                        }
+                        Err(e) => {
+                            tab.phase = Phase::Failed(format!(
+                                "{}: {}",
+                                l.t("写入文件失败", "Failed to write file"),
+                                e
+                            ));
+                        }
+                    },
+                    Err(e) => {
+                        tab.phase = Phase::Failed(format!(
+                            "{}: {}",
+                            l.t("序列化失败", "Serialization failed"),
+                            e
+                        ));
+                    }
+                }
+                tab.pending_export = None;
+                return;
+            }
+            Ok(Err(e)) => {
+                tab.phase = Phase::Failed(format!(
+                    "{}: {}",
+                    l.t("导出失败", "Export failed"),
+                    e
+                ));
+                tab.pending_export = None;
+                return;
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                return; // still waiting
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                tab.phase = Phase::Failed(
+                    l.t("导出通道关闭", "Export channel closed").into(),
+                );
+                tab.pending_export = None;
+                return;
+            }
+        }
+    }
+
+    // Check for errors from background thread
+    if matches!(tab.phase, Phase::Initializing | Phase::Waiting) {
+        if let Ok(cs) = tab.capture_state.lock() {
+            if let Some(ref err) = cs.error {
+                tab.phase = Phase::Failed(err.clone());
+                return;
+            }
+        }
+
+        // Check if monitor thread died unexpectedly
+        if tab.handle.as_ref().map_or(false, |h| h.is_finished()) {
+            let has_error = tab
+                .capture_state
+                .lock()
+                .map_or(false, |s| s.error.is_some());
+            if !has_error {
+                tab.phase = Phase::Failed(
+                    l.t("抓包进程意外退出", "Capture process exited unexpectedly")
+                        .into(),
+                );
+            }
+            return;
+        }
+    }
+
+    // Transition: Initializing → Waiting (when capture starts)
+    if tab.phase == Phase::Initializing {
+        if tab.capture_state.lock().map_or(false, |s| s.capturing) {
+            tab.phase = Phase::Waiting;
+        }
+    }
+
+    // Transition: Waiting → auto-export (when capture auto-stopped with complete data)
+    if tab.phase == Phase::Waiting {
+        if tab.capture_state.lock().map_or(false, |s| s.complete) {
+            // Automatically trigger export
+            let settings = CaptureExportSettings {
+                include_characters: tab.include_characters,
+                include_weapons: tab.include_weapons,
+                include_artifacts: tab.include_artifacts,
+                min_artifact_rarity: tab.min_artifact_rarity,
+                min_weapon_rarity: tab.min_weapon_rarity,
+                ..Default::default()
+            };
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            if let Some(ref h) = tab.handle {
+                h.send(CaptureCommand::Export { settings, reply: tx });
+                tab.pending_export = Some(PendingExport { rx });
+                tab.phase = Phase::Exporting;
+            }
+        }
+    }
+}

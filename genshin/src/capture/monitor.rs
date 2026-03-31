@@ -4,14 +4,13 @@
 /// The monitor runs on a tokio runtime and communicates via channels.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 use anyhow::{Result, anyhow};
 use auto_artifactarium::{
     GamePacket, GameSniffer, matches_avatar_packet, matches_item_packet,
 };
 use base64::prelude::*;
-use log::{error, info, warn};
+use log::{error, info};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -20,13 +19,6 @@ use super::data_types::DataCache;
 use super::packet_capture::PacketCapture;
 use super::player_data::{CaptureExportSettings, PlayerData};
 use crate::scanner::common::models::GoodExport;
-
-/// Timestamps tracking when each data type was last received.
-#[derive(Clone, Debug, Default)]
-pub struct CaptureTimestamps {
-    pub characters_updated: Option<Instant>,
-    pub items_updated: Option<Instant>,
-}
 
 /// Commands the UI can send to the monitor.
 pub enum CaptureCommand {
@@ -42,8 +34,13 @@ pub enum CaptureCommand {
 #[derive(Clone, Debug)]
 pub struct CaptureState {
     pub capturing: bool,
-    pub timestamps: CaptureTimestamps,
-    pub has_data: bool,
+    /// Both characters and items have been received; capture auto-stopped.
+    pub complete: bool,
+    pub has_characters: bool,
+    pub has_items: bool,
+    pub character_count: usize,
+    pub weapon_count: usize,
+    pub artifact_count: usize,
     pub error: Option<String>,
 }
 
@@ -51,8 +48,12 @@ impl Default for CaptureState {
     fn default() -> Self {
         Self {
             capturing: false,
-            timestamps: CaptureTimestamps::default(),
-            has_data: false,
+            complete: false,
+            has_characters: false,
+            has_items: false,
+            character_count: 0,
+            weapon_count: 0,
+            artifact_count: 0,
             error: None,
         }
     }
@@ -126,7 +127,6 @@ impl CaptureMonitor {
         match cmd {
             CaptureCommand::StartCapture => {
                 if self.capture_cancel_token.is_some() {
-                    warn!("Capture start request while already capturing");
                     return false;
                 }
                 let cancel_token = CancellationToken::new();
@@ -134,15 +134,12 @@ impl CaptureMonitor {
                 self.capture_cancel_token = Some(cancel_token);
                 if let Ok(mut state) = self.state.lock() {
                     state.capturing = true;
+                    state.complete = false;
+                    state.error = None;
                 }
             }
             CaptureCommand::StopCapture => {
-                if let Some(token) = self.capture_cancel_token.take() {
-                    token.cancel();
-                }
-                if let Ok(mut state) = self.state.lock() {
-                    state.capturing = false;
-                }
+                self.stop_capture();
             }
             CaptureCommand::Export { settings, reply } => {
                 let result = self.player_data.export(&settings);
@@ -152,35 +149,61 @@ impl CaptureMonitor {
         false
     }
 
+    fn stop_capture(&mut self) {
+        if let Some(token) = self.capture_cancel_token.take() {
+            token.cancel();
+        }
+        if let Ok(mut state) = self.state.lock() {
+            state.capturing = false;
+        }
+    }
+
     fn handle_packet(&mut self, packet: Vec<u8>) {
         let Some(GamePacket::Commands(commands)) = self.sniffer.receive_packet(packet) else {
             return;
         };
 
-        let mut timestamps_changed = false;
-
         for command in commands {
             if let Some(items) = matches_item_packet(&command) {
-                info!("Captured item packet with {} items", items.len());
+                info!(
+                    "捕获到物品数据包，共 {} 个物品 / Captured item packet with {} items",
+                    items.len(),
+                    items.len()
+                );
                 self.player_data.process_items(&items);
                 if let Ok(mut state) = self.state.lock() {
-                    state.timestamps.items_updated = Some(Instant::now());
-                    state.has_data = true;
+                    state.has_items = true;
+                    state.weapon_count = self.player_data.weapon_count();
+                    state.artifact_count = self.player_data.artifact_count();
                 }
-                timestamps_changed = true;
             } else if let Some(avatars) = matches_avatar_packet(&command) {
-                info!("Captured avatar packet with {} avatars", avatars.len());
+                info!(
+                    "捕获到角色数据包，共 {} 个角色 / Captured avatar packet with {} avatars",
+                    avatars.len(),
+                    avatars.len()
+                );
                 self.player_data.process_characters(&avatars);
                 if let Ok(mut state) = self.state.lock() {
-                    state.timestamps.characters_updated = Some(Instant::now());
-                    state.has_data = true;
+                    state.has_characters = true;
+                    state.character_count = self.player_data.character_count();
                 }
-                timestamps_changed = true;
             }
-            // Note: achievement packets are intentionally not handled
         }
 
-        let _ = timestamps_changed; // suppress unused warning
+        // Auto-stop when we have both characters and items
+        let should_stop = self
+            .state
+            .lock()
+            .map_or(false, |s| s.has_characters && s.has_items && s.capturing);
+        if should_stop {
+            info!(
+                "已收集到所有数据，自动停止抓包 / All data collected, stopping capture automatically"
+            );
+            self.stop_capture();
+            if let Ok(mut state) = self.state.lock() {
+                state.complete = true;
+            }
+        }
     }
 }
 
@@ -189,8 +212,8 @@ async fn capture_task(
     packet_tx: mpsc::UnboundedSender<Vec<u8>>,
 ) -> Result<()> {
     let mut capture =
-        PacketCapture::new().map_err(|e| anyhow!("Error creating packet capture: {e}"))?;
-    info!("Starting packet capture");
+        PacketCapture::new().map_err(|e| anyhow!("创建抓包失败 / Error creating packet capture: {e}"))?;
+    info!("开始抓包 / Starting packet capture");
     loop {
         let packet = tokio::select!(
             packet = capture.next_packet() => packet,
@@ -199,15 +222,15 @@ async fn capture_task(
         let packet = match packet {
             Ok(packet) => packet,
             Err(e) => {
-                error!("Error receiving packet: {e}");
+                error!("接收数据包出错 / Error receiving packet: {e}");
                 continue;
             }
         };
         if let Err(e) = packet_tx.send(packet) {
-            error!("Error sending captured packet: {e}");
+            error!("发送数据包出错 / Error sending captured packet: {e}");
         }
     }
-    info!("Packet capture stopped");
+    info!("抓包已停止 / Packet capture stopped");
     Ok(())
 }
 

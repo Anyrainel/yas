@@ -77,6 +77,27 @@ impl PlayerData {
         !self.items.is_empty()
     }
 
+    /// Count characters (formal avatars only, avatar_type == 1).
+    pub fn character_count(&self) -> usize {
+        self.characters.iter().filter(|c| c.avatar_type == 1).count()
+    }
+
+    /// Count weapons among captured items.
+    pub fn weapon_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|item| item.has_equip() && item.equip().has_weapon())
+            .count()
+    }
+
+    /// Count artifacts (reliquaries) among captured items.
+    pub fn artifact_count(&self) -> usize {
+        self.items
+            .iter()
+            .filter(|item| item.has_equip() && item.equip().has_reliquary())
+            .count()
+    }
+
     pub fn process_characters(&mut self, avatars: &[AvatarInfo]) {
         self.character_equip_guid_map.clear();
         for avatar in avatars {

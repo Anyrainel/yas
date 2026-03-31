@@ -9,6 +9,7 @@ test = false
 [features]
 default = []
 dev-tools = []
+capture = ["yas_genshin/capture", "dep:tokio"]
 
 [dependencies]
 anyhow = "1.0"
@@ -23,6 +24,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 eframe = { version = "0.30", default-features = false, features = ["glow", "default_fonts"] }
 rfd = "0.15"
+tokio = { version = "1", features = ["sync"], optional = true }
 
 [build-dependencies]
 winres = "0.1"

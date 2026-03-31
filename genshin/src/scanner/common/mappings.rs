@@ -5,9 +5,10 @@ use anyhow::{bail, Result};
 use log::{debug, info};
 use serde::Deserialize;
 
+use crate::cache_meta;
+
 const MAPPINGS_URL: &str = "https://ggartifact.com/good/mappings.json";
 const MAPPINGS_CACHE_PATH: &str = "data/mappings.json";
-const MAPPINGS_META_PATH: &str = "data/mappings_meta.json";
 const MAPPINGS_TTL_SECS: u64 = 24 * 3600; // 1 day
 
 /// Constellation bonus info for a character
@@ -77,12 +78,6 @@ struct LocalizedNames {
     zh: Option<String>,
 }
 
-#[derive(Deserialize)]
-struct MappingsMeta {
-    #[serde(rename = "lastFetchTime")]
-    last_fetch_time: u64,
-}
-
 /// Name override config for characters with customizable in-game names
 pub struct NameOverrides {
     pub traveler_name: Option<String>,
@@ -113,23 +108,11 @@ impl MappingManager {
 
     /// Check cache freshness and fetch from remote if needed.
     fn fetch_if_needed() -> Result<()> {
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        // Check last fetch time from meta file
-        let mut last_fetch_time: u64 = 0;
-        if let Ok(meta_raw) = std::fs::read_to_string(MAPPINGS_META_PATH) {
-            if let Ok(meta) = serde_json::from_str::<MappingsMeta>(&meta_raw) {
-                last_fetch_time = meta.last_fetch_time;
-            }
-        }
-
+        let meta = cache_meta::load();
         let cache_exists = Path::new(MAPPINGS_CACHE_PATH).exists();
 
         // Skip fetch if cache is fresh
-        if cache_exists && (now_secs - last_fetch_time) < MAPPINGS_TTL_SECS {
+        if cache_exists && cache_meta::is_fresh(meta.mappings_last_fetch_time, MAPPINGS_TTL_SECS) {
             return Ok(());
         }
 
@@ -147,11 +130,9 @@ impl MappingManager {
                     // Validate JSON
                     let _: serde_json::Value = serde_json::from_str(&body)?;
                     std::fs::write(MAPPINGS_CACHE_PATH, &body)?;
-                    let meta = format!(
-                        "{{\"lastFetchTime\":{}}}",
-                        now_secs
-                    );
-                    std::fs::write(MAPPINGS_META_PATH, meta)?;
+                    let mut meta = cache_meta::load();
+                    meta.mappings_last_fetch_time = cache_meta::now();
+                    cache_meta::save(&meta);
                     debug!("游戏数据映射已更新 / Game data mappings updated");
                 } else {
                     if cache_exists {

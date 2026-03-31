@@ -7,6 +7,18 @@ repository = "https://github.com/wormtql/yas"
 keywords = ["GenshinImpact", "artifacts", "scanner", "ocr"]
 license = "GPL-2.0-or-later"
 
+[features]
+default = []
+capture = [
+    "dep:auto-artifactarium",
+    "dep:indexmap",
+    "dep:base64",
+    "dep:tokio",
+    "dep:tokio-util",
+    "dep:pktmon",
+    "dep:futures",
+]
+
 [dependencies]
 yas = { path = "../yas", package = "yas_core", features = ["ort", "capturer_screenshots"] }
 anyhow = "1.0"
@@ -19,11 +31,6 @@ lazy_static = "1.4"
 serde = { version = "1.0", features = ["derive"] }
 enigo = "0.1"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
-auto-artifactarium = { git = "https://github.com/konkers/auto-artifactarium", rev = "c5fa36b84e05ad0339fee8a0a420d26900b824b7" }
-indexmap = "2"
-base64 = "0.22"
-tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread"] }
-tokio-util = "0.7"
 crossbeam-channel = "0.5"
 rayon = "1.7"
 indicatif = "0.17"
@@ -32,7 +39,14 @@ zip = "2"
 tiny_http = "0.12"
 uuid = { version = "1", features = ["v4"] }
 
+# capture-only dependencies
+auto-artifactarium = { git = "https://github.com/konkers/auto-artifactarium", rev = "c5fa36b84e05ad0339fee8a0a420d26900b824b7", optional = true }
+indexmap = { version = "2", optional = true }
+base64 = { version = "0.22", optional = true }
+tokio = { version = "1", features = ["rt", "macros", "rt-multi-thread"], optional = true }
+tokio-util = { version = "0.7", optional = true }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-capture = "=1.0.65"
-pktmon = { version = "0.6", features = ["tokio"] }
-futures = "0.3"
+pktmon = { version = "0.6", features = ["tokio"], optional = true }
+futures = { version = "0.3", optional = true }

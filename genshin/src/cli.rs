@@ -1046,7 +1046,7 @@ fn print_debug_result(result: &DebugScanResult) {
 
 /// Generate a local-time timestamp string like "2024-01-15_12-30-45".
 #[cfg(target_os = "windows")]
-fn chrono_timestamp() -> String {
+pub fn chrono_timestamp() -> String {
     #[repr(C)]
     struct SystemTime {
         year: u16, month: u16, _dow: u16, day: u16,
@@ -1064,7 +1064,7 @@ fn chrono_timestamp() -> String {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn chrono_timestamp() -> String {
+pub fn chrono_timestamp() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

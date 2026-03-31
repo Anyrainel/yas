@@ -3,6 +3,8 @@ pub mod log_bridge;
 pub mod worker;
 pub mod scanner_tab;
 pub mod manager_tab;
+#[cfg(feature = "capture")]
+pub mod capture_tab;
 pub mod log_panel;
 
 use std::path::PathBuf;
@@ -77,6 +79,8 @@ pub fn run_gui() {
 enum ActiveTab {
     Scanner,
     Manager,
+    #[cfg(feature = "capture")]
+    Capture,
     Credits,
 }
 
@@ -86,16 +90,22 @@ struct GuiApp {
     scan_handle: Option<TaskHandle>,
     server_handle: Option<TaskHandle>,
     manage_handle: Option<TaskHandle>,
+    #[cfg(feature = "capture")]
+    capture_tab: capture_tab::CaptureTabState,
 }
 
 impl GuiApp {
     fn new(state: AppState) -> Self {
+        #[cfg(feature = "capture")]
+        let output_dir = state.output_dir.clone();
         Self {
             state,
             active_tab: ActiveTab::Scanner,
             scan_handle: None,
             server_handle: None,
             manage_handle: None,
+            #[cfg(feature = "capture")]
+            capture_tab: capture_tab::CaptureTabState::new(output_dir),
         }
     }
 }
@@ -119,6 +129,12 @@ impl eframe::App for GuiApp {
                     &mut self.active_tab,
                     ActiveTab::Manager,
                     egui::RichText::new(l.t("管理器", "Manager")).size(20.0),
+                );
+                #[cfg(feature = "capture")]
+                ui.selectable_value(
+                    &mut self.active_tab,
+                    ActiveTab::Capture,
+                    egui::RichText::new(l.t("抓包", "Capture")).size(20.0),
                 );
 
                 // Right-aligned: language toggle + credits tab
@@ -160,6 +176,10 @@ impl eframe::App for GuiApp {
         let is_scan_running = self.scan_handle.as_ref().map_or(false, |h| !h.is_finished());
         let is_server_running = self.server_handle.as_ref().map_or(false, |h| !h.is_finished());
         let is_manage_running = self.manage_handle.as_ref().map_or(false, |h| !h.is_finished());
+        #[cfg(feature = "capture")]
+        let is_capture_busy = self.capture_tab.is_busy();
+        #[cfg(not(feature = "capture"))]
+        let is_capture_busy = false;
 
         // Central panel: active tab content
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -181,6 +201,15 @@ impl eframe::App for GuiApp {
                         is_scan_running,
                     );
                 }
+                #[cfg(feature = "capture")]
+                ActiveTab::Capture => {
+                    capture_tab::show(
+                        ui,
+                        &self.state,
+                        &mut self.capture_tab,
+                        is_scan_running || is_server_running || is_manage_running,
+                    );
+                }
                 ActiveTab::Credits => {
                     show_credits_tab(ui, l);
                 }
@@ -193,7 +222,7 @@ impl eframe::App for GuiApp {
             UpdateState::Checking | UpdateState::Downloading | UpdateState::ShowingDialog,
         );
         let any_running =
-            is_scan_running || is_server_running || is_manage_running || update_busy;
+            is_scan_running || is_server_running || is_manage_running || is_capture_busy || update_busy;
         if any_running {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }

@@ -6290,6 +6290,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "tokio",
  "winres",
  "yas_core",
  "yas_scanner_genshin",
