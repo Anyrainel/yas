@@ -36,7 +36,7 @@ use crate::scanner::common::stat_parser::level_to_ascension;
 /// Computed from card proportions (card origin 1307,119, size 494x841).
 /// The proportional approach adapts better to the actual card layout than
 /// the hardcoded constants from the JS port.
-struct WeaponOcrRegions {
+pub(crate) struct WeaponOcrRegions {
     name: (f64, f64, f64, f64),
     level: (f64, f64, f64, f64),
     refinement: (f64, f64, f64, f64),
@@ -44,7 +44,7 @@ struct WeaponOcrRegions {
 }
 
 impl WeaponOcrRegions {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let card_x: f64 = 1307.0;
         let card_y: f64 = 119.0;
         let card_w: f64 = 494.0;
@@ -93,7 +93,7 @@ const WEAPON_FORGING_STOP_NAMES: &[&str] = &[
 ];
 
 /// Result of scanning a single weapon: weapon data, stop signal, or skip
-enum WeaponScanResult {
+pub(crate) enum WeaponScanResult {
     Weapon(GoodWeapon),
     Stop,
     Skip,
@@ -143,7 +143,7 @@ impl GoodWeaponScanner {
     /// Scan a single weapon from a captured game image.
     ///
     /// Called from the worker thread with a checked-out OCR model.
-    fn scan_single_weapon(
+    pub(crate) fn scan_single_weapon(
         ocr: &dyn ImageToText<RgbImage>,
         equip_fallback_ocr: Option<&dyn ImageToText<RgbImage>>,
         image: &RgbImage,
