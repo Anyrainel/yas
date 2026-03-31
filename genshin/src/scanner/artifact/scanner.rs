@@ -1501,3 +1501,256 @@ impl GoodArtifactScanner {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scanner::common::test_utils::*;
+
+    fn default_config() -> GoodArtifactScannerConfig {
+        GoodArtifactScannerConfig {
+            verbose: false,
+            dump_images: false,
+            continue_on_failure: false,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_artifact_low_rarity_stops() {
+        let mut image = make_1080p_image();
+        paint_rarity_stars(&mut image, 3);
+        let scaler = make_1080p_scaler();
+        let regions = ArtifactOcrRegions::new();
+        let mappings = make_test_mappings();
+        let config = default_config();
+
+        let level_ocr = FakeOcr::new(vec![]);
+        let general_ocr = FakeOcr::new(vec![]);
+
+        let result = GoodArtifactScanner::scan_single_artifact(
+            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0,
+        ).unwrap();
+
+        assert!(matches!(result, ArtifactScanResult::Stop));
+        assert_eq!(level_ocr.call_count(), 0);
+        assert_eq!(general_ocr.call_count(), 0);
+    }
+
+    #[test]
+    fn test_artifact_unrecognizable_slot_4star_skips() {
+        let mut image = make_1080p_image();
+        paint_rarity_stars(&mut image, 4);
+        let scaler = make_1080p_scaler();
+        let regions = ArtifactOcrRegions::new();
+        let mappings = make_test_mappings();
+        let config = default_config();
+
+        let level_ocr = FakeOcr::new(vec![]);
+        let general_ocr = FakeOcr::new(vec!["乱码无法识别"]);
+
+        let result = GoodArtifactScanner::scan_single_artifact(
+            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0,
+        ).unwrap();
+
+        assert!(matches!(result, ArtifactScanResult::Skip));
+    }
+
+    #[test]
+    fn test_artifact_unrecognizable_slot_5star_errors() {
+        let mut image = make_1080p_image();
+        paint_rarity_stars(&mut image, 5);
+        let scaler = make_1080p_scaler();
+        let regions = ArtifactOcrRegions::new();
+        let mappings = make_test_mappings();
+        let config = default_config();
+
+        let level_ocr = FakeOcr::new(vec![]);
+        let general_ocr = FakeOcr::new(vec!["乱码无法识别"]);
+
+        let result = GoodArtifactScanner::scan_single_artifact(
+            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_artifact_unrecognizable_slot_5star_skips_with_continue() {
+        let mut image = make_1080p_image();
+        paint_rarity_stars(&mut image, 5);
+        let scaler = make_1080p_scaler();
+        let regions = ArtifactOcrRegions::new();
+        let mappings = make_test_mappings();
+        let mut config = default_config();
+        config.continue_on_failure = true;
+
+        let level_ocr = FakeOcr::new(vec![]);
+        let general_ocr = FakeOcr::new(vec!["乱码无法识别"]);
+
+        let result = GoodArtifactScanner::scan_single_artifact(
+            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0,
+        ).unwrap();
+
+        assert!(matches!(result, ArtifactScanResult::Skip));
+    }
+
+    #[test]
+    fn test_artifact_flower_happy_path() {
+        let mut image = make_1080p_image();
+        paint_rarity_stars(&mut image, 5);
+        paint_artifact_lock(&mut image, true, 0.0);
+        paint_artifact_astral(&mut image, false, 0.0);
+        paint_elixir_banner(&mut image, false);
+        let scaler = make_1080p_scaler();
+        let regions = ArtifactOcrRegions::new();
+        let mappings = make_test_mappings();
+        let mut config = default_config();
+        config.continue_on_failure = true;
+
+        // level_ocr (v5): 1 call for level
+        let level_ocr = FakeOcr::new(vec!["+20"]);
+
+        // general_ocr (v4) calls:
+        // 1. part name
+        // 2. main stat
+        // 3. level v4
+        // 4-7. substats (1 call each if text parses cleanly)
+        // 8. set name RGB
+        // 9. equip
+        let general_ocr = FakeOcr::new(vec![
+            "生之花",                  // 1. part name
+            "生命值",                  // 2. main stat
+            "+20",                     // 3. level v4
+            "暴击率+10.5%",            // 4. sub0 direct (parses → no masked call)
+            "暴击伤害+21.0%",          // 5. sub1 direct
+            "攻击力+9.3%",             // 6. sub2 direct
+            "元素充能效率+6.5%",       // 7. sub3 direct
+            "角斗士的终幕礼",          // 8. set name RGB (matches → no grayscale call)
+            "",                        // 9. equip (empty)
+        ]);
+
+        let result = GoodArtifactScanner::scan_single_artifact(
+            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0,
+        ).unwrap();
+
+        match result {
+            ArtifactScanResult::Artifact(a) => {
+                assert_eq!(a.slot_key, "flower");
+                assert_eq!(a.main_stat_key, "hp");
+                assert_eq!(a.level, 20);
+                assert_eq!(a.rarity, 5);
+                assert!(a.lock);
+                assert!(!a.astral_mark);
+                assert!(!a.elixir_crafted);
+                assert_eq!(a.set_key, "GladiatorsFinale");
+                assert!(a.location.is_empty());
+                assert_eq!(a.substats.len(), 4);
+                assert_eq!(a.substats[0].key, "critRate_");
+                assert!((a.substats[0].value - 10.5).abs() < 0.1);
+                assert!(a.total_rolls.is_some());
+            }
+            other => panic!("Expected Artifact, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn test_artifact_elixir_crafted_detected() {
+        let mut image = make_1080p_image();
+        paint_rarity_stars(&mut image, 5);
+        paint_elixir_banner(&mut image, true);
+        paint_artifact_lock(&mut image, false, 40.0);
+        paint_artifact_astral(&mut image, false, 40.0);
+        let scaler = make_1080p_scaler();
+        let regions = ArtifactOcrRegions::new();
+        let mappings = make_test_mappings();
+        let mut config = default_config();
+        config.continue_on_failure = true;
+
+        let level_ocr = FakeOcr::new(vec!["+20"]);
+        let general_ocr = FakeOcr::new(vec![
+            "生之花", "生命值", "+20",
+            "暴击率+10.5%", "暴击伤害+21.0%", "攻击力+9.3%", "元素充能效率+6.5%",
+            "角斗士的终幕礼", "",
+        ]);
+
+        let result = GoodArtifactScanner::scan_single_artifact(
+            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0,
+        ).unwrap();
+
+        match result {
+            ArtifactScanResult::Artifact(a) => {
+                assert!(a.elixir_crafted);
+                assert!(!a.lock);
+            }
+            other => panic!("Expected Artifact, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn test_artifact_astral_forces_lock_true() {
+        let mut image = make_1080p_image();
+        paint_rarity_stars(&mut image, 5);
+        paint_elixir_banner(&mut image, false);
+        paint_artifact_lock(&mut image, false, 0.0);
+        paint_artifact_astral(&mut image, true, 0.0);
+        let scaler = make_1080p_scaler();
+        let regions = ArtifactOcrRegions::new();
+        let mappings = make_test_mappings();
+        let mut config = default_config();
+        config.continue_on_failure = true;
+
+        let level_ocr = FakeOcr::new(vec!["+20"]);
+        let general_ocr = FakeOcr::new(vec![
+            "生之花", "生命值", "+20",
+            "暴击率+10.5%", "暴击伤害+21.0%", "攻击力+9.3%", "元素充能效率+6.5%",
+            "角斗士的终幕礼", "",
+        ]);
+
+        let result = GoodArtifactScanner::scan_single_artifact(
+            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0,
+        ).unwrap();
+
+        match result {
+            ArtifactScanResult::Artifact(a) => {
+                assert!(a.astral_mark);
+                assert!(a.lock, "Lock should be forced true when astral is present");
+            }
+            other => panic!("Expected Artifact, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn test_artifact_equipped_to_character() {
+        let mut image = make_1080p_image();
+        paint_rarity_stars(&mut image, 5);
+        paint_artifact_lock(&mut image, false, 0.0);
+        paint_artifact_astral(&mut image, false, 0.0);
+        paint_elixir_banner(&mut image, false);
+        let scaler = make_1080p_scaler();
+        let regions = ArtifactOcrRegions::new();
+        let mappings = make_test_mappings();
+        let mut config = default_config();
+        config.continue_on_failure = true;
+
+        let level_ocr = FakeOcr::new(vec!["+20"]);
+        let general_ocr = FakeOcr::new(vec![
+            "空之杯", "岩元素伤害加成", "+20",
+            "暴击率+10.5%", "暴击伤害+21.0%", "攻击力+9.3%", "元素充能效率+6.5%",
+            "角斗士的终幕礼",
+            "芙宁娜已装备",
+        ]);
+
+        let result = GoodArtifactScanner::scan_single_artifact(
+            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0,
+        ).unwrap();
+
+        match result {
+            ArtifactScanResult::Artifact(a) => {
+                assert_eq!(a.slot_key, "goblet");
+                assert_eq!(a.location, "Furina");
+            }
+            other => panic!("Expected Artifact, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+}
