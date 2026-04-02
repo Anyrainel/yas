@@ -19,7 +19,7 @@ impl GuiLogger {
             .ok()
             .and_then(|_| {
                 let ts = format_timestamp().replace(':', "-");
-                std::fs::File::create(format!("log/gui_{}.log", ts)).ok()
+                std::fs::File::create(format!("log/run_{}.log", ts)).ok()
             })
             .map(Mutex::new);
         Self { lines, max_lines, log_file }

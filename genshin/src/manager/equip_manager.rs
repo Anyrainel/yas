@@ -316,7 +316,7 @@ impl EquipManager {
         // Track which set filter is currently active so we don't re-apply unnecessarily.
         let mut active_filter: Option<Vec<String>> = None;
 
-        for &(idx, target, is_flex) in &ordered {
+        for &(_idx, target, is_flex) in &ordered {
             if ctrl.check_rmb() {
                 results.insert(target.result_id.clone(), InstructionResult {
                     id: target.result_id.clone(),
