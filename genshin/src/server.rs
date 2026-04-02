@@ -14,6 +14,7 @@
 //! 异步 HTTP 服务器。双线程架构：HTTP 线程处理请求，执行线程控制游戏。
 //! 安全：通过 Origin 头限制仅允许 ggartifact.com 和 localhost 来源。
 
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
@@ -26,6 +27,78 @@ use crate::manager::orchestrator::ArtifactManager;
 use crate::scanner::common::game_controller::GenshinGameController;
 use crate::manager::orchestrator::ProgressFn;
 use crate::scanner::common::models::GoodArtifact;
+
+// ================================================================
+// File logging: saves request bodies as JSON + running text log
+// ================================================================
+
+/// Shared file logger for the server session.
+/// Created once at server start, shared via Arc across threads.
+struct FileLogger {
+    log_dir: std::path::PathBuf,
+    log_file: Mutex<std::fs::File>,
+}
+
+/// Format a timestamp string from SystemTime (local time approximation via UNIX epoch offset).
+fn timestamp_string() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let dur = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let secs = dur.as_secs();
+    let millis = dur.subsec_millis();
+    // Use hours/minutes/seconds from total seconds (UTC-based, good enough for filenames)
+    let h = (secs / 3600) % 24;
+    let m = (secs / 60) % 60;
+    let s = secs % 60;
+    format!("{:02}-{:02}-{:02}_{:03}", h, m, s, millis)
+}
+
+impl FileLogger {
+    fn new() -> Option<Arc<Self>> {
+        let log_dir = std::path::PathBuf::from("log");
+        if std::fs::create_dir_all(&log_dir).is_err() {
+            return None;
+        }
+        let ts = timestamp_string();
+        let log_path = log_dir.join(format!("server_{}.log", ts));
+        let file = std::fs::File::create(&log_path).ok()?;
+        info!("文件日志已启动 / File logging to: {}", log_path.display());
+        Some(Arc::new(Self {
+            log_dir,
+            log_file: Mutex::new(file),
+        }))
+    }
+
+    /// Save a request body as a timestamped JSON file.
+    fn save_request(&self, endpoint: &str, body: &str) {
+        let ts = timestamp_string();
+        let filename = format!("{}_{}.json", endpoint, ts);
+        let path = self.log_dir.join(&filename);
+        if let Err(e) = std::fs::write(&path, body) {
+            error!("保存请求失败 / Failed to save request {}: {}", filename, e);
+        } else {
+            self.append_line(&format!("Saved request: {}", filename));
+        }
+    }
+
+    /// Save a response body as a timestamped JSON file.
+    fn save_response(&self, endpoint: &str, job_id: &str, body: &str) {
+        let ts = timestamp_string();
+        let filename = format!("{}_result_{}_{}.json", endpoint, job_id, ts);
+        let path = self.log_dir.join(&filename);
+        if let Err(e) = std::fs::write(&path, body) {
+            error!("保存结果失败 / Failed to save result {}: {}", filename, e);
+        }
+    }
+
+    /// Append a line to the running log file.
+    fn append_line(&self, msg: &str) {
+        if let Ok(mut f) = self.log_file.lock() {
+            let ts = timestamp_string();
+            let _ = writeln!(f, "{} {}", ts, msg);
+            let _ = f.flush();
+        }
+    }
+}
 
 /// Job types that can be submitted to the execution thread.
 enum JobRequest {
@@ -231,10 +304,14 @@ where
     // Channel for submitting jobs from HTTP thread to execution thread
     let (job_tx, job_rx) = mpsc::channel::<(String, JobRequest)>();
 
+    // File logger (creates log/ folder)
+    let file_logger = FileLogger::new();
+
     // Clone shared refs for the HTTP thread
     let http_state = job_state.clone();
     let http_enabled = enabled.clone();
     let http_artifact_cache = artifact_cache.clone();
+    let http_logger = file_logger.clone();
 
     // Clone job_tx for the HTTP thread before moving the original
     let http_job_tx = job_tx.clone();
@@ -290,11 +367,11 @@ where
 
             match (method, url.as_str()) {
                 (Method::Post, "/manage") => {
-                    handle_manage(request, &http_enabled, &http_state, &http_job_tx, cors_ref);
+                    handle_manage(request, &http_enabled, &http_state, &http_job_tx, cors_ref, http_logger.as_ref());
                 }
 
                 (Method::Post, "/equip") => {
-                    handle_equip(request, &http_enabled, &http_state, &http_job_tx, cors_ref);
+                    handle_equip(request, &http_enabled, &http_state, &http_job_tx, cors_ref, http_logger.as_ref());
                 }
 
                 // Lightweight poll — no result payload.
@@ -332,6 +409,10 @@ where
                                         let json = serde_json::to_string(result).unwrap_or_else(|_| {
                                             r#"{"error":"serialization failed"}"#.to_string()
                                         });
+                                        // Log result to file
+                                        if let Some(ref logger) = http_logger {
+                                            logger.save_response("result", requested_id, &json);
+                                        }
                                         drop(state);
                                         respond_json(request, 200, &json, cors_ref);
                                     } else {
@@ -483,16 +564,37 @@ where
         };
 
         let cancel_token = yas::cancel::CancelToken::new();
-        let (result, artifact_snapshot, invalidates_cache) = match request {
-            JobRequest::Manage(manage_req) => {
-                let has_lock = !manage_req.lock.is_empty() || !manage_req.unlock.is_empty();
-                let (result, snapshot) = exec.execute(manage_req, Some(&progress_fn), cancel_token);
-                (result, snapshot, has_lock)
-            }
-            JobRequest::Equip(equip_req) => {
-                let result = exec.execute_equip(equip_req, Some(&progress_fn), cancel_token);
-                // Equip jobs always invalidate cache — in-game equipment state changed.
-                (result, None, true)
+        let (result, artifact_snapshot, invalidates_cache) = match std::panic::catch_unwind(
+            std::panic::AssertUnwindSafe(|| match request {
+                JobRequest::Manage(manage_req) => {
+                    let has_lock = !manage_req.lock.is_empty() || !manage_req.unlock.is_empty();
+                    let (result, snapshot) = exec.execute(manage_req, Some(&progress_fn), cancel_token);
+                    (result, snapshot, has_lock)
+                }
+                JobRequest::Equip(equip_req) => {
+                    let result = exec.execute_equip(equip_req, Some(&progress_fn), cancel_token);
+                    // Equip jobs always invalidate cache — in-game equipment state changed.
+                    (result, None, true)
+                }
+            })
+        ) {
+            Ok(r) => r,
+            Err(panic_info) => {
+                let msg = if let Some(s) = panic_info.downcast_ref::<String>() {
+                    s.clone()
+                } else if let Some(s) = panic_info.downcast_ref::<&str>() {
+                    s.to_string()
+                } else {
+                    "unknown panic".to_string()
+                };
+                error!("[job {}] 执行时发生panic: {} / Panic during execution: {}", job_id, msg, msg);
+                let summary = ManageSummary {
+                    total: 0, success: 0, already_correct: 0, not_found: 0,
+                    errors: 1, aborted: 0,
+                };
+                let result = ManageResult { results: Vec::new(), summary };
+                *job_state.lock().unwrap() = JobState::completed(job_id.clone(), result);
+                continue;
             }
         };
 
@@ -514,6 +616,14 @@ where
                     }
                 }
             }
+        }
+
+        // Log result to file before storing in state
+        if let Some(ref logger) = file_logger {
+            if let Ok(json) = serde_json::to_string_pretty(&result) {
+                logger.save_response("job", &job_id, &json);
+            }
+            logger.append_line(&format!("[job {}] completed: {:?}", job_id, result.summary));
         }
 
         {
@@ -556,6 +666,7 @@ fn handle_manage(
     state: &Arc<Mutex<JobState>>,
     job_tx: &mpsc::Sender<(String, JobRequest)>,
     cors_origin: Option<&str>,
+    file_logger: Option<&Arc<FileLogger>>,
 ) {
     // Check if manager is enabled
     if !enabled.load(Ordering::Relaxed) {
@@ -609,6 +720,11 @@ fn handle_manage(
             cors_origin,
         );
         return;
+    }
+
+    // Log request body to file
+    if let Some(logger) = file_logger {
+        logger.save_request("manage", &body);
     }
 
     // Enforce size limit for chunked transfers (no Content-Length)
@@ -704,6 +820,7 @@ fn handle_equip(
     state: &Arc<Mutex<JobState>>,
     job_tx: &mpsc::Sender<(String, JobRequest)>,
     cors_origin: Option<&str>,
+    file_logger: Option<&Arc<FileLogger>>,
 ) {
     if !enabled.load(Ordering::Relaxed) {
         warn!("管理器已暂停，拒绝请求 / Manager paused, rejecting request");
@@ -753,6 +870,11 @@ fn handle_equip(
             cors_origin,
         );
         return;
+    }
+
+    // Log request body to file
+    if let Some(logger) = file_logger {
+        logger.save_request("equip", &body);
     }
 
     if body.len() > MAX_BODY_SIZE {

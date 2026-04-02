@@ -8,6 +8,32 @@ use yas::utils;
 
 use super::constants::*;
 use super::game_controller::GenshinGameController;
+use super::pixel_utils;
+
+/// If the "5-star sort by acquired time" filter is active on the artifact tab,
+/// click it to dismiss so that all rarities are visible.
+///
+/// Must be called after the artifact tab is selected.
+pub fn dismiss_five_star_filter(ctrl: &mut GenshinGameController, tab_delay: u64, dump_images: bool) {
+    let image = match ctrl.capture_game() {
+        Ok(img) => img,
+        Err(e) => {
+            log::warn!("[backpack] 截图失败，跳过筛选检测 / capture failed, skipping filter check: {}", e);
+            return;
+        }
+    };
+    if dump_images {
+        use crate::scanner::common::debug_dump::DumpCtx;
+        let ctx = DumpCtx::new("debug_images", "artifacts", 0, "filter_check");
+        ctx.dump_full(&image);
+        ctx.dump_pixel("five_star_filter_px", &image,
+            (ARTIFACT_FIVE_STAR_FILTER_POS.0, ARTIFACT_FIVE_STAR_FILTER_POS.1), 10, &ctrl.scaler);
+    }
+    if pixel_utils::is_five_star_filter_active(&image, &ctrl.scaler) {
+        ctrl.click_at(ARTIFACT_FIVE_STAR_FILTER_POS.0, ARTIFACT_FIVE_STAR_FILTER_POS.1);
+        utils::sleep(tab_delay as u32);
+    }
+}
 
 /// Open the backpack to a specific tab with the same proven sequence as the
 /// artifact/weapon scanners.
@@ -30,12 +56,28 @@ pub fn open_backpack_to_tab(
     count_ocr: &dyn ImageToText<RgbImage>,
 ) -> Result<(i32, i32)> {
     ctrl.focus_game_window();
+    if ctrl.check_rmb() {
+        anyhow::bail!("cancelled");
+    }
     ctrl.return_to_main_ui(8);
+    if ctrl.check_rmb() {
+        anyhow::bail!("cancelled");
+    }
 
     {
         let mut bp = BackpackScanner::new(ctrl);
         bp.open_backpack(open_delay);
         bp.select_tab(tab, tab_delay);
+    }
+
+    // Dismiss the "5-star sort by acquired time" filter if active on the artifact tab.
+    // When active, only 5-star artifacts are visible — we need all rarities.
+    if tab == "artifact" {
+        dismiss_five_star_filter(ctrl, tab_delay, false);
+    }
+
+    if ctrl.check_rmb() {
+        anyhow::bail!("cancelled");
     }
 
     // Read item count (need a fresh BackpackScanner for the borrow)
@@ -46,11 +88,21 @@ pub fn open_backpack_to_tab(
 
     if count == 0 {
         info!("[backpack] 标签'{}'数量=0，重新打开背包... / [backpack] count=0 on tab '{}', reopening backpack...", tab, tab);
+        if ctrl.check_rmb() {
+            anyhow::bail!("cancelled");
+        }
         ctrl.return_to_main_ui(4);
+        if ctrl.check_rmb() {
+            anyhow::bail!("cancelled");
+        }
         {
             let mut bp = BackpackScanner::new(ctrl);
             bp.open_backpack(open_delay);
             bp.select_tab(tab, tab_delay);
+        }
+        // Check filter again after retry
+        if tab == "artifact" {
+            dismiss_five_star_filter(ctrl, tab_delay, false);
         }
         let bp = BackpackScanner::new(ctrl);
         return bp.read_item_count(count_ocr);
@@ -77,15 +129,10 @@ pub enum GridEvent {
 
 /// Configuration for backpack grid scanning delays.
 pub struct BackpackScanConfig {
-    pub delay_grid_item: u64,
     pub delay_scroll: u64,
-    /// Base delay (ms) after panel load, before capture.
-    ///
-    /// With two-phase capture enabled (via `needs_retry`), the first capture
-    /// happens at half this value. If the icon state is ambiguous, the scanner
-    /// sleeps a full `delay_after_panel` period and re-captures.
-    /// Worst-case total: 1.5x this value.
-    pub delay_after_panel: u64,
+    /// Delay (ms) after panel load detection, before capture.
+    /// Gives the panel extra time to finish rendering text.
+    pub delay_before_capture: u64,
 }
 
 /// Panel pool rect — region of the detail panel whose pixel sum changes
@@ -227,16 +274,14 @@ impl<'a> BackpackScanner<'a> {
     /// After each page scroll, delivers `GridEvent::PageScrolled`.
     ///
     /// The callback returns `ScanAction::Continue` or `ScanAction::Stop`.
-    pub fn scan_grid<F, R>(
+    pub fn scan_grid<F>(
         &mut self,
         total: usize,
         _config: &BackpackScanConfig,
         start_at: usize,
-        mut needs_retry: R,
         mut callback: F,
     ) where
         F: FnMut(GridEvent) -> ScanAction,
-        R: FnMut(&RgbImage) -> bool,
     {
         let total_row = (total + GRID_COLS - 1) / GRID_COLS;
         let last_row_col = if total % GRID_COLS == 0 { GRID_COLS } else { total % GRID_COLS };
@@ -304,19 +349,13 @@ impl<'a> BackpackScanner<'a> {
                         PANEL_LOAD_TIMEOUT_MS,
                     );
 
-                    // Two-phase capture for lock/astral icon animation.
-                    // First attempt at half the configured delay; if icon
-                    // brightness is ambiguous (mid-animation), sleep a full
-                    // delay period and re-capture.
-                    let first_delay = _config.delay_after_panel / 2;
-                    let retry_delay = _config.delay_after_panel - first_delay;
-
-                    if first_delay > 0 {
-                        utils::sleep(first_delay as u32);
+                    // Pre-capture delay: let panel text finish rendering
+                    if _config.delay_before_capture > 0 {
+                        utils::sleep(_config.delay_before_capture as u32);
                     }
 
                     // Capture and process
-                    let mut image = match self.ctrl.capture_game() {
+                    let image = match self.ctrl.capture_game() {
                         Ok(img) => img,
                         Err(e) => {
                             error!("[backpack] 截图失败: {} / [backpack] capture failed: {}", e, e);
@@ -324,20 +363,6 @@ impl<'a> BackpackScanner<'a> {
                             continue;
                         }
                     };
-
-                    // If icon state is ambiguous (mid-animation), wait the
-                    // remaining half of delay_after_panel and re-capture.
-                    if retry_delay > 0 && needs_retry(&image) {
-                        utils::sleep(retry_delay as u32);
-                        image = match self.ctrl.capture_game() {
-                            Ok(img) => img,
-                            Err(e) => {
-                                error!("[backpack] 重试截图失败: {} / [backpack] retry capture failed: {}", e, e);
-                                scanned_count += 1;
-                                continue;
-                            }
-                        };
-                    }
 
                     match callback(GridEvent::Item(scanned_count, image)) {
                         ScanAction::Continue => {}

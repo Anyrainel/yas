@@ -29,9 +29,9 @@ pub struct ArtifactManager {
     mappings: Arc<MappingManager>,
     ocr_backend: String,
     substat_ocr_backend: String,
-    delay_grid_item: u64,
     delay_scroll: u64,
     stop_on_all_matched: bool,
+    dump_images: bool,
 }
 
 impl ArtifactManager {
@@ -39,11 +39,11 @@ impl ArtifactManager {
         mappings: Arc<MappingManager>,
         ocr_backend: String,
         substat_ocr_backend: String,
-        delay_grid_item: u64,
         delay_scroll: u64,
         stop_on_all_matched: bool,
+        dump_images: bool,
     ) -> Self {
-        Self { mappings, ocr_backend, substat_ocr_backend, delay_grid_item, delay_scroll, stop_on_all_matched }
+        Self { mappings, ocr_backend, substat_ocr_backend, delay_scroll, stop_on_all_matched, dump_images }
     }
 
     pub fn execute(
@@ -109,10 +109,10 @@ impl ArtifactManager {
         let (lock_results, scanned_artifacts, matched_indices, scan_complete) = lock_mgr.execute(
             ctrl,
             &targets,
-            self.delay_grid_item,
             self.delay_scroll,
             self.stop_on_all_matched,
             max_target_level,
+            self.dump_images,
         );
 
         for r in &lock_results {
@@ -177,15 +177,13 @@ impl ArtifactManager {
 
         report(0, "装备变更 / Equip changes");
 
-        info!(
-            "[manager] 执行 {} 个装备目标 / Executing {} equip targets",
-            targets.len(), targets.len(),
-        );
+        info!("[manager] 执行 {} 个装备目标", targets.len());
 
         let equip_mgr = EquipManager::new(
             self.mappings.clone(),
             self.ocr_backend.clone(),
             self.substat_ocr_backend.clone(),
+            self.dump_images,
         );
         let results = equip_mgr.execute(ctrl, &targets);
 
@@ -193,8 +191,7 @@ impl ArtifactManager {
 
         let summary = ManageSummary::from_results(&results);
         info!(
-            "[manager] 装备完成：{} 成功, {} 已正确, {} 未找到, {} 错误, {} 中断 / Equip done: {} success, {} already correct, {} not found, {} errors, {} aborted",
-            summary.success, summary.already_correct, summary.not_found, summary.errors, summary.aborted,
+            "[manager] 装备完成：{} 成功, {} 已正确, {} 未找到, {} 错误, {} 中断",
             summary.success, summary.already_correct, summary.not_found, summary.errors, summary.aborted,
         );
 

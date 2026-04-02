@@ -182,6 +182,9 @@ impl GenshinGameController {
         }
 
         for i in 0..max_attempts {
+            if self.check_rmb() {
+                return false;
+            }
             self.key_press(enigo::Key::Escape);
             utils::sleep(900);
 
@@ -189,6 +192,10 @@ impl GenshinGameController {
                 debug!("[return_to_main_ui] 按{}次Escape后到达主界面 / [return_to_main_ui] reached main world after {} Escape(s)", i + 1, i + 1);
                 return true;
             }
+        }
+
+        if self.check_rmb() {
+            return false;
         }
 
         // Fallback: Enter (dismiss any stuck dialog) + Escape
@@ -218,7 +225,6 @@ impl GenshinGameController {
             base_x, base_y, x as i32, y as i32,
             self.game_info.window.left, self.game_info.window.top);
         self.system_control.mouse_move_to(x as i32, y as i32).unwrap();
-        utils::sleep(20);
         self.system_control.mouse_click().unwrap();
     }
 

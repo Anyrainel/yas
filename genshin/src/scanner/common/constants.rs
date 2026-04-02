@@ -34,6 +34,7 @@ pub const DEFAULT_DELAY_CHAR_NEXT: u64 = 300;
 pub const DEFAULT_DELAY_INV_TAB_SWITCH: u64 = 400;
 pub const DEFAULT_DELAY_SCROLL: u64 = 200;
 pub const DEFAULT_DELAY_GRID_ITEM: u64 = 125;
+pub const DEFAULT_DELAY_CAPTURE: u64 = 40;
 
 // ================================================================
 // Character scanner coordinates (at 1920x1080 base resolution)
@@ -138,6 +139,11 @@ pub const ITEM_COUNT_RECT: (f64, f64, f64, f64) = (1545.0, 30.0, 263.0, 38.0);
 /// Backpack tab positions
 pub const TAB_WEAPON: (f64, f64) = (585.0, 50.0);
 pub const TAB_ARTIFACT: (f64, f64) = (675.0, 50.0);
+
+/// "5-star sort by acquired time" filter toggle position.
+/// When active (pixel is light), only 5-star artifacts are visible.
+/// 4K position: (2496, 280), divided by 2 for 1080p base.
+pub const ARTIFACT_FIVE_STAR_FILTER_POS: (f64, f64) = (1248.0, 140.0);
 
 // ================================================================
 // Artifact scanner coordinates (at 1920x1080 base resolution)

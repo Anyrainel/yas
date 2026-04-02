@@ -4,15 +4,25 @@ use log::{Level, LevelFilter, Log, Metadata, Record};
 
 use super::state::LogEntry;
 
-/// Custom logger that routes `log` crate output to a shared buffer for GUI display.
+/// Custom logger that routes `log` crate output to a shared buffer for GUI display,
+/// and optionally to a file in the `log/` directory.
 pub struct GuiLogger {
     lines: Arc<Mutex<Vec<LogEntry>>>,
     max_lines: usize,
+    log_file: Option<Mutex<std::fs::File>>,
 }
 
 impl GuiLogger {
     pub fn new(lines: Arc<Mutex<Vec<LogEntry>>>, max_lines: usize) -> Self {
-        Self { lines, max_lines }
+        // Create log/ directory and open a timestamped log file
+        let log_file = std::fs::create_dir_all("log")
+            .ok()
+            .and_then(|_| {
+                let ts = format_timestamp().replace(':', "-");
+                std::fs::File::create(format!("log/gui_{}.log", ts)).ok()
+            })
+            .map(Mutex::new);
+        Self { lines, max_lines, log_file }
     }
 
     pub fn init(self) {
@@ -29,10 +39,12 @@ impl Log for GuiLogger {
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
             let raw = format!("{}", record.args());
+            let localized = yas::lang::localize(&raw);
+            let ts = format_timestamp();
             let entry = LogEntry {
                 level: record.level(),
-                message: yas::lang::localize(&raw),
-                timestamp: format_timestamp(),
+                message: localized.clone(),
+                timestamp: ts.clone(),
             };
             if let Ok(mut lines) = self.lines.lock() {
                 lines.push(entry);
@@ -41,10 +53,24 @@ impl Log for GuiLogger {
                     lines.drain(0..excess);
                 }
             }
+            // Also write to log file
+            if let Some(ref file_mutex) = self.log_file {
+                if let Ok(mut f) = file_mutex.lock() {
+                    use std::io::Write;
+                    let _ = writeln!(f, "{} [{}] {}", ts, record.level(), localized);
+                }
+            }
         }
     }
 
-    fn flush(&self) {}
+    fn flush(&self) {
+        if let Some(ref file_mutex) = self.log_file {
+            if let Ok(mut f) = file_mutex.lock() {
+                use std::io::Write;
+                let _ = f.flush();
+            }
+        }
+    }
 }
 
 #[cfg(windows)]

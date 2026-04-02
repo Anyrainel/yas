@@ -91,8 +91,6 @@ pub struct AppState {
     pub char_max_count: usize,
     pub weapon_max_count: usize,
     pub artifact_max_count: usize,
-    pub weapon_skip_delay: bool,
-    pub artifact_skip_delay: bool,
 
     /// Set to true when Start Scan is pressed but character names are all empty.
     /// Forces the Character Names section open with a warning.
@@ -114,9 +112,8 @@ pub struct AppState {
     /// If true, continue scanning the full inventory after all targets are matched,
     /// providing a complete artifact snapshot via GET /artifacts (slower).
     pub update_inventory: bool,
+    pub manager_dump_images: bool,
     pub server_status: Arc<Mutex<TaskStatus>>,
-    pub manage_status: Arc<Mutex<TaskStatus>>,
-
     // --- Shared log buffer ---
     pub log_lines: Arc<Mutex<Vec<LogEntry>>>,
 }
@@ -140,8 +137,6 @@ impl AppState {
             char_max_count: 0,
             weapon_max_count: 0,
             artifact_max_count: 0,
-            weapon_skip_delay: false,
-            artifact_skip_delay: false,
             names_need_attention: false,
             config_snapshot,
             config_dirty_since: None,
@@ -149,8 +144,8 @@ impl AppState {
             server_port: 8765,
             server_enabled: Arc::new(AtomicBool::new(true)),
             update_inventory: true,
+            manager_dump_images: false,
             server_status: Arc::new(Mutex::new(TaskStatus::Idle)),
-            manage_status: Arc::new(Mutex::new(TaskStatus::Idle)),
             log_lines: Arc::new(Mutex::new(Vec::with_capacity(1000))),
         }
     }
@@ -195,8 +190,6 @@ impl AppState {
             char_max_count: self.char_max_count,
             weapon_max_count: self.weapon_max_count,
             artifact_max_count: self.artifact_max_count,
-            weapon_skip_delay: self.weapon_skip_delay,
-            artifact_skip_delay: self.artifact_skip_delay,
         }
     }
 }

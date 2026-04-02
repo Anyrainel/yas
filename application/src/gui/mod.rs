@@ -1,6 +1,7 @@
 pub mod state;
 pub mod log_bridge;
 pub mod worker;
+pub mod widgets;
 pub mod scanner_tab;
 pub mod manager_tab;
 #[cfg(feature = "capture")]
@@ -89,7 +90,6 @@ struct GuiApp {
     active_tab: ActiveTab,
     scan_handle: Option<TaskHandle>,
     server_handle: Option<TaskHandle>,
-    manage_handle: Option<TaskHandle>,
     #[cfg(feature = "capture")]
     capture_tab: capture_tab::CaptureTabState,
 }
@@ -103,7 +103,6 @@ impl GuiApp {
             active_tab: ActiveTab::Scanner,
             scan_handle: None,
             server_handle: None,
-            manage_handle: None,
             #[cfg(feature = "capture")]
             capture_tab: capture_tab::CaptureTabState::new(output_dir),
         }
@@ -128,7 +127,7 @@ impl eframe::App for GuiApp {
                 ui.selectable_value(
                     &mut self.active_tab,
                     ActiveTab::Manager,
-                    egui::RichText::new(l.t("管理器", "Manager")).size(20.0),
+                    egui::RichText::new(l.t("管理器 (beta)", "Manager (beta)")).size(20.0),
                 );
                 #[cfg(feature = "capture")]
                 ui.selectable_value(
@@ -175,7 +174,6 @@ impl eframe::App for GuiApp {
         // Check cross-tab running states for mutual exclusion
         let is_scan_running = self.scan_handle.as_ref().map_or(false, |h| !h.is_finished());
         let is_server_running = self.server_handle.as_ref().map_or(false, |h| !h.is_finished());
-        let is_manage_running = self.manage_handle.as_ref().map_or(false, |h| !h.is_finished());
         #[cfg(feature = "capture")]
         let is_capture_busy = self.capture_tab.is_busy();
         #[cfg(not(feature = "capture"))]
@@ -189,7 +187,7 @@ impl eframe::App for GuiApp {
                         ui,
                         &mut self.state,
                         &mut self.scan_handle,
-                        is_server_running || is_manage_running,
+                        is_server_running,
                     );
                 }
                 ActiveTab::Manager => {
@@ -197,7 +195,6 @@ impl eframe::App for GuiApp {
                         ui,
                         &mut self.state,
                         &mut self.server_handle,
-                        &mut self.manage_handle,
                         is_scan_running,
                     );
                 }
@@ -207,7 +204,7 @@ impl eframe::App for GuiApp {
                         ui,
                         self.state.lang,
                         &mut self.capture_tab,
-                        is_scan_running || is_server_running || is_manage_running,
+                        is_scan_running || is_server_running,
                     );
                 }
                 ActiveTab::Credits => {
@@ -222,7 +219,7 @@ impl eframe::App for GuiApp {
             UpdateState::Checking | UpdateState::Downloading | UpdateState::ShowingDialog,
         );
         let any_running =
-            is_scan_running || is_server_running || is_manage_running || is_capture_busy || update_busy;
+            is_scan_running || is_server_running || is_capture_busy || update_busy;
         if any_running {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }

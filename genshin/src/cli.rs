@@ -187,17 +187,53 @@ fn default_char_tab_delay() -> u64 { DEFAULT_DELAY_CHAR_TAB_SWITCH }
 fn default_char_next_delay() -> u64 { DEFAULT_DELAY_CHAR_NEXT }
 fn default_open_delay() -> u64 { DEFAULT_DELAY_OPEN_SCREEN }
 fn default_close_delay() -> u64 { DEFAULT_DELAY_CLOSE_SCREEN }
-fn default_grid_delay() -> u64 { DEFAULT_DELAY_GRID_ITEM }
 fn default_scroll_delay() -> u64 { DEFAULT_DELAY_SCROLL }
 fn default_tab_delay() -> u64 { DEFAULT_DELAY_INV_TAB_SWITCH }
+fn default_capture_delay() -> u64 { DEFAULT_DELAY_CAPTURE }
+
+fn default_mgr_transition() -> u64 { 1500 }
+fn default_mgr_action() -> u64 { 800 }
+fn default_mgr_cell() -> u64 { 100 }
+fn default_mgr_scroll() -> u64 { 400 }
 
 fn is_default_char_tab_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_CHAR_TAB_SWITCH }
 fn is_default_char_next_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_CHAR_NEXT }
 fn is_default_open_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_OPEN_SCREEN }
 fn is_default_close_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_CLOSE_SCREEN }
-fn is_default_grid_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_GRID_ITEM }
 fn is_default_scroll_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_SCROLL }
 fn is_default_tab_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_INV_TAB_SWITCH }
+fn is_default_capture_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_CAPTURE }
+
+/// Fields in GoodUserConfig that must be unsigned integers.
+/// If the JSON has an invalid value (e.g. empty string from old config versions),
+/// we remove the field so serde fills in its default.
+const U64_FIELDS: &[&str] = &[
+    "char_tab_delay", "char_next_delay", "char_open_delay", "char_close_delay",
+    "inv_scroll_delay", "inv_tab_delay", "inv_open_delay", "capture_delay",
+    "mgr_transition_delay", "mgr_action_delay", "mgr_cell_delay", "mgr_scroll_delay",
+    // Old aliases — also sanitize in case they appear
+    "weapon_scroll_delay", "artifact_scroll_delay", "weapon_tab_delay", "artifact_tab_delay",
+    "weapon_open_delay", "artifact_open_delay",
+];
+
+/// Sanitize a parsed JSON object: remove u64 fields that have non-numeric values
+/// (e.g. empty strings from old config migrations) so serde defaults apply.
+fn sanitize_config_json(val: &mut serde_json::Value) {
+    let obj = match val.as_object_mut() {
+        Some(o) => o,
+        None => return,
+    };
+    for &field in U64_FIELDS {
+        let should_remove = match obj.get(field) {
+            Some(serde_json::Value::Number(_)) => false,
+            Some(_) => true, // string, null, bool, etc. — not a valid u64
+            None => false,
+        };
+        if should_remove {
+            obj.remove(field);
+        }
+    }
+}
 
 /// User config stored in `data/good_config.json`.
 ///
@@ -232,23 +268,30 @@ pub struct GoodUserConfig {
     #[serde(default = "default_close_delay", skip_serializing_if = "is_default_close_delay")]
     pub char_close_delay: u64,
 
-    #[serde(default = "default_grid_delay", skip_serializing_if = "is_default_grid_delay")]
-    pub weapon_grid_delay: u64,
-    #[serde(default = "default_scroll_delay", skip_serializing_if = "is_default_scroll_delay")]
-    pub weapon_scroll_delay: u64,
-    #[serde(default = "default_tab_delay", skip_serializing_if = "is_default_tab_delay")]
-    pub weapon_tab_delay: u64,
-    #[serde(default = "default_open_delay", skip_serializing_if = "is_default_open_delay")]
-    pub weapon_open_delay: u64,
+    #[serde(default = "default_scroll_delay", skip_serializing_if = "is_default_scroll_delay", alias = "weapon_scroll_delay", alias = "artifact_scroll_delay")]
+    pub inv_scroll_delay: u64,
+    #[serde(default = "default_tab_delay", skip_serializing_if = "is_default_tab_delay", alias = "weapon_tab_delay", alias = "artifact_tab_delay")]
+    pub inv_tab_delay: u64,
+    #[serde(default = "default_open_delay", skip_serializing_if = "is_default_open_delay", alias = "weapon_open_delay", alias = "artifact_open_delay")]
+    pub inv_open_delay: u64,
 
-    #[serde(default = "default_grid_delay", skip_serializing_if = "is_default_grid_delay")]
-    pub artifact_grid_delay: u64,
-    #[serde(default = "default_scroll_delay", skip_serializing_if = "is_default_scroll_delay")]
-    pub artifact_scroll_delay: u64,
-    #[serde(default = "default_tab_delay", skip_serializing_if = "is_default_tab_delay")]
-    pub artifact_tab_delay: u64,
-    #[serde(default = "default_open_delay", skip_serializing_if = "is_default_open_delay")]
-    pub artifact_open_delay: u64,
+    /// Delay (ms) after panel load detection, before screen capture for OCR.
+    #[serde(default = "default_capture_delay", skip_serializing_if = "is_default_capture_delay")]
+    pub capture_delay: u64,
+
+    // --- Manager delay settings ---
+    /// Screen transition delay for the manager (ms). Default: 1500.
+    #[serde(default = "default_mgr_transition")]
+    pub mgr_transition_delay: u64,
+    /// Action button delay for the manager (ms). Default: 800.
+    #[serde(default = "default_mgr_action")]
+    pub mgr_action_delay: u64,
+    /// Grid cell click delay for the manager (ms). Default: 100.
+    #[serde(default = "default_mgr_cell")]
+    pub mgr_cell_delay: u64,
+    /// Scroll settle delay for the manager (ms). Default: 400.
+    #[serde(default = "default_mgr_scroll")]
+    pub mgr_scroll_delay: u64,
 
     /// GUI language preference: "zh" or "en".
     #[serde(default)]
@@ -260,7 +303,7 @@ impl GoodUserConfig {
         if s.trim().is_empty() { None } else { Some(s.trim().to_string()) }
     }
 
-    fn to_overrides(&self) -> NameOverrides {
+    pub fn to_overrides(&self) -> NameOverrides {
         NameOverrides {
             traveler_name: Self::opt(&self.traveler_name),
             wanderer_name: Self::opt(&self.wanderer_name),
@@ -277,14 +320,10 @@ impl GoodUserConfig {
         self.char_next_delay = self.char_next_delay.max(default_char_next_delay());
         self.char_open_delay = self.char_open_delay.max(default_open_delay());
         self.char_close_delay = self.char_close_delay.max(default_close_delay());
-        self.weapon_grid_delay = self.weapon_grid_delay.max(default_grid_delay());
-        self.weapon_scroll_delay = self.weapon_scroll_delay.max(default_scroll_delay());
-        self.weapon_tab_delay = self.weapon_tab_delay.max(default_tab_delay());
-        self.weapon_open_delay = self.weapon_open_delay.max(default_open_delay());
-        self.artifact_grid_delay = self.artifact_grid_delay.max(default_grid_delay());
-        self.artifact_scroll_delay = self.artifact_scroll_delay.max(default_scroll_delay());
-        self.artifact_tab_delay = self.artifact_tab_delay.max(default_tab_delay());
-        self.artifact_open_delay = self.artifact_open_delay.max(default_open_delay());
+        self.inv_scroll_delay = self.inv_scroll_delay.max(default_scroll_delay());
+        self.inv_tab_delay = self.inv_tab_delay.max(default_tab_delay());
+        self.inv_open_delay = self.inv_open_delay.max(default_open_delay());
+        self.capture_delay = self.capture_delay.max(default_capture_delay());
     }
 }
 
@@ -299,14 +338,14 @@ impl Default for GoodUserConfig {
             char_next_delay: default_char_next_delay(),
             char_open_delay: default_open_delay(),
             char_close_delay: default_close_delay(),
-            weapon_grid_delay: default_grid_delay(),
-            weapon_scroll_delay: default_scroll_delay(),
-            weapon_tab_delay: default_tab_delay(),
-            weapon_open_delay: default_open_delay(),
-            artifact_grid_delay: default_grid_delay(),
-            artifact_scroll_delay: default_scroll_delay(),
-            artifact_tab_delay: default_tab_delay(),
-            artifact_open_delay: default_open_delay(),
+            inv_scroll_delay: default_scroll_delay(),
+            inv_tab_delay: default_tab_delay(),
+            inv_open_delay: default_open_delay(),
+            capture_delay: default_capture_delay(),
+            mgr_transition_delay: default_mgr_transition(),
+            mgr_action_delay: default_mgr_action(),
+            mgr_cell_delay: default_mgr_cell(),
+            mgr_scroll_delay: default_mgr_scroll(),
             lang: String::new(),
         }
     }
@@ -320,22 +359,34 @@ pub fn load_config_or_default() -> GoodUserConfig {
         return GoodUserConfig::default();
     }
     match std::fs::read_to_string(&path) {
-        Ok(contents) => match serde_json::from_str::<GoodUserConfig>(&contents) {
-            Ok(mut config) => {
-                config.normalize_delays();
-                // Re-save to strip delay entries that are at/below defaults
-                let _ = save_config(&config);
-                config
+        Ok(contents) => {
+            // Parse as generic JSON first so we can sanitize invalid field types
+            // (e.g. empty strings in u64 fields from old config versions).
+            let parsed: Result<serde_json::Value, _> = serde_json::from_str(&contents);
+            let config_result = match parsed {
+                Ok(mut val) => {
+                    sanitize_config_json(&mut val);
+                    serde_json::from_value::<GoodUserConfig>(val)
+                }
+                Err(e) => Err(e),
+            };
+            match config_result {
+                Ok(mut config) => {
+                    config.normalize_delays();
+                    // Re-save to strip delay entries that are at/below defaults
+                    let _ = save_config(&config);
+                    config
+                }
+                Err(e) => {
+                    log::error!(
+                        "配置文件解析失败，将使用默认值 / Config parse error (using defaults): {}: {}",
+                        path.display(),
+                        e
+                    );
+                    GoodUserConfig::default()
+                }
             }
-            Err(e) => {
-                log::error!(
-                    "配置文件解析失败，将使用默认值 / Config parse error (using defaults): {}: {}",
-                    path.display(),
-                    e
-                );
-                GoodUserConfig::default()
-            }
-        },
+        }
         Err(e) => {
             log::error!(
                 "配置文件读取失败，将使用默认值 / Config read error (using defaults): {}: {}",
@@ -478,15 +529,7 @@ pub struct GoodScannerConfig {
           default_value_t = 0, help_heading = "扫描器配置 / Scanner Config")]
     pub artifact_max_count: usize,
 
-    /// 跳过武器面板等待 / Skip weapon panel delay
-    #[arg(long = "weapon-skip-delay", help = "跳过武器面板等待（加速扫描，锁定检测可能不准）\nSkip weapon panel delay (faster but lock detection may be inaccurate)",
-          help_heading = "扫描器配置 / Scanner Config")]
-    pub weapon_skip_delay: bool,
-
-    /// 跳过圣遗物面板等待 / Skip artifact panel delay
-    #[arg(long = "artifact-skip-delay", help = "跳过圣遗物面板等待（加速扫描，锁定/星辉检测可能不准）\nSkip artifact panel delay (faster but lock/astral detection may be inaccurate)",
-          help_heading = "扫描器配置 / Scanner Config")]
-    pub artifact_skip_delay: bool,
+    // weapon_skip_delay and artifact_skip_delay removed — grid-based detection always used
 
     /// 圣遗物副词条OCR后端 / Artifact substat OCR backend
     #[arg(long = "artifact-substat-ocr", help = "圣遗物副词条OCR后端\nArtifact substat/general OCR backend",
@@ -596,15 +639,14 @@ impl GoodScannerApplication {
             min_rarity: config.weapon_min_rarity,
             verbose: config.verbose,
             ocr_backend: config.ocr_backend.clone().unwrap_or_else(|| "ppocrv4".to_string()),
-            delay_grid_item: user_config.weapon_grid_delay,
-            delay_scroll: user_config.weapon_scroll_delay,
-            delay_tab: user_config.weapon_tab_delay,
-            open_delay: user_config.weapon_open_delay,
+            delay_scroll: user_config.inv_scroll_delay,
+            delay_tab: user_config.inv_tab_delay,
+            open_delay: user_config.inv_open_delay,
             continue_on_failure: config.continue_on_failure,
             log_progress: config.log_progress,
             dump_images: config.dump_images,
             max_count: config.weapon_max_count,
-            skip_lock_delay: config.weapon_skip_delay,
+            capture_delay: user_config.capture_delay,
         }
     }
 
@@ -615,15 +657,14 @@ impl GoodScannerApplication {
             verbose: config.verbose,
             ocr_backend: config.ocr_backend.clone().unwrap_or_else(|| "ppocrv5".to_string()),
             substat_ocr_backend: config.artifact_substat_ocr.clone(),
-            delay_grid_item: user_config.artifact_grid_delay,
-            delay_scroll: user_config.artifact_scroll_delay,
-            delay_tab: user_config.artifact_tab_delay,
-            open_delay: user_config.artifact_open_delay,
+            delay_scroll: user_config.inv_scroll_delay,
+            delay_tab: user_config.inv_tab_delay,
+            open_delay: user_config.inv_open_delay,
             continue_on_failure: config.continue_on_failure,
             log_progress: config.log_progress,
             dump_images: config.dump_images,
             max_count: config.artifact_max_count,
-            skip_lock_delay: config.artifact_skip_delay,
+            capture_delay: user_config.capture_delay,
         }
     }
 
@@ -983,8 +1024,7 @@ impl GoodScannerApplication {
         // Create artifact manager
         let ocr_backend = config.ocr_backend.clone().unwrap_or_else(|| "ppocrv5".to_string());
         let substat_ocr_backend = config.artifact_substat_ocr.clone();
-        let grid_delay = user_config.artifact_grid_delay;
-        let scroll_delay = user_config.artifact_scroll_delay;
+        let scroll_delay = user_config.inv_scroll_delay;
 
         let init_executor = move || -> anyhow::Result<Box<dyn crate::server::ManageExecutor>> {
             let game_info = Self::get_game_info()?;
@@ -993,9 +1033,9 @@ impl GoodScannerApplication {
                 mappings,
                 ocr_backend,
                 substat_ocr_backend,
-                grid_delay,
                 scroll_delay,
                 false,
+                config.dump_images,
             );
             Ok(Box::new(crate::server::GameExecutor { ctrl, manager }))
         };
@@ -1120,8 +1160,6 @@ pub struct ScanCoreConfig {
     pub char_max_count: usize,
     pub weapon_max_count: usize,
     pub artifact_max_count: usize,
-    pub weapon_skip_delay: bool,
-    pub artifact_skip_delay: bool,
 }
 
 impl Default for ScanCoreConfig {
@@ -1142,8 +1180,6 @@ impl Default for ScanCoreConfig {
             char_max_count: 0,
             weapon_max_count: 0,
             artifact_max_count: 0,
-            weapon_skip_delay: false,
-            artifact_skip_delay: false,
         }
     }
 }
@@ -1167,8 +1203,6 @@ impl ScanCoreConfig {
             char_max_count: self.char_max_count,
             weapon_max_count: self.weapon_max_count,
             artifact_max_count: self.artifact_max_count,
-            weapon_skip_delay: self.weapon_skip_delay,
-            artifact_skip_delay: self.artifact_skip_delay,
             artifact_substat_ocr: self.artifact_substat_ocr.clone(),
             server_mode: false,
             server_port: 8765,
@@ -1303,6 +1337,7 @@ pub fn run_server_core(
     enabled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
     stop_on_all_matched: bool,
+    dump_images: bool,
 ) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
@@ -1323,20 +1358,27 @@ pub fn run_server_core(
 
     let ocr_be = ocr_backend.unwrap_or("ppocrv5").to_string();
     let substat_ocr = artifact_substat_ocr.to_string();
-    let grid_delay = user_config.artifact_grid_delay;
-    let scroll_delay = user_config.artifact_scroll_delay;
+    let scroll_delay = user_config.inv_scroll_delay;
     let mappings_clone = mappings.clone();
 
+    let mgr_delays = crate::manager::ui_actions::ManagerDelays {
+        transition: user_config.mgr_transition_delay,
+        action: user_config.mgr_action_delay,
+        cell: user_config.mgr_cell_delay,
+        scroll: user_config.mgr_scroll_delay,
+    };
+
     let init_executor = move || -> anyhow::Result<Box<dyn crate::server::ManageExecutor>> {
+        crate::manager::ui_actions::set_manager_delays(mgr_delays.clone());
         let game_info = GoodScannerApplication::get_game_info()?;
         let ctrl = GenshinGameController::new(game_info)?;
         let manager = crate::manager::orchestrator::ArtifactManager::new(
             mappings_clone,
             ocr_be,
             substat_ocr,
-            grid_delay,
             scroll_delay,
             stop_on_all_matched,
+            dump_images,
         );
         Ok(Box::new(crate::server::GameExecutor { ctrl, manager }))
     };
@@ -1358,6 +1400,13 @@ pub fn run_manage_json(
             return Err(anyhow!("请以管理员身份运行 / Please run as administrator"));
         }
     }
+
+    crate::manager::ui_actions::set_manager_delays(crate::manager::ui_actions::ManagerDelays {
+        transition: user_config.mgr_transition_delay,
+        action: user_config.mgr_action_delay,
+        cell: user_config.mgr_cell_delay,
+        scroll: user_config.mgr_scroll_delay,
+    });
 
     let request: crate::manager::models::LockManageRequest =
         serde_json::from_str(json_str)
@@ -1382,9 +1431,9 @@ pub fn run_manage_json(
         mappings,
         ocr_be,
         artifact_substat_ocr.to_string(),
-        user_config.artifact_grid_delay,
-        user_config.artifact_scroll_delay,
+        user_config.inv_scroll_delay,
         false,
+        false, // dump_images: offline JSON mode doesn't support it
     );
 
     let (result, _artifact_snapshot) = manager.execute(&mut ctrl, request, None, token);

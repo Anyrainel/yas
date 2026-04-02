@@ -7,7 +7,6 @@ pub struct GoodWeaponScannerConfig {
     pub min_rarity: i32,
     pub verbose: bool,
     pub ocr_backend: String,
-    pub delay_grid_item: u64,
     pub delay_scroll: u64,
     pub delay_tab: u64,
     pub open_delay: u64,
@@ -15,7 +14,7 @@ pub struct GoodWeaponScannerConfig {
     pub log_progress: bool,
     pub dump_images: bool,
     pub max_count: usize,
-    pub skip_lock_delay: bool,
+    pub capture_delay: u64,
 }
 
 impl Default for GoodWeaponScannerConfig {
@@ -24,7 +23,6 @@ impl Default for GoodWeaponScannerConfig {
             min_rarity: 3,
             verbose: false,
             ocr_backend: "ppocrv4".to_string(),
-            delay_grid_item: 60,
             delay_scroll: 200,
             delay_tab: 400,
             open_delay: 1200,
@@ -32,7 +30,7 @@ impl Default for GoodWeaponScannerConfig {
             log_progress: false,
             dump_images: false,
             max_count: 0,
-            skip_lock_delay: false,
+            capture_delay: 40,
         }
     }
 }

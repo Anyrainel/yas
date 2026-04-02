@@ -15,6 +15,7 @@ use crate::scanner::common::coord_scaler::CoordScaler;
 use crate::scanner::common::equip_parser;
 use crate::scanner::common::fuzzy_match::fuzzy_match_map;
 use crate::scanner::common::game_controller::GenshinGameController;
+use crate::scanner::common::grid_icon_detector::{GridIconResult, GridPageDetection, ITEMS_PER_PAGE};
 use crate::scanner::common::mappings::MappingManager;
 use crate::scanner::common::models::{DebugOcrField, DebugScanResult, GoodArtifact, GoodSubStat};
 use crate::scanner::common::ocr_factory;
@@ -478,15 +479,29 @@ impl GoodArtifactScanner {
         mappings: &MappingManager,
         config: &GoodArtifactScannerConfig,
         item_index: usize,
+        grid_icons: Option<GridIconResult>,
     ) -> Result<ArtifactScanResult> {
         use crate::scanner::common::debug_dump::DumpCtx;
-        use super::super::common::constants::{ARTIFACT_LOCK_POS1, ARTIFACT_ASTRAL_POS1, STAR_Y};
 
-        // 0. Detect rarity — stop below min_rarity
+        // 0. Detect rarity — stop below min_rarity only if level is 0.
+        // Inventory is sorted by level descending, so a low-rarity artifact
+        // at lv0 means all subsequent items are also lv0 low-rarity.
+        // But a leveled low-rarity artifact (e.g. 3* lv20) can appear before
+        // higher-rarity lv0 items, so we must not stop on those.
         let rarity = pixel_utils::detect_artifact_rarity(image, scaler);
         if rarity < config.min_rarity {
-            log::debug!("[artifact] {}* < min {}*, stopping", rarity, config.min_rarity);
-            return Ok(ArtifactScanResult::Stop);
+            // Quick level OCR to check if this is lv0 (no elixir shift — rough check is fine)
+            let level_text = Self::ocr_image_region_shifted(ocr, image, ocr_regions.level, 0.0, scaler)
+                .unwrap_or_default();
+            let quick_level = LEVEL_REGEX.captures(&level_text)
+                .and_then(|c| c[1].parse::<i32>().ok())
+                .unwrap_or(0);
+            if quick_level == 0 {
+                log::debug!("[artifact] {}* lv0 < min {}*, stopping", rarity, config.min_rarity);
+                return Ok(ArtifactScanResult::Stop);
+            }
+            log::debug!("[artifact] {}* lv{} < min {}*, skipping (not lv0)", rarity, quick_level, config.min_rarity);
+            return Ok(ArtifactScanResult::Skip);
         }
 
         // 1. Part name → slot key
@@ -534,17 +549,18 @@ impl GoodArtifactScanner {
             }
         };
 
-        // 3. Detect elixir crafted
+        // 3. Detect elixir crafted — panel pixel detection only (grid detection is unreliable)
         let elixir_crafted = Self::detect_elixir_crafted(image, scaler);
         let y_shift = if elixir_crafted { ELIXIR_SHIFT } else { 0.0 };
 
-        // Create dump context now that we know slot and y_shift
+        // Create dump context now that we know slot and y_shift.
         let dump = if config.dump_images {
+            use super::super::common::constants::{ARTIFACT_LOCK_POS1, ARTIFACT_ASTRAL_POS1, STAR_Y};
             let ctx = DumpCtx::new("debug_images", "artifacts", item_index, &slot_key);
             ctx.dump_full(image);
+            // OCR regions (match actual OCR coordinates)
             ctx.dump_region("name", image, ocr_regions.part_name, scaler);
             ctx.dump_region("main_stat", image, ocr_regions.main_stat, scaler);
-            ctx.dump_pixel("elixir_px", image, (1520.0, 423.0), 10, scaler);
             ctx.dump_region_shifted("level", image, ocr_regions.level, y_shift, scaler);
             for i in 0..4 {
                 ctx.dump_region_shifted(
@@ -555,17 +571,14 @@ impl GoodArtifactScanner {
                             ocr_regions.set_name_w, ocr_regions.set_name_h);
             ctx.dump_region("set_name", image, set_rect, scaler);
             ctx.dump_region("equip", image, ocr_regions.equip, scaler);
-            // Pixel check regions (±10px)
+            // Pixel check regions
+            ctx.dump_pixel("elixir_px", image, (1520.0, 423.0), 10, scaler);
             ctx.dump_pixel("star5_px", image, (1485.0, STAR_Y), 10, scaler);
             ctx.dump_pixel("star4_px", image, (1450.0, STAR_Y), 10, scaler);
             ctx.dump_pixel("lock_px", image,
                 (ARTIFACT_LOCK_POS1.0, ARTIFACT_LOCK_POS1.1 + y_shift), 10, scaler);
             ctx.dump_pixel("astral_px", image,
                 (ARTIFACT_ASTRAL_POS1.0, ARTIFACT_ASTRAL_POS1.1 + y_shift), 10, scaler);
-            let (_, sub4_y, _, sub4_h) = ocr_regions.substat_lines[3];
-            ctx.dump_region_shifted(
-                "inactive_check", image, (1565.0, sub4_y, 160.0, sub4_h), y_shift, scaler,
-            );
             Some(ctx)
         } else {
             None
@@ -601,12 +614,19 @@ impl GoodArtifactScanner {
                 level_text1.trim(), lv1, level_text2.trim(), lv2, level, level_text1.trim(), lv1, level_text2.trim(), lv2, level);
         }
 
-        // 5. Lock and astral mark (pixel-based, instant — done early so solver
-        //    failure warnings can include them)
-        let mut lock = pixel_utils::detect_artifact_lock(image, scaler, y_shift);
-        let astral_mark = pixel_utils::detect_artifact_astral_mark(image, scaler, y_shift);
+        // 5. Lock and astral mark
+        let (mut lock, astral_mark) = if let Some(ref gi) = grid_icons {
+            // Grid-based detection (majority vote across multiple passes)
+            (gi.lock, gi.astral)
+        } else {
+            // Legacy: panel pixel-based detection (requires animation delay)
+            (
+                pixel_utils::detect_artifact_lock(image, scaler, y_shift),
+                pixel_utils::detect_artifact_astral_mark(image, scaler, y_shift),
+            )
+        };
         // All astraled artifacts are locked in-game. If we still see
-        // astral=true + lock=false after the two-phase capture, force lock=true.
+        // astral=true + lock=false, force lock=true.
         if astral_mark && !lock {
             info!("[artifact] 星辉=true 但锁定=false — 强制锁定=true（游戏规则） / [artifact] astral=true but lock=false — forcing lock=true (game invariant)");
             lock = true;
@@ -686,6 +706,12 @@ impl GoodArtifactScanner {
 
             // If we didn't extend above (or no number retry), push original candidates
             if !did_extend {
+                if cands.is_empty() && i == max_scan_lines - 1 {
+                    // Last expected line produced nothing — always log for diagnostics
+                    info!("[artifact] idx={} sub[{}] 空（{}星 lv{}），OCR「{}」 / [artifact] idx={} sub[{}] empty ({}* lv{}), OCR 「{}」",
+                        item_index, i, rarity, level, raw_texts[0].trim(),
+                        item_index, i, rarity, level, raw_texts[0].trim());
+                }
                 solver_candidates.push(cands);
             }
 
@@ -715,8 +741,8 @@ impl GoodArtifactScanner {
         };
         let non_empty_count = solver_candidates.iter().filter(|c| !c.is_empty()).count();
         if non_empty_count < min_required {
-            info!("[artifact] {}星 lv{} 仅有{}条副词条（期望≥{}），使用备选引擎重试 / [artifact] {}* lv{} has only {} substat lines (expected ≥{}), retrying failed lines with fallback engine + shifts",
-                rarity, level, non_empty_count, min_required, rarity, level, non_empty_count, min_required);
+            info!("[artifact] idx={} {}星 lv{} 仅有{}条副词条（期望≥{}），使用备选引擎重试 / [artifact] idx={} {}* lv{} has only {} substat lines (expected ≥{}), retrying with fallback",
+                item_index, rarity, level, non_empty_count, min_required, item_index, rarity, level, non_empty_count, min_required);
 
             // Ensure we have exactly 4 slots (pad if the loop broke early on stop marker)
             while solver_candidates.len() < 4 {
@@ -765,8 +791,8 @@ impl GoodArtifactScanner {
                                 .any(|c| c.key == p.key && (c.value - p.value).abs() < 0.01);
                             if !already {
                                 let eng_name = if std::ptr::eq(engine, ocr) { "v5" } else { "v4" };
-                                info!("[artifact] sub[{}] 恢复成功 via {} (dy={}, dw={}): {}={:.1} / [artifact] sub[{}] RECOVERED via {} (dy={}, dw={}): {}={:.1}",
-                                    i, eng_name, dy, dw, p.key, p.value, i, eng_name, dy, dw, p.key, p.value);
+                                info!("[artifact] idx={} sub[{}] 恢复成功 via {} (dy={}, dw={}): {}={:.1} / [artifact] idx={} sub[{}] RECOVERED via {} (dy={}, dw={}): {}={:.1}",
+                                    item_index, i, eng_name, dy, dw, p.key, p.value, item_index, i, eng_name, dy, dw, p.key, p.value);
                                 solver_candidates[i].push(OcrCandidate {
                                     key: p.key, value: p.value, inactive: p.inactive,
                                 });
@@ -779,7 +805,12 @@ impl GoodArtifactScanner {
                 }
 
                 if !found {
-                    warn!("[artifact] sub[{}] 备选重试后仍为空（{}星 lv{}） / [artifact] sub[{}] STILL EMPTY after fallback retries ({}* lv{})", i, rarity, level, i, rarity, level);
+                    // Log what the fallback engines actually saw on this line
+                    let fallback_text = Self::ocr_image_region_shifted(
+                        substat_ocr, image, ocr_regions.substat_lines[i], y_shift, scaler,
+                    ).unwrap_or_default();
+                    warn!("[artifact] idx={} sub[{}] 备选重试后仍为空（{}星 lv{}），OCR「{}」 / [artifact] idx={} sub[{}] STILL EMPTY after fallback ({}* lv{}), OCR 「{}」",
+                        item_index, i, rarity, level, fallback_text.trim(), item_index, i, rarity, level, fallback_text.trim());
                 }
             }
         }
@@ -1089,12 +1120,16 @@ impl GoodArtifactScanner {
 
     /// 从游戏截图中识别单个圣遗物（同步调用）。
     /// 供圣遗物管理模块使用。
+    ///
+    /// `grid_icons`: pre-computed lock/astral from grid-based detection.
+    /// Elixir is always detected via panel pixels. When `None`, all fields use panel pixel detection.
     pub fn identify_artifact(
         ocr: &dyn ImageToText<RgbImage>,
         substat_ocr: &dyn ImageToText<RgbImage>,
         image: &RgbImage,
         scaler: &CoordScaler,
         mappings: &MappingManager,
+        grid_icons: Option<GridIconResult>,
     ) -> Result<Option<GoodArtifact>> {
         let regions = ArtifactOcrRegions::new();
         let config = GoodArtifactScannerConfig {
@@ -1105,7 +1140,7 @@ impl GoodArtifactScanner {
             ..Default::default()
         };
 
-        match Self::scan_single_artifact(ocr, substat_ocr, image, scaler, &regions, mappings, &config, 0) {
+        match Self::scan_single_artifact(ocr, substat_ocr, image, scaler, &regions, mappings, &config, 0, grid_icons) {
             Ok(ArtifactScanResult::Artifact(a)) => Ok(Some(a)),
             Ok(ArtifactScanResult::Stop) | Ok(ArtifactScanResult::Skip) => Ok(None),
             Err(e) => Err(e),
@@ -1146,8 +1181,12 @@ impl GoodArtifactScanner {
             count
         } else {
             // Already in backpack — just select tab and read count
-            let mut bp = BackpackScanner::new(ctrl);
-            bp.select_tab("artifact", self.config.delay_tab);
+            {
+                let mut bp = BackpackScanner::new(ctrl);
+                bp.select_tab("artifact", self.config.delay_tab);
+            }
+            backpack_scanner::dismiss_five_star_filter(ctrl, self.config.delay_tab, self.config.dump_images);
+            let bp = BackpackScanner::new(ctrl);
             let (count, _) = bp.read_item_count(count_ocr.as_ref())?;
             count
         };
@@ -1205,10 +1244,10 @@ impl GoodArtifactScanner {
         let worker_ocr_regions = ArtifactOcrRegions::new();
 
         // Start the parallel worker.
-        // Metadata is just () since the image + index is all we need.
-        let (item_tx, worker_handle) = scan_worker::start_worker::<(), GoodArtifact, _>(
+        // Metadata carries grid-based icon detection results (lock/astral/elixir).
+        let (item_tx, worker_handle) = scan_worker::start_worker::<Option<GridIconResult>, GoodArtifact, _>(
             total_count as usize,
-            move |work_item: WorkItem<()>| {
+            move |work_item: WorkItem<Option<GridIconResult>>| {
                 // Quick rarity check — stop below min_rarity.
                 if pixel_utils::artifact_below_min_rarity(&work_item.image, &worker_scaler, worker_config.min_rarity) {
                     return Ok(None);
@@ -1227,6 +1266,7 @@ impl GoodArtifactScanner {
                     &worker_mappings,
                     &worker_config,
                     work_item.index,
+                    work_item.metadata,
                 )? {
                     ArtifactScanResult::Artifact(artifact) => {
                         if artifact.rarity >= worker_config.min_rarity {
@@ -1243,19 +1283,39 @@ impl GoodArtifactScanner {
 
         // Main thread: navigate grid and send captured images to worker
         let scan_config = BackpackScanConfig {
-            delay_grid_item: self.config.delay_grid_item,
             delay_scroll: self.config.delay_scroll,
-            delay_after_panel: if self.config.skip_lock_delay { 0 } else { self.config.delay_grid_item },
+            delay_before_capture: self.config.capture_delay,
         };
 
+        // Grid icon detection state.
+        // Detection passes happen at page-relative item indices 0, 13, 26 (evenly spaced in 40).
+        //
+        // Tie-breaking: we want 1 or 3 passes per page, never 2 (ambiguous majority).
+        // - Items 0-12: sent with 1 pass (unambiguous)
+        // - Items 13+: we defer sending until we have 3 passes
+        // - If scanning stops before index 26, we run pass 3 on the last item's image
+        //   as a tie-breaker, then flush deferred items
+        let use_grid_detection = true;
+        let total = total_count as usize;
+        let items_per_page = ITEMS_PER_PAGE;
+        let mut grid_detection: Option<GridPageDetection> = None;
+        let mut grid_passes_done: u32 = 0;
+        // Buffer for items deferred until 3rd pass is done
+        let mut deferred_items: Vec<(usize, RgbImage)> = Vec::new();
+
         bp.scan_grid(
-            total_count as usize,
+            total,
             &scan_config,
             start_at,
-            |image| pixel_utils::is_artifact_icon_ambiguous(image, &scaler),
             |event| {
                 match event {
-                    GridEvent::PageScrolled => ScanAction::Continue,
+                    GridEvent::PageScrolled => {
+                        // New page — reset grid detection state
+                        grid_detection = None;
+                        grid_passes_done = 0;
+                        deferred_items.clear();
+                        ScanAction::Continue
+                    }
                     GridEvent::Item(idx, image) => {
                         // Check if worker has signaled stop (e.g., too many errors)
                         if worker_handle.stop_requested() {
@@ -1264,15 +1324,76 @@ impl GoodArtifactScanner {
 
                         // Quick rarity check on main thread to stop early
                         if pixel_utils::artifact_below_min_rarity(&image, &scaler, self.config.min_rarity) {
+                            // Before stopping, flush deferred items with available grid results
+                            if use_grid_detection && grid_passes_done == 2 {
+                                // Tie-breaker: run 3rd pass on current image
+                                if let Some(ref mut gd) = grid_detection {
+                                    gd.detect_pass(&image, &scaler, idx);
+                                    grid_passes_done = 3;
+                                }
+                            }
+                            for (def_idx, def_image) in deferred_items.drain(..) {
+                                let gi = grid_detection.as_ref().and_then(|gd| gd.get(def_idx));
+                                let worker_idx = def_idx - start_at;
+                                let _ = item_tx.send(WorkItem { index: worker_idx, image: def_image, metadata: gi });
+                            }
                             return ScanAction::Stop;
                         }
 
-                        // Send image to worker for OCR processing.
-                        // Normalize index to 0-based so the worker's BTreeMap drain works correctly.
-                        let worker_idx = idx - start_at;
-                        if item_tx.send(WorkItem { index: worker_idx, image, metadata: () }).is_err() {
-                            error!("[artifact] 工作通道已关闭 / [artifact] worker channel closed");
-                            return ScanAction::Stop;
+                        // Grid icon detection
+                        let page_start = (idx / items_per_page) * items_per_page;
+                        let page_rel = idx - page_start;
+                        let page_items = (total - page_start).min(items_per_page);
+
+                        if use_grid_detection {
+                            // Initialize grid detection for this page
+                            if grid_detection.is_none() {
+                                grid_detection = Some(GridPageDetection::new(page_start, page_items));
+                                grid_passes_done = 0;
+                                deferred_items.clear();
+                            }
+
+                            // Run detection at scheduled page-relative indices
+                            if let Some(ref mut gd) = grid_detection {
+                                if page_rel == 0 && grid_passes_done == 0 {
+                                    gd.detect_pass(&image, &scaler, idx);
+                                    grid_passes_done = 1;
+                                } else if page_rel == 13 && grid_passes_done == 1 {
+                                    gd.detect_pass(&image, &scaler, idx);
+                                    grid_passes_done = 2;
+                                } else if page_rel == 26 && grid_passes_done == 2 {
+                                    gd.detect_pass(&image, &scaler, idx);
+                                    grid_passes_done = 3;
+                                    // Flush deferred items now that we have 3 passes
+                                    for (def_idx, def_image) in deferred_items.drain(..) {
+                                        let gi = gd.get(def_idx);
+                                        let worker_idx = def_idx - start_at;
+                                        if item_tx.send(WorkItem { index: worker_idx, image: def_image, metadata: gi }).is_err() {
+                                            error!("[artifact] 工作通道已关闭 / [artifact] worker channel closed");
+                                            return ScanAction::Stop;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Determine whether to send now or defer
+                        let grid_icons = if use_grid_detection {
+                            grid_detection.as_ref().and_then(|gd| gd.get(idx))
+                        } else {
+                            None
+                        };
+
+                        if use_grid_detection && grid_passes_done == 2 && page_rel >= 13 {
+                            // We have exactly 2 passes — defer until 3rd pass
+                            deferred_items.push((idx, image));
+                        } else {
+                            // Either 1 pass (items 0-12) or 3 passes (items 26+): send immediately
+                            let worker_idx = idx - start_at;
+                            if item_tx.send(WorkItem { index: worker_idx, image, metadata: grid_icons }).is_err() {
+                                error!("[artifact] 工作通道已关闭 / [artifact] worker channel closed");
+                                return ScanAction::Stop;
+                            }
                         }
 
                         ScanAction::Continue
@@ -1280,6 +1401,22 @@ impl GoodArtifactScanner {
                 }
             },
         );
+
+        // After scan_grid returns, flush any remaining deferred items.
+        // This handles the case where scanning stopped between pass 2 and pass 3.
+        if use_grid_detection && grid_passes_done == 2 && !deferred_items.is_empty() {
+            // Use the last deferred item's image for tie-breaking 3rd pass
+            if let Some((last_idx, ref last_img)) = deferred_items.last().map(|(i, img)| (*i, img.clone())) {
+                if let Some(ref mut gd) = grid_detection {
+                    gd.detect_pass(&last_img, &scaler, last_idx);
+                }
+            }
+            for (def_idx, def_image) in deferred_items.drain(..) {
+                let gi = grid_detection.as_ref().and_then(|gd| gd.get(def_idx));
+                let worker_idx = def_idx - start_at;
+                let _ = item_tx.send(WorkItem { index: worker_idx, image: def_image, metadata: gi });
+            }
+        }
 
         // Drop sender to signal worker that no more items are coming
         drop(item_tx);
@@ -1541,7 +1678,7 @@ mod tests {
         let general_ocr = FakeOcr::new(vec![]);
 
         let result = GoodArtifactScanner::scan_single_artifact(
-            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0,
+            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0, None,
         ).unwrap();
 
         assert!(matches!(result, ArtifactScanResult::Stop));
@@ -1562,7 +1699,7 @@ mod tests {
         let general_ocr = FakeOcr::new(vec!["乱码无法识别"]);
 
         let result = GoodArtifactScanner::scan_single_artifact(
-            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0,
+            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0, None,
         ).unwrap();
 
         assert!(matches!(result, ArtifactScanResult::Skip));
@@ -1581,7 +1718,7 @@ mod tests {
         let general_ocr = FakeOcr::new(vec!["乱码无法识别"]);
 
         let result = GoodArtifactScanner::scan_single_artifact(
-            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0,
+            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0, None,
         );
 
         assert!(result.is_err());
@@ -1601,7 +1738,7 @@ mod tests {
         let general_ocr = FakeOcr::new(vec!["乱码无法识别"]);
 
         let result = GoodArtifactScanner::scan_single_artifact(
-            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0,
+            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0, None,
         ).unwrap();
 
         assert!(matches!(result, ArtifactScanResult::Skip));
@@ -1643,7 +1780,7 @@ mod tests {
         ]);
 
         let result = GoodArtifactScanner::scan_single_artifact(
-            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0,
+            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0, None,
         ).unwrap();
 
         match result {
@@ -1687,7 +1824,7 @@ mod tests {
         ]);
 
         let result = GoodArtifactScanner::scan_single_artifact(
-            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0,
+            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0, None,
         ).unwrap();
 
         match result {
@@ -1720,7 +1857,7 @@ mod tests {
         ]);
 
         let result = GoodArtifactScanner::scan_single_artifact(
-            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0,
+            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0, None,
         ).unwrap();
 
         match result {
@@ -1754,7 +1891,7 @@ mod tests {
         ]);
 
         let result = GoodArtifactScanner::scan_single_artifact(
-            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0,
+            &level_ocr, &general_ocr, &image, &scaler, &regions, &mappings, &config, 0, None,
         ).unwrap();
 
         match result {

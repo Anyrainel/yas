@@ -4,6 +4,12 @@
 
 - **NEVER kill GOODScanner.exe or any user process to unblock a build.** If `cargo build` fails with "access denied" because the exe is locked, tell the user and wait. If they confirm the process can be stopped, wait for it to exit on its own or let the user close it.
 
+## IMPORTANT: DRY is Top Priority
+
+- **Never duplicate logic between test binaries and production code.** Core features (UI navigation, OCR scanning, filter operations, grid scanning) must be implemented as well-defined methods in the proper modules (e.g., `manager/ui_actions.rs`). Test binaries should only contain test-specific looping/reporting logic and call shared functions.
+- When refactoring for DRY, **ensure logic equivalence** — the extracted function must behave identically to the original inline code.
+- Prefer reusing existing functions over writing new code that does the same thing.
+
 ## Overview
 
 Yas (Yet Another Scanner) is a Rust application that scans Genshin Impact in-game data (characters, weapons, artifacts) using OCR and exports it in **GOOD v3** (Genshin Open Object Description) format for use with optimizer tools.
@@ -85,20 +91,18 @@ On first run, a bilingual prompt asks for custom in-game names for Traveler/Wand
   "wanderer_name": "",
   "manekin_name": "",
   "manekina_name": "",
-  "char_tab_delay": 400,
-  "char_open_delay": 1200,
-  "weapon_grid_delay": 60,
-  "weapon_scroll_delay": 200,
-  "weapon_tab_delay": 400,
-  "weapon_open_delay": 1200,
-  "artifact_grid_delay": 60,
-  "artifact_scroll_delay": 200,
-  "artifact_tab_delay": 400,
-  "artifact_open_delay": 1200
+  "char_tab_delay": 500,
+  "char_next_delay": 300,
+  "char_open_delay": 1500,
+  "char_close_delay": 500,
+  "inv_scroll_delay": 200,
+  "inv_tab_delay": 400,
+  "inv_open_delay": 1500,
+  "capture_delay": 40
 }
 ```
 
-Existing config files without delay fields are loaded correctly via `#[serde(default)]` and re-saved with new defaults.
+Existing config files without delay fields are loaded correctly via `#[serde(default)]` and re-saved with new defaults. Old per-scanner field names (`weapon_grid_delay`, `artifact_grid_delay`, etc.) are accepted via serde aliases for backwards compatibility.
 
 ## Build & Run
 

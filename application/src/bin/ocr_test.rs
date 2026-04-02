@@ -35,6 +35,20 @@ fn main() -> Result<()> {
     }
 
     match args[1].as_str() {
+        "--sel-verify" => {
+            if args.len() < 4 {
+                eprintln!("Usage: ocr_test --sel-verify <screenshot_dir> <export.json>");
+                std::process::exit(1);
+            }
+            run_sel_verify(&args[2], &args[3])
+        }
+        "--sel-ocr" => {
+            if args.len() < 3 {
+                eprintln!("Usage: ocr_test --sel-ocr <screenshot_or_dir>");
+                std::process::exit(1);
+            }
+            run_sel_ocr(&args[2])
+        }
         "--equip" => {
             if args.len() < 3 {
                 eprintln!("Usage: ocr_test --equip <image_path>");
@@ -124,6 +138,417 @@ fn run_ocr_test(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Test selection view OCR on full screen captures.
+/// Crops each region, binarizes, and OCRs. Also runs solver validation.
+fn run_sel_ocr(path: &str) -> Result<()> {
+    use yas_genshin::scanner::common::stat_parser;
+    use yas_genshin::scanner::common::roll_solver::{self, OcrCandidate, SolverInput};
+
+    // Selection view crop regions (base 1920x1080)
+    const MAIN_STAT: (f64, f64, f64, f64) = (1440.0, 217.0, 250.0, 30.0);
+    const LEVEL: (f64, f64, f64, f64) = (1443.0, 310.0, 100.0, 26.0);
+    const STAR4_POS: (f64, f64) = (1578.0, 280.0);
+    const STAR5_POS: (f64, f64) = (1611.0, 280.0);
+    const SUBS: [(f64, f64, f64, f64); 4] = [
+        (1460.0, 349.0, 256.0, 30.0),
+        (1460.0, 383.0, 256.0, 30.0),
+        (1460.0, 417.0, 256.0, 30.0),
+        (1460.0, 451.0, 336.0, 30.0),
+    ];
+    const SET_NAME: (f64, f64, f64, f64) = (1430.0, 489.0, 300.0, 30.0);
+    const SUB_SPACING: f64 = 34.0;
+
+    fn crop_binarize(img: &image::RgbImage, rect: (f64, f64, f64, f64)) -> image::RgbImage {
+        let scale = img.width() as f64 / 1920.0;
+        let x = (rect.0 * scale).round() as u32;
+        let y = (rect.1 * scale).round() as u32;
+        let w = (rect.2 * scale).round().min((img.width() - x) as f64) as u32;
+        let h = (rect.3 * scale).round().min((img.height() - y) as f64) as u32;
+        let mut cropped = image::imageops::crop_imm(img, x, y, w, h).to_image();
+        for pixel in cropped.pixels_mut() {
+            let brightness = (pixel[0] as u32 + pixel[1] as u32 + pixel[2] as u32) / 3;
+            if brightness > 160 {
+                pixel[0] = 0; pixel[1] = 0; pixel[2] = 0;
+            } else {
+                pixel[0] = 255; pixel[1] = 255; pixel[2] = 255;
+            }
+        }
+        cropped
+    }
+
+    fn check_star(img: &image::RgbImage, pos: (f64, f64)) -> bool {
+        let scale = img.width() as f64 / 1920.0;
+        let px = (pos.0 * scale).round() as u32;
+        let py = (pos.1 * scale).round() as u32;
+        if px < img.width() && py < img.height() {
+            let p = img.get_pixel(px, py);
+            p[0] > 150 && p[1] > 100 && p[2] < 100
+        } else {
+            false
+        }
+    }
+
+    fn process_image(
+        img: &image::RgbImage,
+        ocr: &dyn yas::ocr::ImageToText<image::RgbImage>,
+        mappings: &MappingManager,
+        label: &str,
+    ) {
+        println!("\n=== {} ({}x{}) ===", label, img.width(), img.height());
+
+        // Rarity
+        let rarity = if check_star(img, STAR5_POS) { 5 }
+            else if check_star(img, STAR4_POS) { 4 }
+            else { 3 };
+        println!("rarity: {}*", rarity);
+
+        // Level
+        let level_img = crop_binarize(img, LEVEL);
+        let level_text = ocr.image_to_text(&level_img, false).unwrap_or_default();
+        let level_text = level_text.trim().to_string();
+        let digits: String = level_text.chars().filter(|c| c.is_ascii_digit()).collect();
+        let level: i32 = if digits.is_empty() { -1 } else { digits.parse().unwrap_or(-1) };
+        println!("level: OCR='{}' parsed={}", level_text, level);
+
+        // Main stat
+        let main_img = crop_binarize(img, MAIN_STAT);
+        let main_text = ocr.image_to_text(&main_img, false).unwrap_or_default();
+        let main_text = main_text.trim().to_string();
+        if let Some(parsed) = stat_parser::parse_stat_from_text(&main_text) {
+            let key = stat_parser::main_stat_key_fixup(&parsed.key);
+            println!("main: OCR='{}' => key='{}'", main_text, key);
+        } else {
+            println!("main: OCR='{}' => (parse failed)", main_text);
+        }
+
+        // Substats
+        let mut sub_candidates: Vec<Vec<OcrCandidate>> = Vec::new();
+        let mut parsed_count = 0usize;
+        for (i, rect) in SUBS.iter().enumerate() {
+            let sub_img = crop_binarize(img, *rect);
+            let text = ocr.image_to_text(&sub_img, false).unwrap_or_default();
+            let text = text.trim().to_string();
+            if text.is_empty() || text.contains("件套") {
+                println!("sub{}: {}", i, if text.contains("件套") { format!("stop marker ({})", text) } else { "(empty)".to_string() });
+                break;
+            }
+            if let Some(parsed) = stat_parser::parse_stat_from_text(&text) {
+                println!("sub{}: OCR='{}' => key='{}' val={} inactive={}",
+                    i, text, parsed.key, parsed.value, parsed.inactive);
+                sub_candidates.push(vec![OcrCandidate {
+                    key: parsed.key, value: parsed.value, inactive: parsed.inactive,
+                }]);
+                parsed_count += 1;
+            } else {
+                // Parse failed — likely set name bleeding into sub line; stop here
+                println!("sub{}: OCR='{}' => (parse failed, stopping)", i, text);
+                break;
+            }
+        }
+
+        // Solver
+        if level >= 0 && rarity >= 4 && parsed_count > 0 {
+            let input = SolverInput {
+                rarity,
+                level_candidates: vec![level],
+                substat_candidates: sub_candidates,
+            };
+            match roll_solver::solve(&input) {
+                Some(result) => {
+                    println!("solver: OK total_rolls={} init={}", result.total_rolls, result.initial_substat_count);
+                    for s in &result.substats {
+                        println!("  solved: {}={} rolls={} inactive={}", s.key, s.value, s.roll_count, s.inactive);
+                    }
+                }
+                None => println!("solver: FAILED"),
+            }
+        }
+
+        // Set name (adjust Y for missing subs)
+        let missing = 4usize.saturating_sub(parsed_count);
+        let set_rect = (SET_NAME.0, SET_NAME.1 - missing as f64 * SUB_SPACING, SET_NAME.2, SET_NAME.3);
+        let set_img = crop_binarize(img, set_rect);
+        let set_text = ocr.image_to_text(&set_img, false).unwrap_or_default();
+        let set_text = set_text.trim().to_string();
+        let cleaned = set_text
+            .trim_end_matches('：').trim_end_matches(':')
+            .trim_end_matches('；').trim_end_matches(';')
+            .trim();
+        if let Some(set_key) = fuzzy_match_map(cleaned, &mappings.artifact_set_map) {
+            println!("set: OCR='{}' => '{}' (y_adj=-{})", set_text, set_key, missing as f64 * SUB_SPACING);
+        } else {
+            println!("set: OCR='{}' => (no match) (y_adj=-{})", set_text, missing as f64 * SUB_SPACING);
+        }
+    }
+
+    println!("Loading models...");
+    let v4 = create_ocr_model("ppocrv4")?;
+    println!("Loading mappings...");
+    let mappings = MappingManager::new(&NameOverrides::default())?;
+
+    let p = std::path::Path::new(path);
+    if p.is_dir() {
+        // Process all .png files in directory
+        let mut files: Vec<_> = std::fs::read_dir(p)?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|x| x == "png").unwrap_or(false))
+            .collect();
+        files.sort_by_key(|e| e.file_name());
+        println!("Found {} images in {}", files.len(), path);
+        for entry in &files {
+            let img = image::open(entry.path())?.to_rgb8();
+            process_image(&img, &*v4, &mappings, &entry.file_name().to_string_lossy());
+        }
+    } else {
+        let img = image::open(p)?.to_rgb8();
+        process_image(&img, &*v4, &mappings, path);
+    }
+
+    Ok(())
+}
+
+/// OCR each screenshot, build a GoodArtifact, and verify against ground truth export.
+fn run_sel_verify(dir: &str, json_path: &str) -> Result<()> {
+    use yas_genshin::scanner::common::stat_parser;
+    use yas_genshin::scanner::common::roll_solver::{self, OcrCandidate, SolverInput};
+    use yas_genshin::scanner::common::models::{GoodArtifact, GoodSubStat, GoodExport};
+
+    // Selection view crop regions (base 1920x1080)
+    const LEVEL: (f64, f64, f64, f64) = (1443.0, 310.0, 100.0, 26.0);
+    const STAR4_POS: (f64, f64) = (1578.0, 280.0);
+    const STAR5_POS: (f64, f64) = (1611.0, 280.0);
+    const SUBS: [(f64, f64, f64, f64); 4] = [
+        (1460.0, 349.0, 256.0, 30.0),
+        (1460.0, 383.0, 256.0, 30.0),
+        (1460.0, 417.0, 256.0, 30.0),
+        (1460.0, 451.0, 336.0, 30.0),
+    ];
+    const SUB_SPACING: f64 = 34.0;
+    const SET_NAME: (f64, f64, f64, f64) = (1430.0, 489.0, 300.0, 30.0);
+    const VALUE_TOLERANCE: f64 = 0.100001;
+
+    fn crop_binarize(img: &image::RgbImage, rect: (f64, f64, f64, f64)) -> image::RgbImage {
+        let scale = img.width() as f64 / 1920.0;
+        let x = (rect.0 * scale).round() as u32;
+        let y = (rect.1 * scale).round() as u32;
+        let w = (rect.2 * scale).round().min((img.width() - x) as f64) as u32;
+        let h = (rect.3 * scale).round().min((img.height() - y) as f64) as u32;
+        let mut cropped = image::imageops::crop_imm(img, x, y, w, h).to_image();
+        for pixel in cropped.pixels_mut() {
+            let brightness = (pixel[0] as u32 + pixel[1] as u32 + pixel[2] as u32) / 3;
+            if brightness > 160 {
+                pixel[0] = 0; pixel[1] = 0; pixel[2] = 0;
+            } else {
+                pixel[0] = 255; pixel[1] = 255; pixel[2] = 255;
+            }
+        }
+        cropped
+    }
+
+    fn check_star(img: &image::RgbImage, pos: (f64, f64)) -> bool {
+        let scale = img.width() as f64 / 1920.0;
+        let px = (pos.0 * scale).round() as u32;
+        let py = (pos.1 * scale).round() as u32;
+        if px < img.width() && py < img.height() {
+            let p = img.get_pixel(px, py);
+            p[0] > 150 && p[1] > 100 && p[2] < 100
+        } else {
+            false
+        }
+    }
+
+    // Load GT
+    println!("Loading ground truth from {}...", json_path);
+    let json_str = std::fs::read_to_string(json_path)?;
+    let export: GoodExport = serde_json::from_str(&json_str)?;
+    let gt_artifacts = export.artifacts.unwrap_or_default();
+    println!("Ground truth: {} artifacts", gt_artifacts.len());
+
+    println!("Loading models...");
+    let v4 = create_ocr_model("ppocrv4")?;
+    println!("Loading mappings...");
+    let mappings = MappingManager::new(&NameOverrides::default())?;
+
+    // Collect images
+    let p = std::path::Path::new(dir);
+    let mut files: Vec<_> = std::fs::read_dir(p)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|x| x == "png").unwrap_or(false))
+        .collect();
+    files.sort_by_key(|e| e.file_name());
+    println!("Found {} images\n", files.len());
+
+    let mut matched = 0;
+    let mut unmatched = 0;
+    let mut skipped = 0; // empty cells, duplicate clicks on same item
+
+    for entry in &files {
+        let label = entry.file_name().to_string_lossy().to_string();
+        let img = image::open(entry.path())?.to_rgb8();
+
+        // Rarity
+        let rarity = if check_star(&img, STAR5_POS) { 5 }
+            else if check_star(&img, STAR4_POS) { 4 }
+            else { 3 };
+
+        // Level
+        let level_img = crop_binarize(&img, LEVEL);
+        let level_text = v4.image_to_text(&level_img, false).unwrap_or_default();
+        let digits: String = level_text.trim().chars().filter(|c| c.is_ascii_digit()).collect();
+        let level: i32 = if digits.is_empty() { -1 } else { digits.parse().unwrap_or(-1) };
+
+        if level < 0 {
+            println!("[SKIP] {} — level parse failed ('{}')", label, level_text.trim());
+            skipped += 1;
+            continue;
+        }
+
+        // Substats
+        let mut sub_candidates: Vec<Vec<OcrCandidate>> = Vec::new();
+        let mut parsed_subs: Vec<(String, f64, bool)> = Vec::new();
+        for rect in &SUBS {
+            let sub_img = crop_binarize(&img, *rect);
+            let text = v4.image_to_text(&sub_img, false).unwrap_or_default();
+            let text = text.trim().to_string();
+            if text.is_empty() || text.contains("件套") {
+                break;
+            }
+            if let Some(parsed) = stat_parser::parse_stat_from_text(&text) {
+                sub_candidates.push(vec![OcrCandidate {
+                    key: parsed.key.clone(), value: parsed.value, inactive: parsed.inactive,
+                }]);
+                parsed_subs.push((parsed.key, parsed.value, parsed.inactive));
+            } else {
+                break; // set name bleeding in
+            }
+        }
+
+        // Solver
+        let solved = if rarity >= 4 && !sub_candidates.is_empty() {
+            let input = SolverInput {
+                rarity,
+                level_candidates: vec![level],
+                substat_candidates: sub_candidates,
+            };
+            roll_solver::solve(&input)
+        } else {
+            None
+        };
+
+        // Build substats from solver result (more accurate) or raw OCR
+        let (active_subs, inactive_subs) = if let Some(ref result) = solved {
+            let mut active = Vec::new();
+            let mut inactive = Vec::new();
+            for s in &result.substats {
+                let sub = GoodSubStat { key: s.key.clone(), value: s.value, initial_value: None };
+                if s.inactive { inactive.push(sub); } else { active.push(sub); }
+            }
+            (active, inactive)
+        } else {
+            let mut active = Vec::new();
+            let mut inactive = Vec::new();
+            for (key, value, is_inactive) in &parsed_subs {
+                let sub = GoodSubStat { key: key.clone(), value: *value, initial_value: None };
+                if *is_inactive { inactive.push(sub); } else { active.push(sub); }
+            }
+            (active, inactive)
+        };
+
+        // Set name (adjust Y for sub count)
+        let parsed_count = parsed_subs.len();
+        let missing = 4usize.saturating_sub(parsed_count);
+        let set_rect = (SET_NAME.0, SET_NAME.1 - missing as f64 * SUB_SPACING, SET_NAME.2, SET_NAME.3);
+        let set_img = crop_binarize(&img, set_rect);
+        let set_text = v4.image_to_text(&set_img, false).unwrap_or_default();
+        let cleaned = set_text.trim()
+            .trim_end_matches('：').trim_end_matches(':')
+            .trim_end_matches('；').trim_end_matches(';')
+            .trim();
+        let set_key = fuzzy_match_map(cleaned, &mappings.artifact_set_map).unwrap_or_default();
+
+        if set_key.is_empty() {
+            println!("[SKIP] {} — set name not matched (OCR: '{}')", label, set_text.trim());
+            skipped += 1;
+            continue;
+        }
+
+        // Extract slot from filename (e.g. "flower_r0_c1.png" → "flower")
+        let slot_key = label.split('_').next().unwrap_or("").to_string();
+
+        // Main stat — apply slot-aware fixup (flower=hp, plume=atk, others=percentage)
+        let main_rect = (1440.0, 217.0, 250.0, 30.0);
+        let main_img = crop_binarize(&img, main_rect);
+        let main_text = v4.image_to_text(&main_img, false).unwrap_or_default();
+        let main_key = stat_parser::parse_stat_from_text(main_text.trim())
+            .map(|p| {
+                match slot_key.as_str() {
+                    "flower" => "hp".to_string(),  // always flat HP
+                    "plume" => "atk".to_string(),   // always flat ATK
+                    _ => stat_parser::main_stat_key_fixup(&p.key),
+                }
+            })
+            .unwrap_or_default();
+
+        // Build scanned artifact (ignore elixir/location/lock)
+        let scanned = GoodArtifact {
+            set_key: set_key.clone(),
+            slot_key: slot_key.clone(),
+            rarity,
+            level,
+            main_stat_key: main_key.clone(),
+            substats: active_subs,
+            unactivated_substats: inactive_subs,
+            location: String::new(),
+            lock: false,
+            astral_mark: false,
+            elixir_crafted: false,
+            total_rolls: None,
+        };
+
+        // Find match in GT — relaxed: ignore slot, location, lock, elixir, astral
+        let found = gt_artifacts.iter().any(|gt| {
+            gt.set_key == scanned.set_key
+                && gt.rarity == scanned.rarity
+                && gt.level == scanned.level
+                && gt.main_stat_key == scanned.main_stat_key
+                && gt.substats.len() == scanned.substats.len()
+                && gt.unactivated_substats.len() == scanned.unactivated_substats.len()
+                && scanned.substats.iter().all(|ss| {
+                    gt.substats.iter().any(|gs| gs.key == ss.key && (gs.value - ss.value).abs() < VALUE_TOLERANCE)
+                })
+                && scanned.unactivated_substats.iter().all(|ss| {
+                    gt.unactivated_substats.iter().any(|gs| gs.key == ss.key && (gs.value - ss.value).abs() < VALUE_TOLERANCE)
+                })
+        });
+
+        if found {
+            println!("[MATCH] {} — {}* lv{} {} {} ({} subs)", label, rarity, level, set_key, main_key, parsed_count);
+            matched += 1;
+        } else {
+            println!("[MISS]  {} — {}* lv{} {} {} ({} subs)", label, rarity, level, set_key, main_key, parsed_count);
+            for s in &scanned.substats {
+                println!("          sub: {}={}", s.key, s.value);
+            }
+            for s in &scanned.unactivated_substats {
+                println!("          unsub: {}={}", s.key, s.value);
+            }
+            if solved.is_none() {
+                println!("          (solver failed)");
+            }
+            unmatched += 1;
+        }
+    }
+
+    println!("\n========================================");
+    println!("Results: {} matched, {} missed, {} skipped", matched, unmatched, skipped);
+    println!("Match rate: {:.1}% ({}/{})",
+        if matched + unmatched > 0 { matched as f64 / (matched + unmatched) as f64 * 100.0 } else { 0.0 },
+        matched, matched + unmatched);
+    println!("========================================");
+
+    Ok(())
+}
+
 fn run_reprocess(images_dir: &str, output_path: Option<&str>) -> Result<()> {
     use yas_genshin::scanner::artifact::{
         GoodArtifactScanner, ArtifactOcrRegions, ArtifactScanResult, GoodArtifactScannerConfig,
@@ -174,7 +599,7 @@ fn run_reprocess(images_dir: &str, output_path: Option<&str>) -> Result<()> {
         let scaler = CoordScaler::new(img.width(), img.height());
 
         match GoodArtifactScanner::scan_single_artifact(
-            &*v5, &*v4, &img, &scaler, &regions, &mappings, &config, *idx,
+            &*v5, &*v4, &img, &scaler, &regions, &mappings, &config, *idx, None,
         ) {
             Ok(ArtifactScanResult::Artifact(artifact)) => {
                 artifacts.push(artifact);

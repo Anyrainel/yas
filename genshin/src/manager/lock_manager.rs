@@ -8,7 +8,10 @@ use log::{debug, info, warn};
 use crate::scanner::artifact::GoodArtifactScanner;
 use crate::scanner::common::backpack_scanner;
 use crate::scanner::common::constants::*;
+use super::ui_actions::{d_action, d_cell};
+use crate::scanner::common::debug_dump::DumpCtx;
 use crate::scanner::common::game_controller::GenshinGameController;
+use crate::scanner::common::grid_icon_detector::GridPageDetection;
 use crate::scanner::common::mappings::MappingManager;
 use crate::scanner::common::models::GoodArtifact;
 use crate::scanner::common::ocr_factory;
@@ -77,10 +80,10 @@ impl LockManager {
         &self,
         ctrl: &mut GenshinGameController,
         targets: &[LockTarget],
-        delay_grid_item: u64,
         delay_scroll: u64,
         stop_on_all_matched: bool,
         max_target_level: i32,
+        dump_images: bool,
     ) -> (Vec<InstructionResult>, Vec<(usize, GoodArtifact)>, HashMap<usize, usize>, bool) {
         let mut results: HashMap<String, InstructionResult> = HashMap::new();
         let mut scanned_artifacts: Vec<(usize, GoodArtifact)> = Vec::new();
@@ -182,14 +185,9 @@ impl LockManager {
         let total_rows = (total + GRID_COLS - 1) / GRID_COLS;
         let last_row_cols = if total % GRID_COLS == 0 { GRID_COLS } else { total % GRID_COLS };
 
-        // Timing: same two-phase capture as artifact scanner
-        let delay_after_panel = delay_grid_item; // same as scanner
-        let first_delay = delay_after_panel / 2;
-        let retry_delay = delay_after_panel;
-
         // Click first item to ensure focus
         ctrl.click_at(GRID_FIRST_X, GRID_FIRST_Y);
-        yas::utils::sleep(300);
+        yas::utils::sleep(d_action() * 3 / 8);
 
         let mut scanned_count: usize = 0;
         let mut scanned_row: usize = 0;
@@ -219,7 +217,7 @@ impl LockManager {
                 let y = GRID_FIRST_Y + last_row as f64 * GRID_OFFSET_Y;
                 ctrl.click_at(x, y);
                 let _ = ctrl.wait_until_panel_loaded(PANEL_POOL_RECT, 400);
-                yas::utils::sleep(first_delay as u32);
+                yas::utils::sleep(DEFAULT_DELAY_GRID_ITEM as u32);
 
                 if let Ok(image) = ctrl.capture_game() {
                     let ocr_guard = ocr_pool.get();
@@ -249,6 +247,16 @@ impl LockManager {
             let (result_tx, result_rx) = crossbeam_channel::unbounded::<(usize, usize, usize, Option<GoodArtifact>)>();
             let mut dispatched: usize = 0;
 
+            // Grid icon detection state for this page
+            let page_items_count: usize = (0..visible_rows).map(|r| {
+                if scanned_row + r == total_rows - 1 { last_row_cols } else { GRID_COLS }
+            }).sum();
+            let page_start_idx = scanned_count;
+            let mut grid_detection = GridPageDetection::new(page_start_idx, page_items_count);
+            let mut grid_passes_done: u32 = 0;
+            // Buffer items captured between pass 2 and pass 3 to ensure odd vote count
+            let mut deferred_items: Vec<(usize, usize, usize, image::RgbImage)> = Vec::new();
+
             // Step 1: Click through items, capture, dispatch OCR to rayon immediately
             for row in 0..visible_rows {
                 let row_cols = if scanned_row + row == total_rows - 1 {
@@ -274,12 +282,8 @@ impl LockManager {
                     // Wait for panel to load (same as scan_grid)
                     let _ = ctrl.wait_until_panel_loaded(PANEL_POOL_RECT, 400);
 
-                    // Two-phase capture with retry for lock/astral animation
-                    if first_delay > 0 {
-                        yas::utils::sleep(first_delay as u32);
-                    }
-
-                    let mut image = match ctrl.capture_game() {
+                    // Grid-based detection — no animation delay needed
+                    let image = match ctrl.capture_game() {
                         Ok(img) => img,
                         Err(e) => {
                             warn!("[lock_manager] 截图失败 #{}: {} / [lock_manager] capture failed #{}: {}", scanned_count, e, scanned_count, e);
@@ -288,31 +292,95 @@ impl LockManager {
                         }
                     };
 
-                    // Retry if icon brightness is ambiguous (mid-animation)
-                    if retry_delay > 0 && pixel_utils::is_artifact_icon_ambiguous(&image, &scaler) {
-                        yas::utils::sleep(retry_delay as u32);
-                        image = match ctrl.capture_game() {
-                            Ok(img) => img,
-                            Err(e) => {
-                                warn!("[lock_manager] 重试截图失败 #{}: {} / [lock_manager] retry capture failed #{}: {}", scanned_count, e, scanned_count, e);
-                                scanned_count += 1;
-                                continue;
-                            }
-                        };
+                    if dump_images {
+                        let ctx = DumpCtx::new("debug_images", "manager_lock", scanned_count, "");
+                        ctx.dump_full(&image);
                     }
 
                     // Rarity early-stop: check if artifact rarity is below minimum (4)
-                    if pixel_utils::artifact_below_min_rarity(&image, &scaler, 4) {
+                    // Only stop if the artifact is also lv0 — leveled low-rarity artifacts
+                    // can appear before higher-rarity lv0 items (inventory sorted by level desc).
+                    if pixel_utils::artifact_below_min_rarity(&image, &scaler, 4)
+                        && { let guard = ocr_pool.get(); GoodArtifactScanner::scan_level_only(&guard, &image, &scaler) <= 0 }
+                    {
                         info!(
-                            "[lock_manager] 检测到低稀有度圣遗物，当前页后停止 / Low rarity artifact detected, stopping after current page"
+                            "[lock_manager] 检测到低稀有度lv0圣遗物，当前页后停止 / Low rarity lv0 artifact detected, stopping after current page"
                         );
                         stop_after_page = true;
-                        // Don't dispatch this item, don't increment scanned_count
-                        // Break inner loops to go to page collection
+                        // Flush deferred items with tie-breaking before stopping
+                        if grid_passes_done == 2 {
+                            grid_detection.detect_pass(&image, &scaler, scanned_count);
+                        }
+                        for (d_idx, d_row, d_col, d_img) in deferred_items.drain(..) {
+                            let gi = grid_detection.get(d_idx);
+                            let tx = result_tx.clone();
+                            let pool = ocr_pool.clone();
+                            let sub_pool = substat_pool.clone();
+                            let sc = scaler_arc.clone();
+                            let mp = self.mappings.clone();
+                            rayon::spawn(move || {
+                                let ocr = pool.get();
+                                let sub_ocr = sub_pool.get();
+                                let artifact = match GoodArtifactScanner::identify_artifact(
+                                    &ocr as &dyn yas::ocr::ImageToText<image::RgbImage>,
+                                    &sub_ocr as &dyn yas::ocr::ImageToText<image::RgbImage>,
+                                    &d_img, &sc, &mp, gi,
+                                ) {
+                                    Ok(a) => a,
+                                    Err(e) => { warn!("[lock_manager] OCR失败 #{}: {} / OCR failed", d_idx, e); None }
+                                };
+                                let _ = tx.send((d_idx, d_row, d_col, artifact));
+                            });
+                            dispatched += 1;
+                        }
                         break 'outer;
                     }
 
+                    // Grid icon detection passes at page-relative indices 0, 13, 26
+                    let page_rel = scanned_count - page_start_idx;
+                    if page_rel == 0 && grid_passes_done == 0 {
+                        grid_detection.detect_pass(&image, &scaler, scanned_count);
+                        grid_passes_done = 1;
+                    } else if page_rel == 13 && grid_passes_done == 1 {
+                        grid_detection.detect_pass(&image, &scaler, scanned_count);
+                        grid_passes_done = 2;
+                    } else if page_rel == 26 && grid_passes_done == 2 {
+                        grid_detection.detect_pass(&image, &scaler, scanned_count);
+                        grid_passes_done = 3;
+                        // Flush deferred items now that we have 3 passes
+                        for (d_idx, d_row, d_col, d_img) in deferred_items.drain(..) {
+                            let gi = grid_detection.get(d_idx);
+                            let tx = result_tx.clone();
+                            let pool = ocr_pool.clone();
+                            let sub_pool = substat_pool.clone();
+                            let sc = scaler_arc.clone();
+                            let mp = self.mappings.clone();
+                            rayon::spawn(move || {
+                                let ocr = pool.get();
+                                let sub_ocr = sub_pool.get();
+                                let artifact = match GoodArtifactScanner::identify_artifact(
+                                    &ocr as &dyn yas::ocr::ImageToText<image::RgbImage>,
+                                    &sub_ocr as &dyn yas::ocr::ImageToText<image::RgbImage>,
+                                    &d_img, &sc, &mp, gi,
+                                ) {
+                                    Ok(a) => a,
+                                    Err(e) => { warn!("[lock_manager] OCR失败 #{}: {} / OCR failed", d_idx, e); None }
+                                };
+                                let _ = tx.send((d_idx, d_row, d_col, artifact));
+                            });
+                            dispatched += 1;
+                        }
+                    }
+
+                    // Items in the 2-pass zone (page_rel 13-25) are deferred until pass 3
+                    if grid_passes_done == 2 && page_rel >= 13 {
+                        deferred_items.push((scanned_count, row, col, image));
+                        scanned_count += 1;
+                        continue;
+                    }
+
                     // Dispatch OCR to rayon immediately (runs in parallel with next capture)
+                    let gi = grid_detection.get(scanned_count);
                     let tx = result_tx.clone();
                     let pool = ocr_pool.clone();
                     let sub_pool = substat_pool.clone();
@@ -327,7 +395,7 @@ impl LockManager {
                         let artifact = match GoodArtifactScanner::identify_artifact(
                             &ocr as &dyn yas::ocr::ImageToText<image::RgbImage>,
                             &sub_ocr as &dyn yas::ocr::ImageToText<image::RgbImage>,
-                            &image, &sc, &mp,
+                            &image, &sc, &mp, gi,
                         ) {
                             Ok(a) => a,
                             Err(e) => {
@@ -343,6 +411,36 @@ impl LockManager {
                 }
 
                 scanned_row += 1;
+            }
+
+            // Flush remaining deferred items (scanning finished before pass 3)
+            if grid_passes_done == 2 && !deferred_items.is_empty() {
+                // Tie-breaker: use last deferred image for pass 3
+                if let Some((last_idx, _, _, ref last_img)) = deferred_items.last().cloned() {
+                    grid_detection.detect_pass(&last_img, &scaler, last_idx);
+                }
+                for (d_idx, d_row, d_col, d_img) in deferred_items.drain(..) {
+                    let gi = grid_detection.get(d_idx);
+                    let tx = result_tx.clone();
+                    let pool = ocr_pool.clone();
+                    let sub_pool = substat_pool.clone();
+                    let sc = scaler_arc.clone();
+                    let mp = self.mappings.clone();
+                    rayon::spawn(move || {
+                        let ocr = pool.get();
+                        let sub_ocr = sub_pool.get();
+                        let artifact = match GoodArtifactScanner::identify_artifact(
+                            &ocr as &dyn yas::ocr::ImageToText<image::RgbImage>,
+                            &sub_ocr as &dyn yas::ocr::ImageToText<image::RgbImage>,
+                            &d_img, &sc, &mp, gi,
+                        ) {
+                            Ok(a) => a,
+                            Err(e) => { warn!("[lock_manager] OCR失败 #{}: {} / OCR failed", d_idx, e); None }
+                        };
+                        let _ = tx.send((d_idx, d_row, d_col, artifact));
+                    });
+                    dispatched += 1;
+                }
             }
 
             // Step 2: Collect all OCR results for this page
@@ -393,6 +491,7 @@ impl LockManager {
             }
 
             // Step 4: Apply lock toggles for this page (before scrolling)
+            let mut toggle_idx = 0usize;
             for toggle in &page_toggles {
                 if ctrl.check_rmb() {
                     results.insert(toggle.result_id.clone(), InstructionResult {
@@ -407,7 +506,7 @@ impl LockManager {
                 let y = GRID_FIRST_Y + toggle.row as f64 * GRID_OFFSET_Y;
                 ctrl.click_at(x, y);
                 let _ = ctrl.wait_until_panel_loaded(PANEL_POOL_RECT, 400);
-                yas::utils::sleep(100);
+                yas::utils::sleep(d_cell());
 
                 // Toggle lock
                 if let Err(e) = ui_actions::click_lock_button(ctrl, toggle.y_shift) {
@@ -420,7 +519,7 @@ impl LockManager {
                 }
 
                 // Verify lock state changed
-                yas::utils::sleep(200);
+                yas::utils::sleep(d_cell() * 2);
                 let image = match ctrl.capture_game() {
                     Ok(img) => img,
                     Err(e) => {
@@ -433,6 +532,13 @@ impl LockManager {
                     }
                 };
                 let new_lock = pixel_utils::detect_artifact_lock(&image, &scaler, toggle.y_shift);
+
+                if dump_images {
+                    let ctx = DumpCtx::new("debug_images", "manager_lock_verify", toggle_idx, "");
+                    ctx.dump_full(&image);
+                    ctx.dump_pixel("lock_px", &image, ARTIFACT_LOCK_POS1, 5, &scaler);
+                }
+                toggle_idx += 1;
 
                 if new_lock == toggle.desired_lock {
                     info!(

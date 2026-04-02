@@ -14,6 +14,7 @@ use crate::scanner::common::constants::*;
 use crate::scanner::common::coord_scaler::CoordScaler;
 use crate::scanner::common::equip_parser;
 use crate::scanner::common::fuzzy_match::fuzzy_match_map;
+use crate::scanner::common::grid_icon_detector::{GridIconResult, GridMode, GridPageDetection, ITEMS_PER_PAGE};
 
 lazy_static::lazy_static! {
     static ref SLASH_RE: Regex = Regex::new(r"(\d+)\s*/\s*(\d+)").unwrap();
@@ -152,6 +153,7 @@ impl GoodWeaponScanner {
         mappings: &MappingManager,
         config: &GoodWeaponScannerConfig,
         item_index: usize,
+        grid_icons: Option<GridIconResult>,
     ) -> Result<WeaponScanResult> {
         use crate::scanner::common::debug_dump::DumpCtx;
         use super::super::common::constants::{WEAPON_LOCK_POS1, STAR_Y};
@@ -212,10 +214,15 @@ impl GoodWeaponScanner {
 
         // Pixel-based detections
         let rarity = pixel_utils::detect_weapon_rarity(image, scaler);
-        let lock = pixel_utils::detect_weapon_lock(image, scaler);
+        // Lock: use grid detection when available, fall back to panel pixel detection
+        let lock = if let Some(gi) = grid_icons {
+            gi.lock
+        } else {
+            pixel_utils::detect_weapon_lock(image, scaler)
+        };
         let ascension = level_to_ascension(level, ascended);
 
-        // Dump all OCR and pixel-check regions
+        // Dump OCR regions and pixel check regions
         if config.dump_images {
             let ctx = DumpCtx::new("debug_images", "weapons", item_index, &weapon_key);
             ctx.dump_full(image);
@@ -391,11 +398,15 @@ impl GoodWeaponScanner {
         debug!("[weapon] 开始扫描... / [weapon] starting scan...");
         let now = SystemTime::now();
 
+        let cancel = ctrl.cancel_token();
+
         if !skip_open_backpack {
             // Return to main world using BGI-style strategy:
             // press Escape one at a time, verify after each press.
             ctrl.focus_game_window();
+            if cancel.check_rmb() { anyhow::bail!("cancelled"); }
             ctrl.return_to_main_ui(8);
+            if cancel.check_rmb() { anyhow::bail!("cancelled"); }
         }
 
         let mut bp = BackpackScanner::new(ctrl);
@@ -404,6 +415,7 @@ impl GoodWeaponScanner {
             bp.open_backpack(self.config.open_delay);
         }
         bp.select_tab("weapon", self.config.delay_tab);
+        if cancel.check_rmb() { anyhow::bail!("cancelled"); }
 
         // Create a temporary OCR model just for reading item count
         let count_ocr = ocr_factory::create_ocr_model(&self.config.ocr_backend)?;
@@ -413,7 +425,9 @@ impl GoodWeaponScanner {
         let total_count = if current_count == 0 {
             info!("[weapon] 数量=0，重新打开背包... / [weapon] count=0, reopening backpack...");
             drop(bp);
+            if cancel.check_rmb() { anyhow::bail!("cancelled"); }
             ctrl.return_to_main_ui(4);
+            if cancel.check_rmb() { anyhow::bail!("cancelled"); }
             let mut bp2 = BackpackScanner::new(ctrl);
             bp2.open_backpack(self.config.open_delay);
             bp2.select_tab("weapon", self.config.delay_tab);
@@ -464,9 +478,9 @@ impl GoodWeaponScanner {
         let worker_equip_pool = equip_fallback_pool.clone();
         let worker_ocr_regions = WeaponOcrRegions::new();
 
-        let (item_tx, worker_handle) = scan_worker::start_worker::<(), GoodWeapon, _>(
+        let (item_tx, worker_handle) = scan_worker::start_worker::<Option<GridIconResult>, GoodWeapon, _>(
             total_count as usize,
-            move |work_item: WorkItem<()>| {
+            move |work_item: WorkItem<Option<GridIconResult>>| {
                 let ocr_guard = worker_ocr_pool.get();
                 let equip_guard = worker_equip_pool.get();
 
@@ -479,6 +493,7 @@ impl GoodWeaponScanner {
                     &worker_mappings,
                     &worker_config,
                     work_item.index,
+                    work_item.metadata,
                 )? {
                     WeaponScanResult::Weapon(weapon) => {
                         if weapon.rarity >= worker_config.min_rarity {
@@ -494,19 +509,30 @@ impl GoodWeaponScanner {
         );
 
         let scan_config = BackpackScanConfig {
-            delay_grid_item: self.config.delay_grid_item,
             delay_scroll: self.config.delay_scroll,
-            delay_after_panel: if self.config.skip_lock_delay { 0 } else { self.config.delay_grid_item },
+            delay_before_capture: self.config.capture_delay,
         };
 
+        // Grid icon detection state (same 3-pass pattern as artifact scanner).
+        let total = total_count as usize;
+        let items_per_page = ITEMS_PER_PAGE;
+        let mut grid_detection: Option<GridPageDetection> = None;
+        let mut grid_passes_done: u32 = 0;
+        let mut deferred_items: Vec<(usize, RgbImage)> = Vec::new();
+
         bp.scan_grid(
-            total_count as usize,
+            total,
             &scan_config,
             start_at,
-            |image| pixel_utils::is_weapon_icon_ambiguous(image, &scaler),
             |event| {
                 match event {
-                    GridEvent::PageScrolled => ScanAction::Continue,
+                    GridEvent::PageScrolled => {
+                        // New page — reset grid detection state
+                        grid_detection = None;
+                        grid_passes_done = 0;
+                        deferred_items.clear();
+                        ScanAction::Continue
+                    }
                     GridEvent::Item(idx, image) => {
                         if worker_handle.stop_requested() {
                             return ScanAction::Stop;
@@ -514,14 +540,68 @@ impl GoodWeaponScanner {
 
                         // Quick rarity check on main thread
                         if pixel_utils::weapon_below_min_rarity(&image, &scaler, self.config.min_rarity) {
+                            // Before stopping, flush deferred items with tie-breaking
+                            if grid_passes_done == 2 {
+                                if let Some(ref mut gd) = grid_detection {
+                                    gd.detect_pass(&image, &scaler, idx);
+                                }
+                            }
+                            for (def_idx, def_image) in deferred_items.drain(..) {
+                                let gi = grid_detection.as_ref().and_then(|gd| gd.get(def_idx));
+                                let worker_idx = def_idx - start_at;
+                                let _ = item_tx.send(WorkItem { index: worker_idx, image: def_image, metadata: gi });
+                            }
                             return ScanAction::Stop;
                         }
 
-                        // Normalize index to 0-based so the worker's BTreeMap drain works correctly.
-                        let worker_idx = idx - start_at;
-                        if item_tx.send(WorkItem { index: worker_idx, image, metadata: () }).is_err() {
-                            error!("[weapon] 工作通道已关闭 / [weapon] worker channel closed");
-                            return ScanAction::Stop;
+                        // Grid icon detection
+                        let page_start = (idx / items_per_page) * items_per_page;
+                        let page_rel = idx - page_start;
+                        let page_items = (total - page_start).min(items_per_page);
+
+                        // Initialize grid detection for this page
+                        if grid_detection.is_none() {
+                            grid_detection = Some(GridPageDetection::with_mode(page_start, page_items, GridMode::Weapon));
+                            grid_passes_done = 0;
+                            deferred_items.clear();
+                        }
+
+                        // Run detection at scheduled page-relative indices
+                        if let Some(ref mut gd) = grid_detection {
+                            if page_rel == 0 && grid_passes_done == 0 {
+                                gd.detect_pass(&image, &scaler, idx);
+                                grid_passes_done = 1;
+                            } else if page_rel == 13 && grid_passes_done == 1 {
+                                gd.detect_pass(&image, &scaler, idx);
+                                grid_passes_done = 2;
+                            } else if page_rel == 26 && grid_passes_done == 2 {
+                                gd.detect_pass(&image, &scaler, idx);
+                                grid_passes_done = 3;
+                                // Flush deferred items now that we have 3 passes
+                                for (def_idx, def_image) in deferred_items.drain(..) {
+                                    let gi = gd.get(def_idx);
+                                    let worker_idx = def_idx - start_at;
+                                    if item_tx.send(WorkItem { index: worker_idx, image: def_image, metadata: gi }).is_err() {
+                                        error!("[weapon] 工作通道已关闭 / [weapon] worker channel closed");
+                                        return ScanAction::Stop;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Determine whether to send now or defer
+                        let grid_icons = grid_detection.as_ref().and_then(|gd| gd.get(idx));
+
+                        if grid_passes_done == 2 && page_rel >= 13 {
+                            // We have exactly 2 passes — defer until 3rd pass
+                            deferred_items.push((idx, image));
+                        } else {
+                            // Either 1 pass (items 0-12) or 3 passes (items 26+): send immediately
+                            let worker_idx = idx - start_at;
+                            if item_tx.send(WorkItem { index: worker_idx, image, metadata: grid_icons }).is_err() {
+                                error!("[weapon] 工作通道已关闭 / [weapon] worker channel closed");
+                                return ScanAction::Stop;
+                            }
                         }
 
                         ScanAction::Continue
@@ -529,6 +609,20 @@ impl GoodWeaponScanner {
                 }
             },
         );
+
+        // Flush any remaining deferred items (scan stopped between pass 2 and 3)
+        if grid_passes_done == 2 && !deferred_items.is_empty() {
+            if let Some((last_idx, ref last_img)) = deferred_items.last().map(|(i, img)| (*i, img.clone())) {
+                if let Some(ref mut gd) = grid_detection {
+                    gd.detect_pass(&last_img, &scaler, last_idx);
+                }
+            }
+            for (def_idx, def_image) in deferred_items.drain(..) {
+                let gi = grid_detection.as_ref().and_then(|gd| gd.get(def_idx));
+                let worker_idx = def_idx - start_at;
+                let _ = item_tx.send(WorkItem { index: worker_idx, image: def_image, metadata: gi });
+            }
+        }
 
         drop(item_tx);
         let weapons = worker_handle.join();
@@ -681,7 +775,7 @@ mod tests {
         ]);
 
         let result = GoodWeaponScanner::scan_single_weapon(
-            &ocr, None, &image, &scaler, &regions, &mappings, &config, 0,
+            &ocr, None, &image, &scaler, &regions, &mappings, &config, 0, None,
         ).unwrap();
 
         match result {
@@ -713,7 +807,7 @@ mod tests {
         ]);
 
         let result = GoodWeaponScanner::scan_single_weapon(
-            &ocr, None, &image, &scaler, &regions, &mappings, &config, 0,
+            &ocr, None, &image, &scaler, &regions, &mappings, &config, 0, None,
         ).unwrap();
 
         match result {
@@ -738,7 +832,7 @@ mod tests {
         let ocr = FakeOcr::new(vec!["something"]);
 
         let result = GoodWeaponScanner::scan_single_weapon(
-            &ocr, None, &image, &scaler, &regions, &mappings, &config, 0,
+            &ocr, None, &image, &scaler, &regions, &mappings, &config, 0, None,
         ).unwrap();
 
         assert!(matches!(result, WeaponScanResult::Stop));
@@ -756,7 +850,7 @@ mod tests {
         let ocr = FakeOcr::new(vec!["完全看不懂的名字"]);
 
         let result = GoodWeaponScanner::scan_single_weapon(
-            &ocr, None, &image, &scaler, &regions, &mappings, &config, 0,
+            &ocr, None, &image, &scaler, &regions, &mappings, &config, 0, None,
         ).unwrap();
 
         assert!(matches!(result, WeaponScanResult::Skip));
@@ -773,7 +867,7 @@ mod tests {
         let ocr = FakeOcr::new(vec!["完全看不懂的名字"]);
 
         let result = GoodWeaponScanner::scan_single_weapon(
-            &ocr, None, &image, &scaler, &regions, &mappings, &config, 0,
+            &ocr, None, &image, &scaler, &regions, &mappings, &config, 0, None,
         );
 
         assert!(result.is_err());
@@ -796,7 +890,7 @@ mod tests {
         let fallback = FakeOcr::new(vec!["纳西妲已装备"]);
 
         let result = GoodWeaponScanner::scan_single_weapon(
-            &ocr, Some(&fallback), &image, &scaler, &regions, &mappings, &config, 0,
+            &ocr, Some(&fallback), &image, &scaler, &regions, &mappings, &config, 0, None,
         ).unwrap();
 
         match result {
@@ -826,7 +920,7 @@ mod tests {
         ]);
 
         let result = GoodWeaponScanner::scan_single_weapon(
-            &ocr, None, &image, &scaler, &regions, &mappings, &config, 0,
+            &ocr, None, &image, &scaler, &regions, &mappings, &config, 0, None,
         ).unwrap();
 
         match result {

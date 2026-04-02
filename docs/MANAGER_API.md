@@ -118,9 +118,7 @@ Since artifacts don't carry client-assigned IDs, results use positional IDs:
 | 413 | Body too large (>5 MB) | `{"error": "..."}` |
 | 503 | Manager paused | `{"error": "..."}` |
 
-### `POST /equip` (async) — NOT YET IMPLEMENTED
-
-> **Status: Not yet implemented.** This endpoint is documented for design purposes. The server will return 501 until implementation is complete.
+### `POST /equip` (async)
 
 Submit a batch of equip/unequip instructions. Returns immediately — poll `GET /status` for progress.
 
@@ -185,11 +183,21 @@ Each item in the `equip` list has two fields:
 
 The artifact's own `location` field describes where the client believes it currently is — this is informational and not used for matching. The top-level `location` field on each instruction is the **desired** destination.
 
-#### Matching
+#### Execution
 
-Artifact matching uses the same identity fields as `POST /manage` — see the [Matching](#matching) section above. All fields are hard match.
+Unequip instructions are processed first (all artifacts with `location: ""`), then equip instructions grouped by target character. This minimizes character screen transitions.
 
-The server identifies the artifact in-game by navigating to the target character's equipment screen and searching the relevant slot's artifact list.
+For each equip instruction, the server:
+
+1. Opens the target character's equipment screen (press C, then cycle through the roster with OCR name matching)
+2. Clicks the artifact slot matching the artifact's `slotKey`
+3. Applies a **set filter** in the artifact selection grid to narrow results to the target `setKey`
+4. Iterates through the filtered grid, matching by **level** (OCR of "+20" badge) then **first substat value** (OCR)
+5. On match, clicks "替换" (Replace) to equip
+
+The combination of set filter + slot tab + level + substat value is almost always unique. The grid is scrolled page-by-page (up to 20 pages) if needed.
+
+For unequip, the server navigates to the artifact's current owner (from `artifact.location`), opens the slot, and clicks the unequip button.
 
 #### Result IDs
 
@@ -205,17 +213,17 @@ When equipping an artifact that is currently equipped on another character, the 
 | Code | When | Body |
 |------|------|------|
 | 202 | Job accepted | `{"jobId": "<uuid>", "total": N}` |
-| 400 | Bad JSON, `equip` list empty, or any entry invalid | `{"error": "..."}` |
+| 400 | Bad JSON, `equip` list empty, or any entry invalid (empty keys, rarity outside 4–5, level outside 0–20) | `{"error": "..."}` |
 | 403 | Disallowed origin | `{"error": "Origin not allowed"}` |
 | 409 | Another job running (manage or equip) | `{"error": "..."}` |
 | 413 | Body too large (>5 MB) | `{"error": "..."}` |
-| 501 | Not yet implemented | `{"error": "POST /equip is not yet implemented"}` |
 | 503 | Manager paused | `{"error": "..."}` |
 
 **Notes:**
 - Equip jobs share the same job queue as manage jobs — only one job of any type can run at a time. `GET /status` and `GET /result` work identically for both job types.
 - Equip does **not** produce an artifact snapshot. `GET /artifacts` is not updated after an equip job.
-- Invalid entries (empty `setKey`, rarity outside 4–5, unknown character key) reject the entire request with 400.
+- Invalid entries (empty `setKey`, rarity outside 4–5, level outside 0–20) reject the entire request with 400.
+- Equip jobs invalidate the artifact cache — any previously cached `GET /artifacts` data transitions to 503 (incomplete).
 
 ### `GET /status`
 
@@ -430,6 +438,10 @@ All targets execute in a single backpack scan pass. Invalid entries (empty keys,
 
 ## Changelog
 
+### 2026-03-31
+
+- **`POST /equip` implemented** — Previously documented as "not yet implemented" (501). Now fully functional. Navigates to character equipment screens, applies set filters in the artifact selection grid, and matches artifacts by level + substat value OCR. Unequip instructions execute first, then equip instructions grouped by target character. Equip jobs invalidate the artifact cache.
+
 ### 2026-03-30 (v2)
 
 - **BREAKING: Validation rejects entire request** — Any invalid entry (empty keys, rarity outside 4–5, level outside 0–20) now returns 400 for the whole request. Previously, invalid entries were filtered and reported individually while valid entries still ran.
@@ -440,7 +452,7 @@ All targets execute in a single backpack scan pass. Invalid entries (empty keys,
 
 ### 2026-03-30
 
-- **`POST /equip` documented (not yet implemented)** — New endpoint for equipping/unequipping artifacts to characters. Uses a flat `equip` list of `{artifact, location}` instructions. Same async job model and artifact matching as `POST /manage`. Shares the job queue (one job at a time across both endpoints). Does not produce an artifact snapshot. Server returns 501 until implementation is complete.
+- **`POST /equip` documented** — New endpoint for equipping/unequipping artifacts to characters. Uses a flat `equip` list of `{artifact, location}` instructions. Same async job model as `POST /manage`. Shares the job queue (one job at a time across both endpoints). Does not produce an artifact snapshot.
 - **BREAKING: `POST /manage` redesigned** — Replaced instruction-based format (`instructions` array with `id`/`target`/`changes`) with GOOD-format lock/unlock lists (`lock` and `unlock` arrays of `GoodArtifact`). Lock intention is determined by list membership, not by a `changes.lock` field. Result IDs are positional (`lock:0`, `unlock:1`, etc.).
 - **Equip removed** — The `changes.location` field and equip/unequip functionality have been removed from this endpoint. Equip will be a separate API in the future.
 - **Unactivated substats** — `unactivatedSubstats` is now included in artifact matching (scoring), and the `GET /artifacts` response includes it for level-0 artifacts.

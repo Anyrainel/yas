@@ -1,0 +1,498 @@
+/// Grid-based icon detection for artifact/weapon lock, astral mark, and elixir status.
+///
+/// Instead of waiting for the detail panel animation to settle (100ms+ per item),
+/// this module reads icon status directly from the inventory grid in full screenshots.
+///
+/// Algorithm:
+/// 1. Capture a full game screenshot
+/// 2. Calibrate grid offset via lightness-based template matching (SAT + edge detectors)
+/// 3. For each cell, compute precise icon slot positions using calibrated offset
+/// 4. Classify each slot by mean color of a small crop area
+///
+/// Grid calibration uses the known grid structure (8 cols × 5 rows, fixed spacing)
+/// and correlates a template of column gaps (-1, dark) and row-boundary edges
+/// (+1 white band → -1 dark gap) against the image lightness via a summed area table.
+/// This works for both artifact and weapon tabs without requiring locked items.
+///
+/// **Artifact layout**: slot 1 = lock, slot 2 = astral (if locked), next = elixir.
+/// If lock is absent, astral shifts up; if both absent, elixir is in slot 1.
+///
+/// **Weapon layout**: slot 1 = refinement badge, slot 2 = lock. No astral/elixir.
+///
+/// Detection is performed 3 times per page at evenly spaced moments, with majority
+/// vote for denoising (the currently-selected item has an animated border that can
+/// slightly shift its icon position).
+
+use image::RgbImage;
+use log::debug;
+
+use super::coord_scaler::CoordScaler;
+
+// ================================================================
+// Grid layout constants (at 1920×1080 base resolution)
+// ================================================================
+
+/// Grid cell center origin (first cell). Derived from:
+/// GX_LOCK=131.15, GY_LOCK=193.4 at 1080p (half of 4K: 262.3, 386.8)
+/// LOCK_DX=-48.65, LOCK_DY=-59.25 at 1080p (half of 4K: -97.3, -118.5)
+/// Cell center = lock_pos - lock_offset
+const GRID_CX: f64 = 179.8;  // 131.15 - (-48.65)
+const GRID_CY: f64 = 252.65; // 193.4 - (-59.25)
+
+/// Cell spacing (1080p base)
+const GRID_OX: f64 = 146.4;  // 292.8 / 2
+const GRID_OY: f64 = 175.2;  // 350.4 / 2
+
+/// Lock icon offset from cell center (1080p base)
+const LOCK_DX: f64 = -48.65; // -97.3 / 2
+const LOCK_DY: f64 = -59.25; // -118.5 / 2
+
+/// Vertical spacing between icon slots (1080p base)
+const SLOT_SPACING: f64 = 22.65; // 45.3 / 2
+
+/// Half-size of the crop area for mean-color classification (1080p base pixels)
+const CROP_HALF: f64 = 4.0; // ~8×8 area at 1080p (scales to ~16×16 at 4K)
+
+/// Grid dimensions
+const COLS: usize = 8;
+const ROWS: usize = 5;
+pub const ITEMS_PER_PAGE: usize = 40;
+
+// ================================================================
+// Grid calibration constants (at 1920×1080 base resolution)
+// ================================================================
+
+/// Card dimensions (1080p base)
+const CARD_W: f64 = 123.5;  // 247 / 2
+const CARD_H: f64 = 153.0;  // 306 / 2
+
+/// Width of the bright band above each row gap used for Y edge detection.
+/// Narrow bands produce sharper Y peaks. 10px at 1080p = 20px at 4K.
+const EDGE_W: f64 = 10.0;
+
+/// Weapon grid is ~57px higher at 1080p (114px at 4K) than artifact grid.
+const WEAPON_CY_OFFSET: f64 = -57.0;
+
+/// Search radius for grid calibration (1080p base pixels).
+/// The actual search is ±SEARCH_R scaled to the current resolution.
+const SEARCH_R: f64 = 30.0;
+
+// ================================================================
+// Color classification thresholds
+// ================================================================
+
+/// Lock icon: pink/red. Threshold: mean R > 180 AND mean (R-G) > 50
+const LOCK_R_MIN: f64 = 180.0;
+const LOCK_RG_DIFF_MIN: f64 = 50.0;
+
+/// Astral mark: golden/yellow. Threshold: mean (G-B) > 100
+const ASTRAL_GB_DIFF_MIN: f64 = 100.0;
+
+/// Elixir mark: purple/blue. Threshold: mean (B-G) > 20 AND mean B > 180
+const ELIXIR_BG_DIFF_MIN: f64 = 20.0;
+const ELIXIR_B_MIN: f64 = 180.0;
+
+/// Which inventory tab we're scanning — determines icon slot layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GridMode {
+    /// Artifacts: slot 1 = lock, slot 2 = astral, slot 3 = elixir
+    Artifact,
+    /// Weapons: slot 1 = refinement badge (ignored), slot 2 = lock. No astral/elixir.
+    Weapon,
+}
+
+/// Per-item detection result from a single pass.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GridIconResult {
+    pub lock: bool,
+    pub astral: bool,
+    pub elixir: bool,
+}
+
+/// Accumulated detection results for a full page with majority voting.
+pub struct GridPageDetection {
+    /// Results per item index (absolute), accumulated across passes.
+    /// Each entry holds vote counts: (lock_yes, lock_no, astral_yes, astral_no, elixir_yes, elixir_no)
+    votes: Vec<(u32, u32, u32, u32, u32, u32)>,
+    /// The first absolute item index on this page.
+    page_start: usize,
+    /// Number of items on this page.
+    page_items: usize,
+    /// Icon slot layout mode.
+    mode: GridMode,
+    /// Cached grid calibration offset (base resolution).
+    /// Computed on the first detection pass and reused for subsequent passes,
+    /// since the grid position doesn't change between captures of the same page.
+    cached_offset: Option<(f64, f64)>,
+}
+
+impl GridPageDetection {
+    /// Create a new detection accumulator for a page.
+    pub fn new(page_start: usize, page_items: usize) -> Self {
+        Self::with_mode(page_start, page_items, GridMode::Artifact)
+    }
+
+    /// Create a new detection accumulator for a page with explicit mode.
+    pub fn with_mode(page_start: usize, page_items: usize, mode: GridMode) -> Self {
+        Self {
+            votes: vec![(0, 0, 0, 0, 0, 0); page_items],
+            page_start,
+            page_items,
+            mode,
+            cached_offset: None,
+        }
+    }
+
+    /// Run one detection pass on a full screenshot and accumulate votes.
+    ///
+    /// `selected_item` is the absolute index of the currently selected item
+    /// (which has an animated border — its detection is less reliable, but we
+    /// still include it since the crop area is tolerant enough).
+    pub fn detect_pass(
+        &mut self,
+        image: &RgbImage,
+        scaler: &CoordScaler,
+        _selected_item: usize,
+    ) {
+        // Calibrate on first pass, reuse for subsequent passes
+        let (off_x, off_y) = match self.cached_offset {
+            Some(offset) => offset,
+            None => {
+                let offset = calibrate_grid(image, scaler, self.mode);
+                self.cached_offset = Some(offset);
+                offset
+            }
+        };
+
+        let results = detect_page_icons(image, scaler, self.page_items, off_x, off_y, self.mode);
+        for (i, result) in results.iter().enumerate() {
+            let v = &mut self.votes[i];
+            if result.lock { v.0 += 1; } else { v.1 += 1; }
+            if result.astral { v.2 += 1; } else { v.3 += 1; }
+            if result.elixir { v.4 += 1; } else { v.5 += 1; }
+        }
+    }
+
+    /// Get the majority-vote result for an absolute item index.
+    /// Returns `None` if the index is outside this page.
+    pub fn get(&self, abs_index: usize) -> Option<GridIconResult> {
+        if abs_index < self.page_start || abs_index >= self.page_start + self.page_items {
+            return None;
+        }
+        let i = abs_index - self.page_start;
+        let v = &self.votes[i];
+        Some(GridIconResult {
+            lock: v.0 > v.1,
+            astral: v.2 > v.3,
+            elixir: v.4 > v.5,
+        })
+    }
+
+    /// Number of detection passes accumulated so far.
+    pub fn pass_count(&self) -> u32 {
+        if self.page_items == 0 { return 0; }
+        let v = &self.votes[0];
+        v.0 + v.1 // lock_yes + lock_no = total passes
+    }
+}
+
+// ================================================================
+// Lightness Summed Area Table (SAT) for efficient grid calibration
+// ================================================================
+
+/// Summed area table of pixel lightness values for O(1) rectangle queries.
+///
+/// Lightness L = (max(R,G,B) + min(R,G,B)) / 2, normalized to [0, 1].
+/// The SAT enables computing the sum of L within any rectangle in constant time.
+struct LightnessSat {
+    /// SAT data, dimensions (h+1) × (w+1). Row-major, 0-indexed.
+    /// sat[(y+1) * stride + (x+1)] = sum of L for pixels [0..y, 0..x].
+    data: Vec<f64>,
+    w: usize,
+    h: usize,
+}
+
+impl LightnessSat {
+    /// Build the SAT from an RGB image.
+    fn new(image: &RgbImage) -> Self {
+        let w = image.width() as usize;
+        let h = image.height() as usize;
+        let stride = w + 1;
+        let mut data = vec![0.0f64; (h + 1) * stride];
+
+        for y in 0..h {
+            for x in 0..w {
+                let p = image.get_pixel(x as u32, y as u32);
+                let r = p[0] as f64 / 255.0;
+                let g = p[1] as f64 / 255.0;
+                let b = p[2] as f64 / 255.0;
+                let l = (r.max(g).max(b) + r.min(g).min(b)) / 2.0;
+                data[(y + 1) * stride + (x + 1)] = l
+                    + data[y * stride + (x + 1)]
+                    + data[(y + 1) * stride + x]
+                    - data[y * stride + x];
+            }
+        }
+
+        Self { data, w, h }
+    }
+
+    /// Sum of lightness values in the rectangle [x1, x2) × [y1, y2).
+    /// Coordinates are clamped to image bounds.
+    #[inline]
+    fn rect_sum(&self, x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
+        let x1 = (x1 as i32).clamp(0, self.w as i32) as usize;
+        let y1 = (y1 as i32).clamp(0, self.h as i32) as usize;
+        let x2 = (x2 as i32).clamp(0, self.w as i32) as usize;
+        let y2 = (y2 as i32).clamp(0, self.h as i32) as usize;
+        if x1 >= x2 || y1 >= y2 {
+            return 0.0;
+        }
+        let s = self.w + 1;
+        self.data[y2 * s + x2] - self.data[y1 * s + x2]
+            - self.data[y2 * s + x1] + self.data[y1 * s + x1]
+    }
+}
+
+// ================================================================
+// Grid calibration via lightness template matching
+// ================================================================
+
+/// Calibrate grid offset using lightness-based template matching.
+///
+/// Uses a summed area table (SAT) for O(1) rectangle queries. The template has:
+/// - Column gaps (-1): dark vertical stripes between card columns → sharp X signal
+/// - Row boundary edges: +1 at card bottom (white level band) then -1 at gap → Y signal
+///
+/// Search is decomposed into independent X and Y passes for efficiency:
+/// - X pass: score column gaps at each candidate gx (with expected gy)
+/// - Y pass: score row edges at each candidate gy (with best gx from X pass)
+///
+/// Returns `(off_x, off_y)` in 1080p base coordinates, relative to (GRID_CX, GRID_CY).
+/// For artifacts at page 0: off ≈ (0, 0). For weapons: off_y ≈ -57 (weapon grid is higher).
+/// Scroll position causes additional gy variation of ±12px at 1080p.
+fn calibrate_grid(
+    image: &RgbImage,
+    scaler: &CoordScaler,
+    mode: GridMode,
+) -> (f64, f64) {
+    let sat = LightnessSat::new(image);
+
+    // Scale all constants to actual resolution
+    let grid_cx = scaler.scale_x(GRID_CX);
+    let grid_cy = scaler.scale_y(GRID_CY);
+    let grid_ox = scaler.scale_x(GRID_OX);
+    let grid_oy = scaler.scale_y(GRID_OY);
+    let card_w = scaler.scale_x(CARD_W);
+    let card_h = scaler.scale_y(CARD_H);
+    let edge_w = scaler.scale_y(EDGE_W);
+    let search_r = scaler.factor_y().max(1.0) as i32 * SEARCH_R as i32;
+
+    let gap_w = grid_ox - card_w;
+    let gap_h = grid_oy - card_h;
+
+    // Expected grid center Y (mode-dependent)
+    let exp_cy = match mode {
+        GridMode::Artifact => grid_cy,
+        GridMode::Weapon => grid_cy + scaler.scale_y(WEAPON_CY_OFFSET),
+    };
+
+    // --- Step 1: Find best gx using column gap score ---
+    let mut best_x_score = f64::NEG_INFINITY;
+    let mut best_gx = grid_cx;
+
+    for dx in -search_r..=search_r {
+        let gx = grid_cx + dx as f64;
+        let mut score = 0.0;
+
+        // Column gaps: 7 gaps × 5 rows, each is a dark vertical stripe
+        for col in 0..(COLS - 1) {
+            let gap_cx = gx + col as f64 * grid_ox + grid_ox / 2.0;
+            let gx1 = gap_cx - gap_w / 2.0;
+            let gx2 = gap_cx + gap_w / 2.0;
+            for row in 0..ROWS {
+                let cy = exp_cy + row as f64 * grid_oy;
+                score -= sat.rect_sum(gx1, cy - card_h / 2.0, gx2, cy + card_h / 2.0);
+            }
+        }
+
+        if score > best_x_score {
+            best_x_score = score;
+            best_gx = gx;
+        }
+    }
+
+    // --- Step 2: Find best gy using row edge score ---
+    let mut best_y_score = f64::NEG_INFINITY;
+    let mut best_gy = exp_cy;
+
+    for dy in -search_r..=search_r {
+        let gy = exp_cy + dy as f64;
+        let mut score = 0.0;
+
+        // Row boundary edges: 4 boundaries × 8 columns
+        // +1 at white band (card bottom), -1 at dark row gap
+        for row in 0..(ROWS - 1) {
+            let y_bot = gy + row as f64 * grid_oy + card_h / 2.0;
+            for col in 0..COLS {
+                let cx = best_gx + col as f64 * grid_ox;
+                let xl = cx - card_w / 2.0;
+                let xr = cx + card_w / 2.0;
+
+                // +1: bright band at card bottom (white level band area)
+                score += sat.rect_sum(xl, y_bot - edge_w, xr, y_bot);
+                // -1: dark row gap
+                score -= sat.rect_sum(xl, y_bot, xr, y_bot + gap_h);
+            }
+        }
+
+        if score > best_y_score {
+            best_y_score = score;
+            best_gy = gy;
+        }
+    }
+
+    // Convert offset to 1080p base coordinates (relative to GRID_CX, GRID_CY)
+    let off_x = (best_gx - grid_cx) / scaler.factor_x();
+    let off_y = (best_gy - grid_cy) / scaler.factor_y();
+
+    debug!(
+        "[grid-cal] 网格校准: gx={:.1} gy={:.1} 偏移=({:+.1},{:+.1}) 模式={:?} / \
+         [grid-cal] grid calibration: gx={:.1} gy={:.1} offset=({:+.1},{:+.1}) mode={:?}",
+        best_gx, best_gy, off_x, off_y, mode,
+        best_gx, best_gy, off_x, off_y, mode,
+    );
+
+    (off_x, off_y)
+}
+
+// ================================================================
+// Icon detection
+// ================================================================
+
+/// Detect icons for all items on a page from a single full screenshot.
+///
+/// Uses a pre-computed grid offset to position icon slot sampling areas.
+fn detect_page_icons(
+    image: &RgbImage,
+    scaler: &CoordScaler,
+    page_items: usize,
+    off_x: f64,
+    off_y: f64,
+    mode: GridMode,
+) -> Vec<GridIconResult> {
+    let mut results = Vec::with_capacity(page_items);
+    for i in 0..page_items {
+        let row = i / COLS;
+        let col = i % COLS;
+
+        // Cell center (1080p base coords) with calibration offset
+        let cx = GRID_CX + col as f64 * GRID_OX + off_x;
+        let cy = GRID_CY + row as f64 * GRID_OY + off_y;
+
+        // Icon slot 1 position (= cell center + lock offset)
+        let slot_x = cx + LOCK_DX;
+        let slot1_y = cy + LOCK_DY;
+
+        match mode {
+            GridMode::Artifact => {
+                // Artifact: slot 1 = lock, slot 2 = astral (if locked), slot 3 = elixir
+                let slot1_color = sample_mean_color(image, scaler, slot_x, slot1_y);
+                let has_lock = is_lock_color(&slot1_color);
+
+                let mut has_astral = false;
+                let mut has_elixir = false;
+
+                let slot2_y = slot1_y + SLOT_SPACING;
+                let slot2_color = sample_mean_color(image, scaler, slot_x, slot2_y);
+
+                if has_lock && is_astral_color(&slot2_color) {
+                    has_astral = true;
+                } else if is_elixir_color(&slot2_color) {
+                    has_elixir = true;
+                }
+
+                if has_lock && has_astral && !has_elixir {
+                    let slot3_y = slot1_y + 2.0 * SLOT_SPACING;
+                    let slot3_color = sample_mean_color(image, scaler, slot_x, slot3_y);
+                    if is_elixir_color(&slot3_color) {
+                        has_elixir = true;
+                    }
+                }
+
+                if has_astral && !has_lock {
+                    debug!("[grid-icon] idx={} 星辉但无锁，强制锁定 / [grid-icon] idx={} astral but no lock, forcing lock", i, i);
+                }
+
+                results.push(GridIconResult { lock: has_lock, astral: has_astral, elixir: has_elixir });
+            }
+            GridMode::Weapon => {
+                // Weapon: slot 1 = refinement badge (ignored), slot 2 = lock. No astral/elixir.
+                let slot2_y = slot1_y + SLOT_SPACING;
+                let slot2_color = sample_mean_color(image, scaler, slot_x, slot2_y);
+                let has_lock = is_lock_color(&slot2_color);
+
+                results.push(GridIconResult { lock: has_lock, astral: false, elixir: false });
+            }
+        }
+    }
+
+    results
+}
+
+/// Mean color (R, G, B) of a small crop area around a base-resolution point.
+fn sample_mean_color(
+    image: &RgbImage,
+    scaler: &CoordScaler,
+    base_x: f64,
+    base_y: f64,
+) -> (f64, f64, f64) {
+    let cx = scaler.scale_x(base_x);
+    let cy = scaler.scale_y(base_y);
+    let half_w = scaler.scale_x(CROP_HALF);
+    let half_h = scaler.scale_y(CROP_HALF);
+
+    let img_w = image.width();
+    let img_h = image.height();
+
+    let x1 = ((cx - half_w) as u32).max(0).min(img_w.saturating_sub(1));
+    let y1 = ((cy - half_h) as u32).max(0).min(img_h.saturating_sub(1));
+    let x2 = ((cx + half_w) as u32).min(img_w);
+    let y2 = ((cy + half_h) as u32).min(img_h);
+
+    let mut sum_r: f64 = 0.0;
+    let mut sum_g: f64 = 0.0;
+    let mut sum_b: f64 = 0.0;
+    let mut count: u32 = 0;
+
+    for py in y1..y2 {
+        for px in x1..x2 {
+            let pixel = image.get_pixel(px, py);
+            sum_r += pixel[0] as f64;
+            sum_g += pixel[1] as f64;
+            sum_b += pixel[2] as f64;
+            count += 1;
+        }
+    }
+
+    if count == 0 {
+        return (0.0, 0.0, 0.0);
+    }
+
+    (sum_r / count as f64, sum_g / count as f64, sum_b / count as f64)
+}
+
+fn is_lock_color(color: &(f64, f64, f64)) -> bool {
+    let (r, g, _b) = *color;
+    r > LOCK_R_MIN && (r - g) > LOCK_RG_DIFF_MIN
+}
+
+fn is_astral_color(color: &(f64, f64, f64)) -> bool {
+    let (_r, g, b) = *color;
+    (g - b) > ASTRAL_GB_DIFF_MIN
+}
+
+fn is_elixir_color(color: &(f64, f64, f64)) -> bool {
+    let (_r, g, b) = *color;
+    (b - g) > ELIXIR_BG_DIFF_MIN && b > ELIXIR_B_MIN
+}

@@ -33,20 +33,18 @@ pub fn show_with(ui: &mut egui::Ui, l: Lang, log_lines: &Arc<Mutex<Vec<LogEntry>
         .auto_shrink([false; 2])
         .stick_to_bottom(true)
         .show(ui, |ui| {
+            // Build all log text into one string for a single selectable TextEdit.
+            // This allows copy/paste and selection survives repaints.
+            let mut full_text = String::new();
             for entry in lines.iter() {
-                let color = match entry.level {
-                    log::Level::Error => egui::Color32::from_rgb(255, 100, 100),
-                    log::Level::Warn => egui::Color32::from_rgb(255, 200, 50),
-                    log::Level::Info => egui::Color32::from_rgb(200, 200, 200),
-                    log::Level::Debug => egui::Color32::from_rgb(150, 150, 150),
-                    log::Level::Trace => egui::Color32::from_rgb(100, 100, 100),
-                };
-                let text = format!("{} {}", entry.timestamp, entry.message);
-                ui.label(
-                    egui::RichText::new(text)
-                        .text_style(egui::TextStyle::Monospace)
-                        .color(color),
-                );
+                if !full_text.is_empty() { full_text.push('\n'); }
+                full_text.push_str(&format!("{} {}", entry.timestamp, entry.message));
             }
+            ui.add(
+                egui::TextEdit::multiline(&mut full_text.as_str())
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(1),
+            );
         });
 }

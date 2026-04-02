@@ -904,11 +904,14 @@ impl GoodCharacterScanner {
         // Return to main world using BGI-style strategy:
         // press Escape one at a time, verify after each press.
         ctrl.focus_game_window();
+        if ctrl.check_rmb() { anyhow::bail!("cancelled"); }
         ctrl.return_to_main_ui(8);
+        if ctrl.check_rmb() { anyhow::bail!("cancelled"); }
 
         // Open character screen with retry.
         let mut screen_opened = false;
         for attempt in 0..3 {
+            if ctrl.check_rmb() { anyhow::bail!("cancelled"); }
             ctrl.key_press(enigo::Key::Layout('c'));
             utils::sleep(self.config.open_delay as u32);
 

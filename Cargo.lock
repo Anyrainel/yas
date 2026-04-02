@@ -6287,6 +6287,7 @@ dependencies = [
  "env_logger",
  "image 0.24.9",
  "log",
+ "rand 0.8.5",
  "rfd",
  "serde",
  "serde_json",

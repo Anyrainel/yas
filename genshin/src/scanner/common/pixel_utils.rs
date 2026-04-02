@@ -134,6 +134,20 @@ pub fn detect_dark_icon(
     d1
 }
 
+/// Check if the "5-star sort by acquired time" filter is active.
+/// When active, the pixel at ARTIFACT_FIVE_STAR_FILTER_POS is light (not dark).
+/// Uses the same brightness < 128 threshold as `is_pixel_dark`.
+pub fn is_five_star_filter_active(image: &RgbImage, scaler: &CoordScaler) -> bool {
+    use super::constants::ARTIFACT_FIVE_STAR_FILTER_POS;
+    let bright = !is_pixel_dark(image, scaler, ARTIFACT_FIVE_STAR_FILTER_POS.0, ARTIFACT_FIVE_STAR_FILTER_POS.1);
+    if bright {
+        log::info!(
+            "[backpack] 检测到五星排序筛选已开启，将点击关闭 / [backpack] 5-star sort filter detected as active, will click to dismiss"
+        );
+    }
+    bright
+}
+
 /// Detect weapon rarity from star pixels.
 ///
 /// Scans the star row at y=STAR_Y. Returns 5, 4, 3, or 2.

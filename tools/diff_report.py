@@ -73,7 +73,7 @@ def compare_substats(expected_subs, actual_subs):
             diffs.append((f"substats.{k}", "missing", str(av)))
         elif av is None:
             diffs.append((f"substats.{k}", str(ev), "missing"))
-        elif abs(ev - av) > 0.15:
+        elif abs(ev - av) > 0.1 + 1e-6:
             diffs.append((f"substats.{k}", str(ev), str(av)))
     return diffs
 
@@ -82,7 +82,8 @@ def _diff_score(diffs):
     """Weighted score for a diff list — higher means worse match.
 
     Weights prioritize structural similarity:
-    - setKey/slotKey/mainStatKey: 1000 (completely different artifact)
+    - slotKey: 5000 (slot is fundamental to artifact identity)
+    - setKey/mainStatKey: 1000 (completely different artifact)
     - substats.count / unactivatedSubstats.count: 200 (structural shape)
     - level/rarity: 100 (major metadata mismatch)
     - missing/extra substat keys: 20 (structural mismatch)
@@ -90,7 +91,9 @@ def _diff_score(diffs):
     """
     score = 0
     for f, ev, av in diffs:
-        if f in ("setKey", "slotKey", "mainStatKey"):
+        if f == "slotKey":
+            score += 5000
+        elif f in ("setKey", "mainStatKey"):
             score += 1000
         elif f.endswith(".count"):
             score += 200
@@ -256,71 +259,116 @@ def compare_substats_named(prefix, expected_subs, actual_subs):
             diffs.append((f"{prefix}.{k}", "missing", str(av)))
         elif av is None:
             diffs.append((f"{prefix}.{k}", str(ev), "missing"))
-        elif abs(ev - av) > 0.15:
+        elif abs(ev - av) > 0.1 + 1e-6:
             diffs.append((f"{prefix}.{k}", str(ev), str(av)))
     return diffs
 
 
-def diff_weapons(expected, actual):
-    """Match and diff weapons using two-phase approach.
+def _weapon_diff_score(diffs):
+    """Weighted score for weapon diffs — higher means worse match.
 
-    Phase 1: Find exact matches (0 diffs) within each key group.
-    Phase 2: Pair remaining unmatched items by fewest diffs across all groups.
+    Weights:
+    - key: 1000 (completely different weapon)
+    - level/ascension/rarity: 100 (major metadata)
+    - refinement/location/lock: 10 (minor metadata)
+    """
+    score = 0
+    for f, ev, av in diffs:
+        if f == "key":
+            score += 1000
+        elif f in ("level", "ascension", "rarity"):
+            score += 100
+        else:
+            score += 10
+    return score
+
+
+def _match_weapons_within_group(exp_list, act_list):
+    """Optimal matching within a weapon group using the Hungarian algorithm.
+
+    Returns (matched_pairs, unmatched_exp, unmatched_act).
+    """
+    if not exp_list or not act_list:
+        return [], list(exp_list), list(act_list)
+
+    n_exp = len(exp_list)
+    n_act = len(act_list)
+
+    cost = np.full((n_exp, n_act), 1e9)
+    diff_cache = {}
+    for ei_pos, (ei, exp) in enumerate(exp_list):
+        for ai_pos, (ai, act) in enumerate(act_list):
+            diffs = diff_single_weapon(exp, act)
+            score = _weapon_diff_score(diffs)
+            cost[ei_pos, ai_pos] = score
+            diff_cache[(ei_pos, ai_pos)] = (ei, ai, exp, act, diffs)
+
+    row_ind, col_ind = linear_sum_assignment(cost)
+
+    matched = []
+    used_exp = set()
+    used_act = set()
+    for r, c in zip(row_ind, col_ind):
+        if cost[r, c] < 1e9:
+            ei, ai, exp, act, diffs = diff_cache[(r, c)]
+            matched.append((ei, ai, exp, act, diffs))
+            used_exp.add(r)
+            used_act.add(c)
+
+    unmatched_exp = [(ei, exp) for pos, (ei, exp) in enumerate(exp_list) if pos not in used_exp]
+    unmatched_act = [(ai, act) for pos, (ai, act) in enumerate(act_list) if pos not in used_act]
+    return matched, unmatched_exp, unmatched_act
+
+
+def diff_weapons(expected, actual):
+    """Match and diff weapons using two-phase approach with Hungarian matching.
+
+    Phase 1: Within each (key, rarity) group, find optimal pairings.
+    Phase 2: Pair remaining cross-group items by fewest weighted diffs (Hungarian).
     """
     results = []
+
+    # Group by (key, rarity) — rarity is pixel-based and highly reliable
     exp_by_key = defaultdict(list)
     for i, w in enumerate(expected):
-        exp_by_key[w.get("key", "")].append((i, w))
+        key = (w.get("key", ""), w.get("rarity", 0))
+        exp_by_key[key].append((i, w))
     act_by_key = defaultdict(list)
     for i, w in enumerate(actual):
-        act_by_key[w.get("key", "")].append((i, w))
+        key = (w.get("key", ""), w.get("rarity", 0))
+        act_by_key[key].append((i, w))
 
     all_keys = sorted(set(list(exp_by_key.keys()) + list(act_by_key.keys())))
-    unmatched_exp = []
-    unmatched_act = []
+    cross_unmatched_exp = []
+    cross_unmatched_act = []
 
-    # Phase 1: exact matches
+    # Phase 1: optimal matching within each group
     for key in all_keys:
         exp_list = list(exp_by_key.get(key, []))
         act_list = list(act_by_key.get(key, []))
-        act_available = list(range(len(act_list)))
+        matched, um_exp, um_act = _match_weapons_within_group(exp_list, act_list)
 
-        for ei, exp in exp_list:
-            found = False
-            for pos_idx, pos in enumerate(act_available):
-                ai, act = act_list[pos]
-                if not diff_single_weapon(exp, act):
-                    act_available.pop(pos_idx)
-                    found = True
-                    break
-            if not found:
-                unmatched_exp.append((ei, exp))
-        for pos in act_available:
-            unmatched_act.append(act_list[pos])
+        for ei, ai, exp, act, diffs in matched:
+            if diffs:
+                results.append((ai, exp.get("key", "?"), diffs))
 
-    # Phase 2: pair unmatched by fewest diffs
-    remaining_act = list(range(len(unmatched_act)))
-    for ei, exp in unmatched_exp:
-        best_pos = None
-        best_diffs = None
-        best_len = float("inf")
-        for pos_idx, pos in enumerate(remaining_act):
-            ai, act = unmatched_act[pos]
-            diffs = diff_single_weapon(exp, act)
-            if len(diffs) < best_len:
-                best_len = len(diffs)
-                best_diffs = diffs
-                best_pos = pos_idx
-        if best_pos is not None:
-            ai, act = unmatched_act[remaining_act[best_pos]]
-            remaining_act.pop(best_pos)
-            if best_diffs:
-                results.append((ai, exp.get("key", "?"), best_diffs))
-        else:
-            results.append((ei, exp.get("key", "?"), [("_status", "MISSING from actual", "")]))
+        cross_unmatched_exp.extend(um_exp)
+        cross_unmatched_act.extend(um_act)
 
-    for pos in remaining_act:
-        ai, act = unmatched_act[pos]
+    # Phase 2: pair remaining cross-group items (Hungarian)
+    if cross_unmatched_exp and cross_unmatched_act:
+        matched, um_exp, um_act = _match_weapons_within_group(
+            cross_unmatched_exp, cross_unmatched_act)
+        for ei, ai, exp, act, diffs in matched:
+            if diffs:
+                results.append((ai, exp.get("key", "?"), diffs))
+        cross_unmatched_exp = um_exp
+        cross_unmatched_act = um_act
+
+    for ei, exp in cross_unmatched_exp:
+        results.append((ei, exp.get("key", "?"), [("_status", "MISSING from actual", "")]))
+
+    for ai, act in cross_unmatched_act:
         results.append((ai, act.get("key", "?"), [("_status", "", "EXTRA in actual")]))
 
     return results
