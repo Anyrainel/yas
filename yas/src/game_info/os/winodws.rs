@@ -9,9 +9,29 @@ fn is_window_cloud(title: &str) -> bool {
     title.starts_with("云")
 }
 
+/// Get the window class name (e.g. "UnityWndClass") for a given HWND.
+fn get_window_class(hwnd: HWND) -> Option<String> {
+    use std::os::windows::ffi::OsStringExt;
+    let mut buf: [u16; 256] = [0; 256];
+    let len = unsafe { GetClassNameW(hwnd, buf.as_mut_ptr(), 256) };
+    if len > 0 {
+        let s = std::ffi::OsString::from_wide(&buf[..len as usize]);
+        s.into_string().ok()
+    } else {
+        None
+    }
+}
+
+/// Known window classes for the actual game process.
+/// The launcher shares the same title but uses a different class.
+const GAME_WINDOW_CLASSES: &[&str] = &[
+    "UnityWndClass",         // local Genshin Impact / 原神
+    "Qt5152QWindowIcon",     // cloud 云·原神 (Qt-based)
+];
+
 fn get_window(window_names: &[&str]) -> Result<(HWND, bool)> {
     let handles = utils::iterate_window();
-    let mut viable_handles = Vec::new();
+    let mut viable_handles: Vec<(HWND, String, String)> = Vec::new(); // (hwnd, title, class)
     for hwnd in handles.iter() {
         let title = utils::get_window_title(*hwnd);
         if let Some(t) = title {
@@ -19,42 +39,69 @@ fn get_window(window_names: &[&str]) -> Result<(HWND, bool)> {
 
             for name in window_names.iter() {
                 if trimmed == *name {
-                    // return Ok((*hwnd, false));
-                    viable_handles.push((*hwnd, String::from(trimmed)));
+                    let class = get_window_class(*hwnd).unwrap_or_default();
+                    viable_handles.push((*hwnd, String::from(trimmed), class));
                 }
             }
         }
     }
 
-    // cloud games
-    // let cloud_game_names = [""]
-    // for name in get_cloud_window_name() {
-    //     let hwnd = utils::find_window_local(name);
-    //     if let Ok(hwnd) = hwnd {
-    //         return (hwnd, true);
-    //     }
-    // }
-
-    if viable_handles.len() == 1 {
-        return Ok((viable_handles[0].0, is_window_cloud(&viable_handles[0].1)));
-    } else if viable_handles.len() == 0 {
+    if viable_handles.is_empty() {
         return Err(anyhow!("未找到游戏窗口，请确认{:?}已经开启 / Game window not found, please make sure {:?} is running", window_names, window_names));
     }
 
+    // Log all matches for diagnostics (helps debug launcher interference).
+    for (hwnd, title, class) in &viable_handles {
+        log::info!(
+            "匹配到窗口 / Matched window: title={:?}, class={:?}, hwnd={:?}",
+            title, class, hwnd,
+        );
+    }
+
+    // Filter by known game window classes to exclude non-game windows
+    // (e.g. the HoYoPlay launcher creates a window titled "原神" too).
+    let game_only: Vec<_> = viable_handles.iter()
+        .filter(|(_, _, class)| GAME_WINDOW_CLASSES.iter().any(|&known| class == known))
+        .collect();
+
+    if game_only.len() == 1 {
+        let (hwnd, title, _) = game_only[0];
+        return Ok((*hwnd, is_window_cloud(title)));
+    }
+
+    // Class filter found 0 or >1 — fall back to title-only list.
+    if game_only.is_empty() && viable_handles.len() >= 1 {
+        log::warn!(
+            "标题匹配到 {} 个窗口但无已知游戏窗口类，将使用第一个 / \
+             {} windows matched by title but none have a known game class; using first match",
+            viable_handles.len(), viable_handles.len(),
+        );
+    }
+
+    let candidates: Vec<_> = if game_only.is_empty() {
+        viable_handles.iter().collect()
+    } else {
+        game_only
+    };
+
+    if candidates.len() == 1 {
+        let (hwnd, title, _) = candidates[0];
+        return Ok((*hwnd, is_window_cloud(title)));
+    }
+
+    // Still ambiguous — interactive selection (CLI) or first match (GUI).
     println!("{}", crate::lang::localize("找到多个符合名称的窗口，请手动选择窗口 / Multiple matching windows found, please select one:"));
-    for (i, (_hwnd, title)) in viable_handles.iter().enumerate() {
-        println!("{}: {}", i, title);
+    for (i, (_hwnd, title, class)) in candidates.iter().enumerate() {
+        println!("{}: {} [{}]", i, title, class);
     }
     let mut index = String::new();
-    let _ = stdin().read_line(&mut index);
-
-    let idx = index.trim().parse::<usize>()?;
-    if idx < viable_handles.len() {
-        let is_cloud = is_window_cloud(&viable_handles[idx].1);
-        Ok((viable_handles[idx].0, is_cloud))
-    } else {
-        Err(anyhow!("索引{}超出范围 / Index {} out of range", idx, idx))
-    }
+    let idx = match stdin().read_line(&mut index) {
+        Ok(_) => index.trim().parse::<usize>().unwrap_or(0),
+        Err(_) => 0,
+    };
+    let idx = idx.min(candidates.len() - 1);
+    let (hwnd, title, _) = candidates[idx];
+    Ok((*hwnd, is_window_cloud(title)))
 }
 
 pub fn get_game_info(window_names: &[&str]) -> Result<GameInfo> {
