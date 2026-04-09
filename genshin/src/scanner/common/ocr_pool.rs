@@ -81,8 +81,8 @@ impl Drop for OcrGuard {
 /// OCR pool sizing based on available system memory.
 ///
 /// Two tiers:
-/// - Normal (≥4 GB available): 2 v5 + 4 v4
-/// - Small  (<4 GB available): 1 v5 + 2 v4
+/// - Normal (≥8 GB available): 2 v5 + 4 v4
+/// - Small  (<8 GB available): 1 v5 + 2 v4
 #[derive(Clone, Debug)]
 pub struct OcrPoolConfig {
     pub v5_count: usize,
@@ -92,15 +92,15 @@ pub struct OcrPoolConfig {
 impl OcrPoolConfig {
     /// Detect available memory and choose pool sizes.
     pub fn detect() -> Self {
-        const FOUR_GB: u64 = 4 * 1024 * 1024 * 1024;
+        const EIGHT_GB: u64 = 8 * 1024 * 1024 * 1024;
 
         let available = yas::utils::available_memory_bytes();
         let (v5_count, v4_count) = match available {
-            Some(bytes) if bytes < FOUR_GB => {
+            Some(bytes) if bytes < EIGHT_GB => {
                 let gb = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
                 log::info!(
-                    "可用内存 {:.1} GB < 4 GB，使用小型OCR池 (1×v5 + 2×v4) / \
-                     Available memory {:.1} GB < 4 GB, using small OCR pool (1×v5 + 2×v4)",
+                    "可用内存 {:.1} GB < 8 GB，使用小型OCR池 (1×v5 + 2×v4) / \
+                     Available memory {:.1} GB < 8 GB, using small OCR pool (1×v5 + 2×v4)",
                     gb, gb,
                 );
                 (1, 2)

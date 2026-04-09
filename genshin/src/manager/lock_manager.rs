@@ -410,9 +410,14 @@ impl LockManager {
                         toggle_counter += 1;
 
                         if new_lock == toggle.desired_lock {
+                            let (cn, en) = if toggle.desired_lock {
+                                ("锁定成功", "Lock success")
+                            } else {
+                                ("解锁成功", "Unlock success")
+                            };
                             info!(
-                                "[lock_manager] 锁定切换成功 ({},{}) / Lock toggle success",
-                                toggle.row, toggle.col
+                                "[lock_manager] {} ({},{}) / {}",
+                                cn, toggle.row, toggle.col, en
                             );
                             results.insert(toggle.result_id.clone(), InstructionResult {
                                 id: toggle.result_id.clone(),

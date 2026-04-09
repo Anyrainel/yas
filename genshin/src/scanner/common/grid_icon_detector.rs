@@ -258,19 +258,21 @@ impl LightnessSat {
 // Grid calibration via lightness template matching
 // ================================================================
 
-/// Calibrate grid offset using lightness-based template matching.
+/// Calibrate grid Y offset using lightness-based template matching.
 ///
-/// Uses a summed area table (SAT) for O(1) rectangle queries. The template has:
-/// - Column gaps (-1): dark vertical stripes between card columns → sharp X signal
-/// - Row boundary edges: +1 at card bottom (white level band) then -1 at gap → Y signal
+/// The grid X position is anchored by the UI and never drifts — only vertical
+/// scroll displaces cards — so `off_x` is always 0; only `off_y` is searched.
+/// An earlier version tried to also search X by summing lightness in candidate
+/// gap rectangles, but because card interiors contain dark content (text, icons,
+/// borders) the score latched onto intra-card stripes ~22px off the true gap,
+/// causing 1500+ false unlocks across the inventory.
 ///
-/// Search is decomposed into independent X and Y passes for efficiency:
-/// - X pass: score column gaps at each candidate gx (with expected gy)
-/// - Y pass: score row edges at each candidate gy (with best gx from X pass)
+/// The Y score is: +1 at bright card-bottom level band, −1 at dark row gap,
+/// integrated over all 8 columns × 4 row boundaries.
 ///
-/// Returns `(off_x, off_y)` in 1080p base coordinates, relative to (GRID_CX, GRID_CY).
-/// For artifacts at page 0: off ≈ (0, 0). For weapons: off_y ≈ -57 (weapon grid is higher).
-/// Scroll position causes additional gy variation of ±12px at 1080p.
+/// Returns `(0.0, off_y)` in 1080p base coordinates. For artifacts: off_y ≈ 0
+/// at top of inventory; scroll causes ±12 px gy variation. For weapons: the
+/// expected center is shifted by `WEAPON_CY_OFFSET`.
 fn calibrate_grid(
     image: &RgbImage,
     scaler: &CoordScaler,
@@ -288,41 +290,15 @@ fn calibrate_grid(
     let edge_w = scaler.scale_y(EDGE_W);
     let search_r = scaler.factor_y().max(1.0) as i32 * SEARCH_R as i32;
 
-    let gap_w = grid_ox - card_w;
     let gap_h = grid_oy - card_h;
 
-    // Expected grid center Y (mode-dependent)
+    // Expected grid center Y (mode-dependent); X is fixed.
     let exp_cy = match mode {
         GridMode::Artifact => grid_cy,
         GridMode::Weapon => grid_cy + scaler.scale_y(WEAPON_CY_OFFSET),
     };
 
-    // --- Step 1: Find best gx using column gap score ---
-    let mut best_x_score = f64::NEG_INFINITY;
-    let mut best_gx = grid_cx;
-
-    for dx in -search_r..=search_r {
-        let gx = grid_cx + dx as f64;
-        let mut score = 0.0;
-
-        // Column gaps: 7 gaps × 5 rows, each is a dark vertical stripe
-        for col in 0..(COLS - 1) {
-            let gap_cx = gx + col as f64 * grid_ox + grid_ox / 2.0;
-            let gx1 = gap_cx - gap_w / 2.0;
-            let gx2 = gap_cx + gap_w / 2.0;
-            for row in 0..ROWS {
-                let cy = exp_cy + row as f64 * grid_oy;
-                score -= sat.rect_sum(gx1, cy - card_h / 2.0, gx2, cy + card_h / 2.0);
-            }
-        }
-
-        if score > best_x_score {
-            best_x_score = score;
-            best_gx = gx;
-        }
-    }
-
-    // --- Step 2: Find best gy using row edge score ---
+    // Find best gy using row edge score.
     let mut best_y_score = f64::NEG_INFINITY;
     let mut best_gy = exp_cy;
 
@@ -335,7 +311,7 @@ fn calibrate_grid(
         for row in 0..(ROWS - 1) {
             let y_bot = gy + row as f64 * grid_oy + card_h / 2.0;
             for col in 0..COLS {
-                let cx = best_gx + col as f64 * grid_ox;
+                let cx = grid_cx + col as f64 * grid_ox;
                 let xl = cx - card_w / 2.0;
                 let xr = cx + card_w / 2.0;
 
@@ -352,18 +328,16 @@ fn calibrate_grid(
         }
     }
 
-    // Convert offset to 1080p base coordinates (relative to GRID_CX, GRID_CY)
-    let off_x = (best_gx - grid_cx) / scaler.factor_x();
     let off_y = (best_gy - grid_cy) / scaler.factor_y();
 
     debug!(
-        "[grid-cal] 网格校准: gx={:.1} gy={:.1} 偏移=({:+.1},{:+.1}) 模式={:?} / \
-         [grid-cal] grid calibration: gx={:.1} gy={:.1} offset=({:+.1},{:+.1}) mode={:?}",
-        best_gx, best_gy, off_x, off_y, mode,
-        best_gx, best_gy, off_x, off_y, mode,
+        "[grid-cal] 网格校准: gy={:.1} 偏移_y={:+.1} 模式={:?} / \
+         [grid-cal] grid calibration: gy={:.1} off_y={:+.1} mode={:?}",
+        best_gy, off_y, mode,
+        best_gy, off_y, mode,
     );
 
-    (off_x, off_y)
+    (0.0, off_y)
 }
 
 // ================================================================
