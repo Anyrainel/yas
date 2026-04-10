@@ -122,6 +122,7 @@ enum ArtifactCache {
 /// Allowed production origins.
 const ALLOWED_ORIGINS: &[&str] = &[
     "https://ggartifact.com",
+    "http://ggartifact.com",
 ];
 
 /// Check if an origin is allowed.
@@ -186,6 +187,7 @@ fn cors_headers(origin: &str) -> Vec<Header> {
         Header::from_bytes("Access-Control-Allow-Origin", origin).unwrap(),
         Header::from_bytes("Access-Control-Allow-Methods", "GET, POST, OPTIONS").unwrap(),
         Header::from_bytes("Access-Control-Allow-Headers", "Content-Type").unwrap(),
+        Header::from_bytes("Access-Control-Allow-Private-Network", "true").unwrap(),
         Header::from_bytes("Content-Type", "application/json; charset=utf-8").unwrap(),
     ]
 }
