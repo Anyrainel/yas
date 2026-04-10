@@ -41,12 +41,20 @@ pub enum TaskStatus {
     Failed(String),
 }
 
+/// Which tab a log entry belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogSource {
+    Scanner,
+    Manager,
+}
+
 /// A single log entry displayed in the log panel.
 #[derive(Clone, Debug)]
 pub struct LogEntry {
     pub level: log::Level,
     pub message: String,
     pub timestamp: String,
+    pub source: LogSource,
 }
 
 /// State of the auto-update check.
@@ -114,8 +122,9 @@ pub struct AppState {
     pub update_inventory: bool,
     pub manager_dump_images: bool,
     pub server_status: Arc<Mutex<TaskStatus>>,
-    // --- Shared log buffer ---
-    pub log_lines: Arc<Mutex<Vec<LogEntry>>>,
+    // --- Per-tab log buffers ---
+    pub scanner_log_lines: Arc<Mutex<Vec<LogEntry>>>,
+    pub manager_log_lines: Arc<Mutex<Vec<LogEntry>>>,
 }
 
 impl AppState {
@@ -146,7 +155,8 @@ impl AppState {
             update_inventory: true,
             manager_dump_images: false,
             server_status: Arc::new(Mutex::new(TaskStatus::Idle)),
-            log_lines: Arc::new(Mutex::new(Vec::with_capacity(1000))),
+            scanner_log_lines: Arc::new(Mutex::new(Vec::with_capacity(1000))),
+            manager_log_lines: Arc::new(Mutex::new(Vec::with_capacity(1000))),
         }
     }
 

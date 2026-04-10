@@ -2,23 +2,31 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 
-use super::state::{AppState, Lang, LogEntry};
+use super::state::{Lang, LogEntry};
 
-/// Show the log panel using an AppState reference (convenience wrapper).
-pub fn show(ui: &mut egui::Ui, state: &AppState) {
-    show_with(ui, state.lang, &state.log_lines);
-}
-
-/// Show the log panel with explicit parameters (used by standalone binaries).
+/// Show the log panel with explicit parameters.
 pub fn show_with(ui: &mut egui::Ui, l: Lang, log_lines: &Arc<Mutex<Vec<LogEntry>>>) {
+    // Build the full text once — shared between the Copy button and the TextEdit.
+    let (count, full_text) = {
+        let lines = log_lines.lock().unwrap();
+        let mut s = String::new();
+        for entry in lines.iter() {
+            if !s.is_empty() { s.push('\n'); }
+            s.push_str(&format!("{} {}", entry.timestamp, entry.message));
+        }
+        (lines.len(), s)
+    };
+
     ui.horizontal(|ui| {
         ui.strong(l.t("日志", "Log"));
-        let count = log_lines.lock().unwrap().len();
         if count > 0 {
             ui.colored_label(
                 egui::Color32::from_rgb(120, 120, 120),
                 format!("({})", count),
             );
+            if ui.small_button(l.t("复制", "Copy")).clicked() {
+                ui.ctx().copy_text(full_text.clone());
+            }
             if ui.small_button(l.t("清除", "Clear")).clicked() {
                 log_lines.lock().unwrap().clear();
             }
@@ -27,19 +35,10 @@ pub fn show_with(ui: &mut egui::Ui, l: Lang, log_lines: &Arc<Mutex<Vec<LogEntry>
 
     ui.separator();
 
-    let lines = log_lines.lock().unwrap();
-
     egui::ScrollArea::vertical()
         .auto_shrink([false; 2])
         .stick_to_bottom(true)
         .show(ui, |ui| {
-            // Build all log text into one string for a single selectable TextEdit.
-            // This allows copy/paste and selection survives repaints.
-            let mut full_text = String::new();
-            for entry in lines.iter() {
-                if !full_text.is_empty() { full_text.push('\n'); }
-                full_text.push_str(&format!("{} {}", entry.timestamp, entry.message));
-            }
             ui.add(
                 egui::TextEdit::multiline(&mut full_text.as_str())
                     .font(egui::TextStyle::Monospace)

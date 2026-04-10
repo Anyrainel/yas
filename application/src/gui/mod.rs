@@ -25,7 +25,11 @@ pub fn run_gui() {
     yas::lang::set_lang(state.lang.to_str());
 
     // Init GUI logger (replaces env_logger in GUI mode)
-    let logger = log_bridge::GuiLogger::new(state.log_lines.clone(), 2000);
+    let logger = log_bridge::GuiLogger::new(
+        state.scanner_log_lines.clone(),
+        state.manager_log_lines.clone(),
+        2000,
+    );
     logger.init();
 
     // Kick off background update check
@@ -162,13 +166,19 @@ impl eframe::App for GuiApp {
         // Update banner (between tabs and content)
         show_update_banner(ctx, &self.state);
 
-        // Bottom panel: shared log area
+        // Bottom panel: per-tab log area.
+        // Manager tab shows manager logs; everything else shows scanner logs
+        // (scanner tab, capture tab, credits, plus startup/update logs).
+        let log_buf = match self.active_tab {
+            ActiveTab::Manager => &self.state.manager_log_lines,
+            _ => &self.state.scanner_log_lines,
+        };
         egui::TopBottomPanel::bottom("logs")
             .min_height(120.0)
             .default_height(300.0)
             .resizable(true)
             .show(ctx, |ui| {
-                log_panel::show(ui, &self.state);
+                log_panel::show_with(ui, self.state.lang, log_buf);
             });
 
         // Check cross-tab running states for mutual exclusion

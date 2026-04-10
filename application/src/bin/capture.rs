@@ -23,9 +23,11 @@ fn main() {
     yas::lang::set_lang(lang.to_str());
 
     let log_lines: Arc<Mutex<Vec<LogEntry>>> = Arc::new(Mutex::new(Vec::with_capacity(1000)));
+    // Standalone capture binary: route both sources to the same buffer.
+    let manager_log_lines: Arc<Mutex<Vec<LogEntry>>> = log_lines.clone();
 
     // Init GUI logger
-    let logger = log_bridge::GuiLogger::new(log_lines.clone(), 2000);
+    let logger = log_bridge::GuiLogger::new(log_lines.clone(), manager_log_lines, 2000);
     logger.init();
 
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon_64.png"))

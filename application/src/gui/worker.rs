@@ -1,7 +1,8 @@
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
-use super::state::{AppState, Lang, TaskStatus};
+use super::log_bridge;
+use super::state::{AppState, Lang, LogSource, TaskStatus};
 
 /// Handle to a running background task.
 pub struct TaskHandle {
@@ -74,6 +75,7 @@ pub fn spawn_scan(state: &AppState) -> TaskHandle {
     let abort_hint = lang.t("鼠标右键终止", "Right-click to abort");
 
     let handle = thread::spawn(move || {
+        log_bridge::set_thread_log_source(LogSource::Scanner);
         let status_for_panic = status.clone();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // Ensure ONNX runtime on the worker thread
@@ -139,6 +141,7 @@ pub fn spawn_server(state: &AppState) -> TaskHandle {
     *status.lock().unwrap() = TaskStatus::Running(msg);
 
     let handle = thread::spawn(move || {
+        log_bridge::set_thread_log_source(LogSource::Manager);
         let status_for_panic = status.clone();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // Ensure ONNX runtime

@@ -1,19 +1,53 @@
+use std::cell::Cell;
 use std::sync::{Arc, Mutex};
 
 use log::{Level, LevelFilter, Log, Metadata, Record};
 
-use super::state::LogEntry;
+use super::state::{LogEntry, LogSource};
 
-/// Custom logger that routes `log` crate output to a shared buffer for GUI display,
+thread_local! {
+    /// Per-thread override for log routing. When set, logs on this thread
+    /// (regardless of module path) are routed to the specified source.
+    /// Used by `worker::spawn_server` so that logs emitted from `yas_genshin::cli`
+    /// during server startup are classified as Manager.
+    static LOG_SOURCE_OVERRIDE: Cell<Option<LogSource>> = const { Cell::new(None) };
+}
+
+/// Set the log source override for the current thread.
+pub fn set_thread_log_source(src: LogSource) {
+    LOG_SOURCE_OVERRIDE.with(|c| c.set(Some(src)));
+}
+
+fn classify(record: &Record) -> LogSource {
+    if let Some(src) = LOG_SOURCE_OVERRIDE.with(|c| c.get()) {
+        return src;
+    }
+    match record.module_path() {
+        Some(p)
+            if p.starts_with("yas_genshin::manager")
+                || p.starts_with("yas_genshin::server") =>
+        {
+            LogSource::Manager
+        }
+        _ => LogSource::Scanner,
+    }
+}
+
+/// Custom logger that routes `log` crate output to per-tab buffers for GUI display,
 /// and optionally to a file in the `log/` directory.
 pub struct GuiLogger {
-    lines: Arc<Mutex<Vec<LogEntry>>>,
+    scanner: Arc<Mutex<Vec<LogEntry>>>,
+    manager: Arc<Mutex<Vec<LogEntry>>>,
     max_lines: usize,
     log_file: Option<Mutex<std::fs::File>>,
 }
 
 impl GuiLogger {
-    pub fn new(lines: Arc<Mutex<Vec<LogEntry>>>, max_lines: usize) -> Self {
+    pub fn new(
+        scanner: Arc<Mutex<Vec<LogEntry>>>,
+        manager: Arc<Mutex<Vec<LogEntry>>>,
+        max_lines: usize,
+    ) -> Self {
         // Create log/ directory and open a timestamped log file
         let log_file = std::fs::create_dir_all("log")
             .ok()
@@ -22,7 +56,7 @@ impl GuiLogger {
                 std::fs::File::create(format!("log/run_{}.log", ts)).ok()
             })
             .map(Mutex::new);
-        Self { lines, max_lines, log_file }
+        Self { scanner, manager, max_lines, log_file }
     }
 
     pub fn init(self) {
@@ -41,12 +75,18 @@ impl Log for GuiLogger {
             let raw = format!("{}", record.args());
             let localized = yas::lang::localize(&raw);
             let ts = format_timestamp();
+            let source = classify(record);
             let entry = LogEntry {
                 level: record.level(),
                 message: localized.clone(),
                 timestamp: ts.clone(),
+                source,
             };
-            if let Ok(mut lines) = self.lines.lock() {
+            let buf = match source {
+                LogSource::Scanner => &self.scanner,
+                LogSource::Manager => &self.manager,
+            };
+            if let Ok(mut lines) = buf.lock() {
                 lines.push(entry);
                 if lines.len() > self.max_lines {
                     let excess = lines.len() - self.max_lines;
