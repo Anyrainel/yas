@@ -124,7 +124,7 @@ impl eframe::App for CaptureApp {
                     show_help_section(ui, l);
                 }
                 ActiveTab::Credits => {
-                    credits::show(ui, l);
+                    credits::show(ui, l, credits::CreditSet::Capture);
                 }
             }
         });

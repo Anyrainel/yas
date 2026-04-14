@@ -2,8 +2,17 @@ use eframe::egui;
 
 use super::state::Lang;
 
+/// Which set of credits to display.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CreditSet {
+    /// GOODScanner: OCR-based scanning credits (no capture libs).
+    Scanner,
+    /// GOODCapture: packet-capture credits only.
+    Capture,
+}
+
 /// Render the credits / third-party attribution panel.
-pub fn show(ui: &mut egui::Ui, l: Lang) {
+pub fn show(ui: &mut egui::Ui, l: Lang, set: CreditSet) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 6.0;
 
@@ -16,65 +25,71 @@ pub fn show(ui: &mut egui::Ui, l: Lang) {
         );
         ui.add_space(4.0);
 
-        entry(
-            ui,
-            l,
-            "yas",
-            "wormtql",
-            "https://github.com/wormtql/yas",
-            l.t(
-                "基础平台控制、屏幕捕获与 OCR（原始项目）",
-                "Base platform control, screen capture, and OCR (original project)",
-            ),
-        );
+        if set == CreditSet::Scanner {
+            entry(
+                ui,
+                l,
+                "yas",
+                "wormtql",
+                "https://github.com/wormtql/yas",
+                l.t(
+                    "基础平台控制、屏幕捕获与 OCR（原始项目）",
+                    "Base platform control, screen capture, and OCR (original project)",
+                ),
+            );
 
-        entry(
-            ui,
-            l,
-            "yas",
-            "1803233552",
-            "https://github.com/1803233552/yas",
-            l.t(
-                "基础平台控制、屏幕捕获与 OCR（分支版本）",
-                "Base platform control, screen capture, and OCR (fork)",
-            ),
-        );
+            entry(
+                ui,
+                l,
+                "yas",
+                "1803233552",
+                "https://github.com/1803233552/yas",
+                l.t(
+                    "基础平台控制、屏幕捕获与 OCR（分支版本）",
+                    "Base platform control, screen capture, and OCR (fork)",
+                ),
+            );
+        }
 
-        entry(
-            ui,
-            l,
-            "Irminsul",
-            "Erik Gilling (konkers)",
-            "https://github.com/konkers/irminsul",
-            l.t(
-                "抓包扫描方案与数据导出逻辑 (MIT)",
-                "Packet capture scanning approach and data export logic (MIT)",
-            ),
-        );
+        if set == CreditSet::Capture {
+            entry(
+                ui,
+                l,
+                "Irminsul",
+                "Erik Gilling (konkers)",
+                "https://github.com/konkers/irminsul",
+                l.t(
+                    "抓包扫描方案与数据导出逻辑 (MIT)",
+                    "Packet capture scanning approach and data export logic (MIT)",
+                ),
+            );
 
-        entry(
-            ui,
-            l,
-            "auto-artifactarium",
-            "IceDynamix",
-            "https://github.com/konkers/auto-artifactarium",
-            l.t(
-                "游戏数据包解密与协议解析 (MIT)",
-                "Game packet decryption and protocol parsing (MIT)",
-            ),
-        );
+            entry(
+                ui,
+                l,
+                "auto-artifactarium",
+                "IceDynamix",
+                "https://github.com/konkers/auto-artifactarium",
+                l.t(
+                    "游戏数据包解密与协议解析 (MIT)",
+                    "Game packet decryption and protocol parsing (MIT)",
+                ),
+            );
+        }
 
-        entry(
-            ui,
-            l,
-            "Inventory Kamera",
-            "Andrewthe13th",
-            "https://github.com/Andrewthe13th/Inventory_Kamera",
-            l.t(
-                "部分控制方法的灵感来源 (MIT)",
-                "Inspiration for some control methods (MIT)",
-            ),
-        );
+        if set == CreditSet::Scanner {
+            entry(
+                ui,
+                l,
+                "Inventory Kamera",
+                "Andrewthe13th",
+                "https://github.com/Andrewthe13th/Inventory_Kamera",
+                l.t(
+                    "部分控制方法的灵感来源 (MIT)",
+                    "Inspiration for some control methods (MIT)",
+                ),
+            );
+        }
 
         ui.add_space(8.0);
         ui.separator();

@@ -219,7 +219,7 @@ impl eframe::App for GuiApp {
                     );
                 }
                 ActiveTab::Credits => {
-                    credits::show(ui, l);
+                    credits::show(ui, l, credits::CreditSet::Scanner);
                 }
             }
         });
