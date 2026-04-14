@@ -141,7 +141,7 @@ pub fn is_five_star_filter_active(image: &RgbImage, scaler: &CoordScaler) -> boo
     use super::constants::ARTIFACT_FIVE_STAR_FILTER_POS;
     let bright = !is_pixel_dark(image, scaler, ARTIFACT_FIVE_STAR_FILTER_POS.0, ARTIFACT_FIVE_STAR_FILTER_POS.1);
     if bright {
-        log::info!(
+        log::debug!(
             "[backpack] 检测到五星排序筛选已开启，将点击关闭 / [backpack] 5-star sort filter detected as active, will click to dismiss"
         );
     }

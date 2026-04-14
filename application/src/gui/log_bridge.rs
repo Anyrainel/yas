@@ -73,6 +73,7 @@ impl Log for GuiLogger {
     fn log(&self, record: &Record) {
         if self.enabled(record.metadata()) {
             let raw = format!("{}", record.args());
+            debug_assert_i18n(record, &raw);
             let localized = yas::lang::localize(&raw);
             let ts = format_timestamp();
             let source = classify(record);
@@ -112,6 +113,33 @@ impl Log for GuiLogger {
         }
     }
 }
+
+/// In debug builds, warn about INFO+ log messages missing i18n separator.
+///
+/// All user-visible log messages (INFO, WARN, ERROR) should use the
+/// `"中文 / English"` convention so `localize()` can pick the right language.
+/// Messages from third-party crates are excluded (they don't follow our convention).
+#[cfg(debug_assertions)]
+fn debug_assert_i18n(record: &Record, raw: &str) {
+    // Only check our own crates
+    let dominated_target = record.target().starts_with("yas")
+        || record.target().starts_with("application");
+    if !dominated_target {
+        return;
+    }
+    if record.level() <= Level::Info && !raw.contains(" / ") {
+        eprintln!(
+            "[i18n] missing \" / \" separator in {} message at {}:{}: {:?}",
+            record.level(),
+            record.file().unwrap_or("?"),
+            record.line().unwrap_or(0),
+            if raw.len() > 80 { &raw[..80] } else { raw },
+        );
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_assert_i18n(_record: &Record, _raw: &str) {}
 
 #[cfg(windows)]
 fn format_timestamp() -> String {

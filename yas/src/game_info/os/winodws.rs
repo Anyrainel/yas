@@ -47,12 +47,17 @@ fn get_window(window_names: &[&str]) -> Result<(HWND, bool)> {
     }
 
     if viable_handles.is_empty() {
-        return Err(anyhow!("未找到游戏窗口，请确认{:?}已经开启 / Game window not found, please make sure {:?} is running", window_names, window_names));
+        return Err(anyhow!(
+            "未找到游戏窗口，请确认原神已启动且未最小化。\n\
+             如果游戏已运行，请检查是否被其他程序（如HoYoPlay启动器）遮挡。\n\
+             / Game window not found. Please make sure Genshin Impact is running and not minimized.\n\
+             If the game is running, check that it is not hidden behind the HoYoPlay launcher."
+        ));
     }
 
     // Log all matches for diagnostics (helps debug launcher interference).
     for (hwnd, title, class) in &viable_handles {
-        log::info!(
+        log::debug!(
             "匹配到窗口 / Matched window: title={:?}, class={:?}, hwnd={:?}",
             title, class, hwnd,
         );
@@ -72,10 +77,14 @@ fn get_window(window_names: &[&str]) -> Result<(HWND, bool)> {
     // Class filter found 0 or >1 — fall back to title-only list.
     if game_only.is_empty() && viable_handles.len() >= 1 {
         log::warn!(
-            "标题匹配到 {} 个窗口但无已知游戏窗口类，将使用第一个 / \
-             {} windows matched by title but none have a known game class; using first match",
+            "标题匹配到 {} 个窗口但无已知游戏窗口类（可能是HoYoPlay启动器），将使用第一个 / \
+             {} windows matched by title but none have a known game class \
+             (could be HoYoPlay launcher); using first match",
             viable_handles.len(), viable_handles.len(),
         );
+        for (hwnd, title, class) in &viable_handles {
+            log::warn!("  窗口 / window: title={:?}, class={:?}, hwnd={:?}", title, class, hwnd);
+        }
     }
 
     let candidates: Vec<_> = if game_only.is_empty() {
@@ -122,7 +131,11 @@ pub fn get_game_info(window_names: &[&str]) -> Result<GameInfo> {
     let rect = utils::get_client_rect(hwnd)?;
     let resolution_family = ResolutionFamily::new(rect.to_rect_usize().size());
     if resolution_family.is_none() {
-        return Err(anyhow!("不支持的分辨率 / Resolution not supported: {}x{}", rect.width, rect.height));
+        return Err(anyhow!(
+            "不支持的分辨率: {}x{}。请使用16:9分辨率（如1920×1080��2560×1440、3840×2160）。\n\
+             / Unsupported resolution: {}x{}. Use a 16:9 resolution (e.g. 1920×1080, 2560×1440, 3840×2160).",
+            rect.width, rect.height, rect.width, rect.height
+        ));
     }
 
     Ok(GameInfo {

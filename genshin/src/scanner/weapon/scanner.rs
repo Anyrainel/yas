@@ -424,7 +424,7 @@ impl GoodWeaponScanner {
 
         // If count is 0, try reopening backpack
         let total_count = if current_count == 0 {
-            info!("[weapon] 数量=0，重新打开背包... / [weapon] count=0, reopening backpack...");
+            debug!("[weapon] 数量=0，重新打开背包... / [weapon] count=0, reopening backpack...");
             drop(bp);
             if cancel.check_rmb() { anyhow::bail!("cancelled"); }
             ctrl.return_to_main_ui(4);
@@ -447,7 +447,7 @@ impl GoodWeaponScanner {
 
         let total_count = if self.config.max_count > 0 {
             let capped = (total_count as usize).min(self.config.max_count + start_at) as i32;
-            info!("[weapon] 总计: {} (受max_count={}限制，截取为{}) / [weapon] total: {} (capped to {} by max_count={})", total_count, self.config.max_count, capped, total_count, capped, self.config.max_count);
+            debug!("[weapon] 总计: {} (受max_count={}限制，截取为{}) / [weapon] total: {} (capped to {} by max_count={})", total_count, self.config.max_count, capped, total_count, capped, self.config.max_count);
             capped
         } else {
             debug!("[weapon] 总计: {} / [weapon] total: {}", total_count, total_count);

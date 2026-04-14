@@ -176,7 +176,9 @@ impl AppState {
         }
         if let Some(since) = self.config_dirty_since {
             if since.elapsed() >= std::time::Duration::from_millis(300) {
-                let _ = yas_genshin::cli::save_config(&self.user_config);
+                if let Err(e) = yas_genshin::cli::save_config(&self.user_config) {
+                    log::warn!("配置自动保存失败: {} / Config auto-save failed: {}", e, e);
+                }
                 self.config_dirty_since = None;
             }
         }

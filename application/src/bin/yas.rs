@@ -35,6 +35,23 @@ fn init_cli() {
         .format(|buf, record| {
             use std::io::Write;
             let raw = format!("{}", record.args());
+            #[cfg(debug_assertions)]
+            {
+                let dominated_target = record.target().starts_with("yas")
+                    || record.target().starts_with("application");
+                if dominated_target
+                    && record.level() <= log::Level::Info
+                    && !raw.contains(" / ")
+                {
+                    eprintln!(
+                        "[i18n] missing \" / \" separator in {} message at {}:{}: {:?}",
+                        record.level(),
+                        record.file().unwrap_or("?"),
+                        record.line().unwrap_or(0),
+                        if raw.len() > 80 { &raw[..80] } else { &raw },
+                    );
+                }
+            }
             let msg = yas::lang::localize(&raw);
             writeln!(buf, "{}", msg)
         })

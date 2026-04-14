@@ -281,15 +281,15 @@ pub fn ensure_character_screen(
 
         let name_text = ctrl.ocr_region(ocr, CHAR_NAME_RECT).unwrap_or_default();
         if is_character_screen_name(&name_text, mappings) {
-            info!(
-                "[ensure_character_screen] opened (attempt {}), name='{}'",
-                attempt, name_text.trim()
+            debug!(
+                "[ensure_character_screen] 已打开（第{}次尝试），名称='{}' / opened (attempt {}), name='{}'",
+                attempt, name_text.trim(), attempt, name_text.trim()
             );
             return Ok(());
         }
-        info!(
-            "[ensure_character_screen] attempt {} failed (OCR: '{}'), pressing Escape and retrying",
-            attempt, name_text.trim()
+        debug!(
+            "[ensure_character_screen] 第{}次尝试失败（OCR: '{}'），按Escape重试 / attempt {} failed (OCR: '{}'), pressing Escape and retrying",
+            attempt, name_text.trim(), attempt, name_text.trim()
         );
         ctrl.key_press(enigo::Key::Escape);
         yas::utils::sleep(d_action());
@@ -1041,7 +1041,8 @@ fn find_artifact_in_grid_inner(
     let max_pages = 50;
     let mut total_checked: usize = 0;
 
-    info!("[grid_scan] starting: set={} slot={} lv={}",
+    debug!("[grid_scan] 开始搜索: set={} slot={} lv={} / starting: set={} slot={} lv={}",
+        target.set_key, target.slot_key, target.level,
         target.set_key, target.slot_key, target.level);
 
     // Scroll to top
@@ -1162,7 +1163,7 @@ fn find_artifact_in_grid_inner(
                                 Ok((verdict, details)) => {
                                     match verdict {
                                         MatchVerdict::Match => {
-                                            info!("[grid_async] MATCH at page={} row={} col={}", page, row, col);
+                                            debug!("[grid_async] 匹配成功 page={} row={} col={} / MATCH at page={} row={} col={}", page, row, col, page, row, col);
                                             *match_result.lock().unwrap() = Some((row, col));
                                             found.store(true, Ordering::SeqCst);
                                             (Some(true), details)
@@ -1247,8 +1248,8 @@ fn find_artifact_in_grid_inner(
 
         // Check match
         if let Some((row, col)) = *match_cell.lock().unwrap() {
-            info!("[grid_scan] found at page={} ({},{}) after {} checked",
-                page, row, col, total_checked);
+            debug!("[grid_scan] 已找到 page={} ({},{})，共检查{} / found at page={} ({},{}) after {} checked",
+                page, row, col, total_checked, page, row, col, total_checked);
 
             // Re-click the matched cell to select it
             let x = SEL_FIRST_X + col as f64 * SEL_OFFSET_X;
@@ -1271,7 +1272,7 @@ fn find_artifact_in_grid_inner(
             Err(arc) => arc.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         };
         if !retries_vec.is_empty() {
-            info!("[grid_scan] retrying {} cells on page {}", retries_vec.len(), page);
+            debug!("[grid_scan] 重试第{}页的{}个格子 / retrying {} cells on page {}", page, retries_vec.len(), retries_vec.len(), page);
             for (row, col) in &retries_vec {
                 if ctrl.check_rmb() {
                     bail!("{}", ctrl.cancel_token().reason().unwrap());
@@ -1290,7 +1291,7 @@ fn find_artifact_in_grid_inner(
 
                         match full_match_from_panel_verbose(&panel_img, target, ocr, mappings) {
                             Ok((MatchVerdict::Match, details)) => {
-                                info!("[grid_scan] RETRY MATCH at page={} ({},{}):\n{}", page, row, col, details);
+                                debug!("[grid_scan] 重试匹配成功 page={} ({},{}) / RETRY MATCH at page={} ({},{}):\n{}", page, row, col, page, row, col, details);
                                 if equip {
                                     if !click_equip_button_safe(ctrl, ocr, "grid_retry", page, *row, *col)? {
                                         return Ok(true); // already equipped
@@ -1299,7 +1300,7 @@ fn find_artifact_in_grid_inner(
                                 return Ok(true);
                             }
                             Ok((_, details)) => {
-                                info!("[grid_scan] retry failed ({},{}): {}", row, col, details);
+                                debug!("[grid_scan] 重试失败 ({},{}) / retry failed ({},{}): {}", row, col, row, col, details);
                                 if let Some(ref mut out) = debug_out {
                                     out.push(GridCellDebug {
                                         page, row: *row, col: *col,
@@ -1326,7 +1327,7 @@ fn find_artifact_in_grid_inner(
 
         // Check end of list (empty cells)
         if page_ended_flag.load(Ordering::SeqCst) {
-            info!("[grid_scan] page ended (empty cells) after {} checked", total_checked);
+            debug!("[grid_scan] 列表结束（空格子），共检查{} / page ended (empty cells) after {} checked", total_checked, total_checked);
             return Ok(false);
         }
 
@@ -1338,8 +1339,8 @@ fn find_artifact_in_grid_inner(
             if Some(cur_retry_count) == prev_retry_count && cur_retry_count > 0 {
                 same_retry_count += 1;
                 if same_retry_count >= 2 {
-                    info!("[grid_scan] same retry count ({}) for {} pages, end of list",
-                        cur_retry_count, same_retry_count + 1);
+                    debug!("[grid_scan] 连续{}页重试数相同（{}），列表结束 / same retry count ({}) for {} pages, end of list",
+                        same_retry_count + 1, cur_retry_count, cur_retry_count, same_retry_count + 1);
                     return Ok(false);
                 }
             } else {
@@ -1353,7 +1354,7 @@ fn find_artifact_in_grid_inner(
         if page > 0 && fp == prev_fingerprint {
             same_fp_count += 1;
             if same_fp_count >= 2 {
-                info!("[grid_scan] fingerprint unchanged {} times, end of list", same_fp_count);
+                debug!("[grid_scan] 指纹连续{}次未变化，列表结束 / fingerprint unchanged {} times, end of list", same_fp_count, same_fp_count);
                 return Ok(false);
             }
         } else {
@@ -1371,7 +1372,7 @@ fn find_artifact_in_grid_inner(
         scroll_ticks_dir(ctrl, SEL_SCROLL_TICKS, 1); // DOWN (positive = down)
     }
 
-    info!("[grid_scan] not found after {} checked", total_checked);
+    debug!("[grid_scan] 未找到，共检查{} / not found after {} checked", total_checked, total_checked);
     Ok(false)
 }
 
@@ -1643,7 +1644,7 @@ fn click_equip_button_safe(
     let btn_clean: String = btn_text.chars().filter(|c| !c.is_whitespace()).collect();
 
     if btn_clean.contains("卸") {
-        info!("[{}] button='{}' (卸下) at p{}_r{}_c{}, already equipped", tag, btn_clean, page, row, col);
+        debug!("[{}] 按钮='{}' (卸下) p{}_r{}_c{}，已装备 / button='{}' (unequip) at p{}_r{}_c{}, already equipped", tag, btn_clean, page, row, col, btn_clean, page, row, col);
         return Ok(false);
     }
 
@@ -1657,7 +1658,7 @@ fn click_equip_button_safe(
     }
 
     // Neither detected — save debug image and bail
-    warn!("[{}] button OCR='{}' at p{}_r{}_c{}, expected '装备' or '卸下'", tag, btn_clean, page, row, col);
+    warn!("[{}] 按钮OCR='{}' p{}_r{}_c{}，预期为「装备」或「卸下」/ button OCR='{}' at p{}_r{}_c{}, expected '装备' or '卸下'", tag, btn_clean, page, row, col, btn_clean, page, row, col);
     let dir = std::path::Path::new("debug_images/grid_scan");
     let _ = std::fs::create_dir_all(dir);
     if let Ok(btn_img) = ctrl.capture_region(

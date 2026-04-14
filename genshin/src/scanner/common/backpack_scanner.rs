@@ -317,7 +317,7 @@ impl<'a> BackpackScanner<'a> {
         let total_row = (total + GRID_COLS - 1) / GRID_COLS;
         let last_row_col = if total % GRID_COLS == 0 { GRID_COLS } else { total % GRID_COLS };
 
-        info!(
+        debug!(
             "[backpack] 总计={}个物品，{}行，最后一行有{}个 / [backpack] total={} items, {} rows, last row has {} items",
             total, total_row, last_row_col, total, total_row, last_row_col
         );
@@ -336,7 +336,7 @@ impl<'a> BackpackScanner<'a> {
             let skip_rows = start_at / GRID_COLS;
             let full_pages = skip_rows / GRID_ROWS;
             if full_pages > 0 {
-                info!(
+                debug!(
                     "[backpack] 跳转到第{}个物品(跳过{}行) / [backpack] jumping to item {} ({} rows to skip)",
                     start_at, skip_rows, start_at, skip_rows
                 );
@@ -484,8 +484,8 @@ impl<'a> BackpackScanner<'a> {
                             }
                             ScanAction::SkipPage => {
                                 // SkipPage is only valid from PageStarted.
-                                log::warn!(
-                                    "[backpack] SkipPage from Item handler is ignored; treating as Continue"
+                                log::debug!(
+                                    "[backpack] Item处理返回SkipPage，已忽略，视为Continue / SkipPage from Item handler is ignored; treating as Continue"
                                 );
                             }
                         }

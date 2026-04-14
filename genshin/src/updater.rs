@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use log::{debug, info};
+use log::{debug, info, warn};
 use serde::Deserialize;
 
 /// Asset filename to look for in each release.
@@ -325,7 +325,7 @@ pub fn download_and_replace(download_url: &str) -> Result<PathBuf> {
                     if bytes.get(..2) != Some(b"MZ") {
                         last_error =
                             "下载文件不是有效的exe / Not a valid PE executable".into();
-                        info!("{}", last_error);
+                        warn!("{}", last_error);
                         continue;
                     }
                     if bytes.len() < MIN_EXE_SIZE {
@@ -336,13 +336,15 @@ pub fn download_and_replace(download_url: &str) -> Result<PathBuf> {
                             bytes.len(),
                             MIN_EXE_SIZE,
                         );
-                        info!("{}", last_error);
+                        warn!("{}", last_error);
                         continue;
                     }
 
                     // Self-replace: rename running exe → .old, write new
                     if old_path.exists() {
-                        let _ = std::fs::remove_file(&old_path);
+                        if let Err(e) = std::fs::remove_file(&old_path) {
+                            warn!("无法删除旧版本备份: {} / Cannot remove old backup: {}", e, e);
+                        }
                     }
                     std::fs::rename(&exe_path, &old_path).map_err(|e| {
                         anyhow!("无法重命名当前程序 / Cannot rename current exe: {}", e)
@@ -350,7 +352,9 @@ pub fn download_and_replace(download_url: &str) -> Result<PathBuf> {
 
                     if let Err(e) = std::fs::write(&exe_path, &bytes) {
                         // Rollback: restore the original exe
-                        let _ = std::fs::rename(&old_path, &exe_path);
+                        if let Err(re) = std::fs::rename(&old_path, &exe_path) {
+                            warn!("回滚失败: {} / Rollback failed: {}", re, re);
+                        }
                         return Err(anyhow!(
                             "无法写入新版本 / Cannot write new version: {}",
                             e
@@ -362,12 +366,12 @@ pub fn download_and_replace(download_url: &str) -> Result<PathBuf> {
                 }
                 Err(e) => {
                     last_error = format!("{}", e);
-                    info!("下载失败 / Download failed: {}", last_error);
+                    warn!("下载失败 / Download failed: {}", last_error);
                 }
             },
             Ok(resp) => {
                 last_error = format!("HTTP {}", resp.status());
-                info!(
+                warn!(
                     "源 {} 失败 / Source {} failed: {}",
                     i + 1,
                     i + 1,
@@ -376,7 +380,7 @@ pub fn download_and_replace(download_url: &str) -> Result<PathBuf> {
             }
             Err(e) => {
                 last_error = format!("{}", e);
-                info!("连接失败 / Connection failed: {}", last_error);
+                warn!("连接失败 / Connection failed: {}", last_error);
             }
         }
     }

@@ -127,7 +127,7 @@ pub fn set_dpi_awareness() {
         let utf16 = encode_lpcstr("Shcore.dll");
         LoadLibraryA(utf16.as_ptr())
     };
-    println!("{:?}", h_lib);
+    log::debug!("Shcore.dll handle: {:?}", h_lib);
     if h_lib.is_null() {
         unsafe {
             SetProcessDPIAware();
@@ -135,7 +135,7 @@ pub fn set_dpi_awareness() {
     } else {
         unsafe {
             let addr = GetProcAddress(h_lib, encode_lpcstr("SetProcessDpiAwareness").as_ptr());
-            println!("{:?}", addr);
+            log::debug!("SetProcessDpiAwareness addr: {:?}", addr);
             if addr.is_none() {
                 warn!("找不到函数SetProcessDpiAwareness，但Shcore.dll存在 / cannot find process SetProcessDpiAwareness, but Shcore.dll exists");
                 SetProcessDPIAware();

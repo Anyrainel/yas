@@ -514,11 +514,11 @@ impl GoodArtifactScanner {
             None => {
                 // 4-star with unrecognizable slot = possibly elixir essence, skip
                 if rarity == 4 {
-                    info!("[artifact] 4星无法识别栏位（可能是精炼素材），跳过 / [artifact] 4* unrecognizable slot (possibly elixir essence), skipping");
+                    debug!("[artifact] 4星无法识别部位（可能是圣遗物经验素材），跳过 / [artifact] 4* unrecognizable slot (possibly artifact EXP material), skipping");
                     return Ok(ArtifactScanResult::Skip);
                 }
                 if config.continue_on_failure {
-                    warn!("[artifact] 无法识别栏位: 「{}」，跳过 / [artifact] cannot identify slot: 「{}」, skipping", part_text, part_text);
+                    warn!("[artifact] 无法识别部位: 「{}」，跳过 / [artifact] cannot identify slot: 「{}」, skipping", part_text, part_text);
                     return Ok(ArtifactScanResult::Skip);
                 }
                 bail!("无法识别圣遗物部位 / Cannot identify artifact slot: \u{300C}{}\u{300D}", part_text);
@@ -543,7 +543,7 @@ impl GoodArtifactScanner {
             Some(k) => k,
             None => {
                 if config.continue_on_failure {
-                    warn!("[artifact] 无法识别主属性: 「{}」，跳过 / [artifact] cannot identify main stat: 「{}」, skipping", main_stat_text, main_stat_text);
+                    warn!("[artifact] 无法识别主词条: 「{}」，跳过 / [artifact] cannot identify main stat: 「{}」, skipping", main_stat_text, main_stat_text);
                     return Ok(ArtifactScanResult::Skip);
                 }
                 bail!("无法识别主词条 / Cannot identify main stat: \u{300C}{}\u{300D}", main_stat_text);
@@ -629,7 +629,7 @@ impl GoodArtifactScanner {
         // All astraled artifacts are locked in-game. If we still see
         // astral=true + lock=false, force lock=true.
         if astral_mark && !lock {
-            info!("[artifact] 星辉=true 但锁定=false — 强制锁定=true（游戏规则） / [artifact] astral=true but lock=false — forcing lock=true (game invariant)");
+            debug!("[artifact] 星标=true 但锁定=false — 强制锁定=true（游戏规则） / [artifact] astral=true but lock=false — forcing lock=true (game invariant)");
             lock = true;
         }
 
@@ -723,8 +723,8 @@ impl GoodArtifactScanner {
             // If we didn't extend above (or no number retry), push original candidates
             if !did_extend {
                 if cands.is_empty() && i == max_scan_lines - 1 {
-                    // Last expected line produced nothing — always log for diagnostics
-                    info!("[artifact] idx={} sub[{}] 空（{}星 lv{}），OCR「{}」 / [artifact] idx={} sub[{}] empty ({}* lv{}), OCR 「{}」",
+                    // Last expected line produced nothing — log for diagnostics
+                    debug!("[artifact] idx={} sub[{}] 空（{}星 lv{}），OCR「{}」 / [artifact] idx={} sub[{}] empty ({}* lv{}), OCR 「{}」",
                         item_index, i, rarity, level, raw_texts[0].trim(),
                         item_index, i, rarity, level, raw_texts[0].trim());
                 }
@@ -928,7 +928,7 @@ impl GoodArtifactScanner {
                 };
                 line_details.push(detail);
             }
-            warn!("[artifact] 求解失败 {}星 lv{} {}·{} (锁定={}, 星辉={}, 精炼={})\n\
+            warn!("[artifact] 求解失败 {}星 lv{} {}·{} (锁定={}, 星标={}, 祝圣之霜={})\n\
                    检测到{}条副词条但无法找到有效roll分配:\n{}\n\
                    使用启发式回退——副词条数值可能不准确。 / [artifact] SOLVER FAILED on {}* lv{} {}·{} (lock={}, astral={}, elixir={})\n\
                    Detected {} substat lines but cannot find valid roll assignment:\n{}\n\
@@ -1238,7 +1238,7 @@ impl GoodArtifactScanner {
 
         let total_count = if self.config.max_count > 0 {
             let capped = (total_count as usize).min(self.config.max_count + start_at) as i32;
-            info!("[artifact] 总计: {}（限制为{}，max_count={}） / [artifact] total: {} (capped to {} by max_count={})", total_count, capped, self.config.max_count, total_count, capped, self.config.max_count);
+            debug!("[artifact] 总计: {}（限制为{}，max_count={}） / [artifact] total: {} (capped to {} by max_count={})", total_count, capped, self.config.max_count, total_count, capped, self.config.max_count);
             capped
         } else {
             debug!("[artifact] 总计: {} / [artifact] total: {}", total_count, total_count);

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use log::info;
+use log::{debug, info};
 
 use yas::cancel::CancelToken;
 
@@ -179,7 +179,7 @@ impl ArtifactManager {
 
         report(0, "装备变更 / Equip changes");
 
-        info!("[manager] 执行 {} 个装备目标", targets.len());
+        debug!("[manager] 执行 {} 个��备目标 / executing {} equip targets", targets.len(), targets.len());
 
         let equip_mgr = EquipManager::new(
             self.mappings.clone(),
@@ -192,7 +192,8 @@ impl ArtifactManager {
 
         let summary = ManageSummary::from_results(&results);
         info!(
-            "[manager] 装备完成：{} 成功, {} 已正确, {} 未找到, {} 错误, {} 中断",
+            "[manager] 装备完成：{} 成功, {} 已正确, {} 未找到, {} 错误, {} 中断 / equip done: {} ok, {} already correct, {} not found, {} errors, {} aborted",
+            summary.success, summary.already_correct, summary.not_found, summary.errors, summary.aborted,
             summary.success, summary.already_correct, summary.not_found, summary.errors, summary.aborted,
         );
 

@@ -119,7 +119,7 @@ impl EquipManager {
         yas::utils::sleep(d_action() * 5 / 8);
 
         if let Err(e) = ui_actions::ensure_character_screen(ctrl, ocr, &self.mappings) {
-            warn!("[equip_roster] 无法打开角色界面: {}", e);
+            warn!("[equip_roster] 无法打开角色界面: {} / cannot open character screen: {}", e, e);
             for targets in char_groups.values() {
                 for target in targets {
                     results.insert(target.result_id.clone(), InstructionResult {
@@ -143,7 +143,7 @@ impl EquipManager {
             // OCR character name
             let name_text = ctrl.ocr_region(ocr, CHAR_NAME_RECT).unwrap_or_default();
             let name_trimmed = name_text.trim().to_string();
-            info!("[equip_roster] #{}: OCR='{}'", i, name_trimmed);
+            debug!("[equip_roster] #{}: OCR识别='{}' / OCR='{}'", i, name_trimmed, name_trimmed);
 
             if self.dump_images {
                 if let Ok(image) = ctrl.capture_game() {
@@ -159,7 +159,7 @@ impl EquipManager {
                     let cur_name = clean_char_name(&name_trimmed);
                     let first_char_name = clean_char_name(first);
                     if !cur_name.is_empty() && cur_name == first_char_name {
-                        info!("[equip_roster] 已遍历全部角色 (cycled)");
+                        debug!("[equip_roster] 已遍历全部角色 / all characters visited (cycled)");
                         break;
                     }
                 }
@@ -173,7 +173,7 @@ impl EquipManager {
             let matched_key = self.match_character_name(&name_trimmed, &clean_name, char_groups, results);
 
             if let Some(char_key) = matched_key {
-                info!("[equip_roster] 在位置{}找到{}", i, char_key);
+                debug!("[equip_roster] 在位置{}找到{} / found {} at position {}", i, char_key, char_key, i);
 
                 if let Some(targets) = char_groups.get(char_key.as_str()) {
                     let slot_targets: Vec<&EquipTarget> = targets.iter()
@@ -289,7 +289,7 @@ impl EquipManager {
         // The main set filter is applied last so the game remembers it.
         let (flex_indices, main_sets) = analyze_set_composition(targets);
 
-        info!("[equip_slots] flex={:?}, main_sets={:?} / analyzing {} targets",
+        debug!("[equip_slots] flex={:?}, main_sets={:?} / analyzing {} targets",
             flex_indices, main_sets, targets.len());
 
         // Build ordered slot list: all flex first, then all non-flex
@@ -348,7 +348,7 @@ impl EquipManager {
 
             // Click slot tab
             if let Err(e) = ui_actions::click_slot_tab(ctrl, &target.artifact.slot_key) {
-                warn!("[equip_slot] 点击栏位标签失败: {}", e);
+                warn!("[equip_slot] 点击栏位标签失败: {} / click slot tab failed: {}", e, e);
                 results.insert(target.result_id.clone(), InstructionResult {
                     id: target.result_id.clone(),
                     status: InstructionStatus::UiError,

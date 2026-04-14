@@ -155,7 +155,9 @@ fn action_bar(
                 } else {
                     state.names_need_attention = false;
                     // Force immediate save before scanning (don't wait for debounce)
-                    let _ = yas_genshin::cli::save_config(&state.user_config);
+                    if let Err(e) = yas_genshin::cli::save_config(&state.user_config) {
+                        log::warn!("配置保存失败: {} / Config save failed: {}", e, e);
+                    }
                     state.config_dirty_since = None;
                     *scan_handle = Some(worker::spawn_scan(state));
                 }

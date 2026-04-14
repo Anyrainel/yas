@@ -378,7 +378,7 @@ impl GoodCharacterScanner {
 
         if Self::is_level_suspicious(level, ascended) {
             let max_level = Self::derive_max_level(level, ascended);
-            info!(
+            debug!(
                 "[character] 等级 {} (最大={}, 突破={}) 可能需要重新读取 / [character] level {} (max={}, ascended={}) may need re-reading",
                 level, max_level, ascended, level, max_level, ascended
             );
@@ -1042,7 +1042,7 @@ impl GoodCharacterScanner {
                 Self::is_character_suspicious(c, meta)
             })
             .map(|(i, c)| {
-                info!(
+                debug!(
                     "[character] 将重新读取索引{}: {} Lv.{} A{} C{} {}/{}/{} / [character] will re-read index {}: {} Lv.{} A{} C{} {}/{}/{}",
                     i, c.key, c.level, c.ascension, c.constellation,
                     c.talent.auto, c.talent.skill, c.talent.burst,

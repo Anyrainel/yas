@@ -62,10 +62,19 @@ fn load_meta() -> MappingsMeta {
 
 fn save_meta(meta: &MappingsMeta) {
     if let Some(parent) = Path::new(MAPPINGS_META_PATH).parent() {
-        let _ = fs::create_dir_all(parent);
+        if let Err(e) = fs::create_dir_all(parent) {
+            log::warn!("无法创建缓存目录: {} / Cannot create cache directory: {}", e, e);
+        }
     }
-    if let Ok(json) = serde_json::to_string(meta) {
-        let _ = fs::write(MAPPINGS_META_PATH, json);
+    match serde_json::to_string(meta) {
+        Ok(json) => {
+            if let Err(e) = fs::write(MAPPINGS_META_PATH, json) {
+                log::warn!("无法保存映射缓存信息: {} / Cannot save mapping cache metadata: {}", e, e);
+            }
+        }
+        Err(e) => {
+            log::warn!("无法序列化缓存信息: {} / Cannot serialize cache metadata: {}", e, e);
+        }
     }
 }
 
@@ -198,28 +207,32 @@ impl MappingManager {
                     debug!("游戏数据映射已更新 / Game data mappings updated");
                 } else {
                     if cache_exists {
-                        info!(
-                            "获取数据失败（HTTP {}），使用本地缓存 / Fetch failed (HTTP {}), using local cache",
+                        log::warn!(
+                            "获取数据失败 (HTTP {})，使用本地缓存 / Fetch failed (HTTP {}), using local cache",
                             response.status(), response.status()
                         );
                     } else {
                         bail!(
-                            "获取游戏数据失败 / Failed to fetch game data: HTTP {}",
-                            response.status()
+                            "获取游戏数据失败 (HTTP {})，且无本地缓存。请检查网络连接。\n\
+                             / Failed to fetch game data (HTTP {}), no local cache. Check your network connection.",
+                            response.status(), response.status()
                         );
                     }
                 }
             }
             Err(e) => {
                 if cache_exists {
-                    info!(
-                        "获取数据失败（{}），使用本地缓存 / Fetch failed ({}), using local cache",
+                    log::warn!(
+                        "获取数据失败 ({})，使用本地缓存 / Fetch failed ({}), using local cache",
                         e, e
                     );
                 } else {
                     bail!(
-                        "获取游戏数据失败且无本地缓存 / Failed to fetch game data (no local cache): {}",
-                        e
+                        "获取游戏数据失败且无本地缓存。请检查网络连接，或手动下载 {} 到 data/ 目录。\n\
+                         / Failed to fetch game data (no local cache). Check your network connection, \
+                         or manually download {} to the data/ folder.\n\
+                         错误 / Error: {}",
+                        MAPPINGS_URL, MAPPINGS_URL, e
                     );
                 }
             }

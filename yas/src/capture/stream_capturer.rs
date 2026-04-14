@@ -47,7 +47,7 @@ impl StreamingCapturer where {
         });
 
         let cancel = move || {
-            println!("cancel capture");
+            log::debug!("cancel capture");
             is_cancelled.store(true, atomic::Ordering::Relaxed);
         };
 

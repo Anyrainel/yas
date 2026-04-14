@@ -395,7 +395,7 @@ fn detect_page_icons(
                 }
 
                 if has_astral && !has_lock {
-                    debug!("[grid-icon] idx={} 星辉但无锁，强制锁定 / [grid-icon] idx={} astral but no lock, forcing lock", i, i);
+                    debug!("[grid-icon] idx={} 星标但无锁，强制锁定 / [grid-icon] idx={} astral but no lock, forcing lock", i, i);
                 }
 
                 results.push(GridIconResult { lock: has_lock, astral: has_astral, elixir: has_elixir });
