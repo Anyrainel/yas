@@ -1648,7 +1648,8 @@ mod tests {
         let mappings = make_test_mappings();
         let config = default_config();
 
-        let level_ocr = FakeOcr::new(vec![]);
+        // Quick level OCR returns "+0" → lv0, so rarity < min_rarity triggers Stop
+        let level_ocr = FakeOcr::new(vec!["+0"]);
         let general_ocr = FakeOcr::new(vec![]);
 
         let result = GoodArtifactScanner::scan_single_artifact(
@@ -1656,7 +1657,7 @@ mod tests {
         ).unwrap();
 
         assert!(matches!(result, ArtifactScanResult::Stop));
-        assert_eq!(level_ocr.call_count(), 0);
+        assert_eq!(level_ocr.call_count(), 1); // quick level check
         assert_eq!(general_ocr.call_count(), 0);
     }
 
