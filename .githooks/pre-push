@@ -1,0 +1,18 @@
+#!/bin/bash
+# Pre-push hook: run all tests before allowing push.
+# Install: git config core.hooksPath .githooks
+
+echo "Running tests before push..."
+
+# Run tests for the main crate (with capture feature for full coverage)
+cargo test --lib -p yas_scanner_genshin --features capture 2>&1
+RESULT=$?
+
+if [ $RESULT -ne 0 ]; then
+    echo ""
+    echo "PUSH BLOCKED: tests failed. Fix the failures and try again."
+    exit 1
+fi
+
+echo "All tests passed."
+exit 0
