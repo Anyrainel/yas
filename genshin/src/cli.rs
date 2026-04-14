@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use clap::{command, ArgMatches, Args, FromArgMatches};
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
@@ -88,7 +88,7 @@ fn download_onnxruntime_inner(dll_path: &std::path::Path) -> Result<()> {
             Ok(response) => {
                 if !response.status().is_success() {
                     last_error = format!("HTTP {}", response.status());
-                    info!("源 {} 失败 / Source {} failed: {}", i + 1, i + 1, last_error);
+                    log::warn!("源 {} 失败 / Source {} failed: {}", i + 1, i + 1, last_error);
                     continue;
                 }
                 match response.bytes() {
@@ -105,22 +105,24 @@ fn download_onnxruntime_inner(dll_path: &std::path::Path) -> Result<()> {
                             }
                             Err(e) => {
                                 last_error = format!("{}", e);
-                                info!("解压失败 / Extract failed: {}", last_error);
-                                let _ = std::fs::remove_file(dll_path);
+                                log::warn!("解压失败 / Extract failed: {}", last_error);
+                                if let Err(e) = std::fs::remove_file(dll_path) {
+                                    log::warn!("清理失败的下载文件失败: {} / Failed to clean up partial download: {}", e, e);
+                                }
                                 continue;
                             }
                         }
                     }
                     Err(e) => {
                         last_error = format!("{}", e);
-                        info!("下载失败 / Download failed: {}", last_error);
+                        log::warn!("下载失败 / Download failed: {}", last_error);
                         continue;
                     }
                 }
             }
             Err(e) => {
                 last_error = format!("{}", e);
-                info!("连接失败 / Connection failed: {}", last_error);
+                log::warn!("连接失败 / Connection failed: {}", last_error);
                 continue;
             }
         }
@@ -178,6 +180,23 @@ fn extract_onnxruntime_dll(zip_bytes: &[u8], dest: &std::path::Path) -> Result<(
     }
 
     Err(anyhow!("压缩包中未找到 onnxruntime.dll / onnxruntime.dll not found in zip archive"))
+}
+
+// ================================================================
+// Rayon thread pool with larger stack
+// ================================================================
+
+/// Initialize the global rayon thread pool with an 8 MB per-thread stack.
+///
+/// ONNX Runtime's C++ inference code uses deep call stacks that can overflow
+/// rayon's default 1 MB thread stack on Windows, triggering 0xc0000409
+/// (STATUS_STACK_BUFFER_OVERRUN / __fastfail).  Call this once before any
+/// scan or server work.  Harmless if called multiple times — the second call
+/// is a no-op (rayon ignores `build_global` after the pool is already built).
+pub fn init_rayon_pool() {
+    let _ = rayon::ThreadPoolBuilder::new()
+        .stack_size(8 * 1024 * 1024)
+        .build_global();
 }
 
 // ================================================================
@@ -408,7 +427,9 @@ pub fn load_config_or_default() -> GoodUserConfig {
                 Ok(mut config) => {
                     config.normalize_delays();
                     // Re-save to strip delay entries that are at/below defaults
-                    let _ = save_config(&config);
+                    if let Err(e) = save_config(&config) {
+                        log::warn!("配置重新保存失败: {} / Config re-save failed: {}", e, e);
+                    }
                     config
                 }
                 Err(e) => {
@@ -448,7 +469,7 @@ pub fn save_config(config: &GoodUserConfig) -> Result<()> {
 /// (via the GUI, or manually).
 fn load_or_create_config() -> Result<GoodUserConfig> {
     let path = config_path();
-    info!("正在查找配置文件... / Looking for config at: {}", path.display());
+    debug!("正在查找配置文件... / Looking for config at: {}", path.display());
 
     if !path.exists() {
         return Err(anyhow!(
@@ -472,7 +493,9 @@ fn load_or_create_config() -> Result<GoodUserConfig> {
     debug!("已加载配置 / Loaded config from {}", path.display());
 
     // Re-save to strip invalid/default entries and add any new default fields
-    let _ = save_config(&config);
+    if let Err(e) = save_config(&config) {
+        log::warn!("配置重新保存失败: {} / Config re-save failed: {}", e, e);
+    }
 
     Ok(config)
 }
@@ -707,6 +730,8 @@ impl GoodScannerApplication {
     pub fn run(&self) -> Result<()> {
         println!("{}", yas::lang::localize("正在启动扫描器... / GOOD Scanner starting..."));
 
+        init_rayon_pool();
+
         // Check for ONNX Runtime before doing anything else
         #[cfg(target_os = "windows")]
         ensure_onnxruntime()?;
@@ -739,7 +764,7 @@ impl GoodScannerApplication {
         #[cfg(target_os = "windows")]
         {
             if !yas::utils::is_admin() {
-                return Err(anyhow!("请以管理员身份运行 / Please run as administrator"));
+                return Err(anyhow!("需要管理员权限，请右键点击程序选择「以管理员身份运行」/ Administrator privileges required. Right-click the program and select 'Run as administrator'."));
             }
         }
 
@@ -750,14 +775,14 @@ impl GoodScannerApplication {
         let scan_artifacts = config.scan_artifacts || config.scan_all || no_flags;
 
         // Fetch and load mappings (before game interaction — no focus steal)
-        info!("=== 加载映射数据 / Loading mappings ===");
+        debug!("加载映射数据... / Loading mappings...");
         let overrides = user_config.to_overrides();
         if let Some(ref n) = overrides.traveler_name { debug!("旅行者 / Traveler: {}", n); }
         if let Some(ref n) = overrides.wanderer_name { debug!("流浪者 / Wanderer: {}", n); }
         if let Some(ref n) = overrides.manekin_name { debug!("奇偶·男性 / Manekin: {}", n); }
         if let Some(ref n) = overrides.manekina_name { debug!("奇偶·女性 / Manekina: {}", n); }
         let mappings = Arc::new(MappingManager::new(&overrides)?);
-        info!(
+        debug!(
             "已加载 / Loaded: {} characters, {} weapons, {} artifact sets",
             mappings.character_name_map.len(),
             mappings.weapon_name_map.len(),
@@ -765,12 +790,15 @@ impl GoodScannerApplication {
         );
 
         // Find and focus the game window
-        let game_info = Self::get_game_info()?;
+        let game_info = Self::get_game_info()
+            .context("请确认原神已启动、未最小化、且使用16:9分辨率（如1920×1080）\
+                     / Ensure Genshin Impact is running, not minimized, and using a 16:9 resolution (e.g. 1920×1080)")?;
         debug!("窗口 / window: {:?}", game_info.window);
         debug!("界面 / ui: {:?}", game_info.ui);
         debug!("云游戏 / cloud: {}", game_info.is_cloud);
 
-        let mut ctrl = GenshinGameController::new(game_info)?;
+        let mut ctrl = GenshinGameController::new(game_info)
+            .context("屏幕截图初始化失败 / Screen capture initialization failed")?;
         let token = yas::cancel::CancelToken::new();
         ctrl.set_cancel_token(token.clone());
         ctrl.focus_game_window();
@@ -793,7 +821,7 @@ impl GoodScannerApplication {
 
         // Scan characters
         if scan_characters {
-            info!("=== 扫描角色 / Scanning characters ===");
+            info!("扫描角色... / Scanning characters...");
             let char_config = Self::make_char_config(&config, &user_config);
             let scanner = GoodCharacterScanner::new(
                 char_config, mappings.clone(),
@@ -815,7 +843,7 @@ impl GoodScannerApplication {
 
         // Scan weapons
         if scan_weapons && !token.is_cancelled() {
-            info!("=== 扫描武器 / Scanning weapons ===");
+            info!("扫描武器... / Scanning weapons...");
             let weapon_config = Self::make_weapon_config(&config, &user_config);
             let scanner = GoodWeaponScanner::new(
                 weapon_config, mappings.clone(),
@@ -833,7 +861,7 @@ impl GoodScannerApplication {
 
         // Scan artifacts
         if scan_artifacts && !token.is_cancelled() {
-            info!("=== 扫描圣遗物 / Scanning artifacts ===");
+            info!("扫描圣遗物... / Scanning artifacts...");
             let artifact_config = Self::make_artifact_config(&config, &user_config);
             let skip_open = scan_weapons;
             let scanner = GoodArtifactScanner::new(
@@ -869,7 +897,7 @@ impl GoodScannerApplication {
 
         // Post-scan groundtruth comparison
         if let Some(ref compare_path) = config.debug_compare {
-            info!("=== 真值对比 / Comparing against groundtruth ===");
+            debug!("真值对比... / Comparing against groundtruth...");
             let gt_json = std::fs::read_to_string(compare_path)?;
             let groundtruth: GoodExport = serde_json::from_str(&gt_json)?;
             let result = diff::diff_exports(&export, &groundtruth);
@@ -881,7 +909,7 @@ impl GoodScannerApplication {
                     result.summary.total_errors()
                 ));
             }
-            info!("真值对比通过 / Groundtruth comparison passed!");
+            debug!("真值对比通过 / Groundtruth comparison passed!");
         }
 
         Ok(())
@@ -903,22 +931,25 @@ impl GoodScannerApplication {
         let col: usize = parts[1].trim().parse()
             .map_err(|_| anyhow!("无效的列号 / Invalid col in rescan pos"))?;
 
-        info!("=== 重扫模式: type={} pos=({},{}) count={} / Re-scan mode: type={} pos=({},{}) count={} ===",
+        debug!("重扫模式: type={} pos=({},{}) count={} / Re-scan mode: type={} pos=({},{}) count={}",
             config.debug_rescan_type, row, col, config.debug_rescan_count,
             config.debug_rescan_type, row, col, config.debug_rescan_count);
 
-        let game_info = Self::get_game_info()?;
+        let game_info = Self::get_game_info()
+            .context("请确认原神已启动、未最小化、且使用16:9分辨率（如1920×1080）\
+                     / Ensure Genshin Impact is running, not minimized, and using a 16:9 resolution (e.g. 1920×1080)")?;
 
         #[cfg(target_os = "windows")]
         {
             if !yas::utils::is_admin() {
-                return Err(anyhow!("请以管理员身份运行 / Please run as administrator"));
+                return Err(anyhow!("需要管理员权限，请右键点击程序选择「以管理员身份运行」/ Administrator privileges required. Right-click the program and select 'Run as administrator'."));
             }
         }
 
         let overrides = user_config.to_overrides();
         let mappings = Arc::new(MappingManager::new(&overrides)?);
-        let mut ctrl = GenshinGameController::new(game_info)?;
+        let mut ctrl = GenshinGameController::new(game_info)
+            .context("屏幕截图初始化失败 / Screen capture initialization failed")?;
         let token = yas::cancel::CancelToken::new();
         ctrl.set_cancel_token(token.clone());
         ctrl.focus_game_window();
@@ -946,7 +977,7 @@ impl GoodScannerApplication {
                 let max_iter = if config.debug_rescan_count == 0 { usize::MAX } else { config.debug_rescan_count };
                 for i in 0..max_iter {
                     if token.check_rmb() {
-                        info!("[rescan] 用户中断 / interrupted by user");
+                        debug!("[rescan] 用户中断 / interrupted by user");
                         break;
                     }
                     println!("\n--- Re-scan iteration {} ---", i + 1);
@@ -997,7 +1028,7 @@ impl GoodScannerApplication {
 
                         for i in 0..max_iter {
                             if token.check_rmb() {
-                                info!("[rescan] 用户中断 / interrupted by user");
+                                debug!("[rescan] 用户中断 / interrupted by user");
                                 break;
                             }
                             println!("\n--- Re-scan iteration {} ---", i + 1);
@@ -1018,7 +1049,7 @@ impl GoodScannerApplication {
 
                         for i in 0..max_iter {
                             if token.check_rmb() {
-                                info!("[rescan] 用户中断 / interrupted by user");
+                                debug!("[rescan] 用户中断 / interrupted by user");
                                 break;
                             }
                             println!("\n--- Re-scan iteration {} ---", i + 1);
@@ -1036,7 +1067,7 @@ impl GoodScannerApplication {
             }
         }
 
-        info!("=== 重扫完成 / Re-scan complete ===");
+        debug!("重扫完成 / Re-scan complete");
         Ok(())
     }
 
@@ -1049,15 +1080,15 @@ impl GoodScannerApplication {
         #[cfg(target_os = "windows")]
         {
             if !yas::utils::is_admin() {
-                return Err(anyhow!("请以管理员身份运行 / Please run as administrator"));
+                return Err(anyhow!("需要管理员权限，请右键点击程序选择「以管理员身份运行」/ Administrator privileges required. Right-click the program and select 'Run as administrator'."));
             }
         }
 
         // Load mappings
-        info!("=== 加载映射数据 / Loading mappings ===");
+        debug!("加载映射数据... / Loading mappings...");
         let overrides = user_config.to_overrides();
         let mappings = Arc::new(MappingManager::new(&overrides)?);
-        info!(
+        debug!(
             "已加载 / Loaded: {} characters, {} weapons, {} artifact sets",
             mappings.character_name_map.len(),
             mappings.weapon_name_map.len(),
@@ -1096,9 +1127,9 @@ impl GoodScannerApplication {
 
     /// Standalone diff mode: compare two existing JSON files without game.
     fn run_standalone_diff(compare_path: &str, actual_path: &str) -> Result<()> {
-        info!("=== 离线对比模式 / Standalone diff mode ===");
-        info!("真值文件 / Groundtruth: {}", compare_path);
-        info!("实际文件 / Actual: {}", actual_path);
+        debug!("离线对比模式 / Standalone diff mode");
+        debug!("真值文件 / Groundtruth: {}", compare_path);
+        debug!("实际文件 / Actual: {}", actual_path);
 
         let gt_json = std::fs::read_to_string(compare_path)?;
         let groundtruth: GoodExport = serde_json::from_str(&gt_json)?;
@@ -1276,6 +1307,8 @@ pub fn run_scan_core(
     status_fn: Option<&dyn Fn(&str)>,
     cancel_token: Option<yas::cancel::CancelToken>,
 ) -> Result<String> {
+    init_rayon_pool();
+
     let report = |msg: &str| {
         if let Some(f) = status_fn { f(msg); }
     };
@@ -1283,7 +1316,7 @@ pub fn run_scan_core(
     #[cfg(target_os = "windows")]
     {
         if !yas::utils::is_admin() {
-            return Err(anyhow!("请以管理员身份运行 / Please run as administrator"));
+            return Err(anyhow!("需要管理员权限，请右键点击程序选择「以管理员身份运行」/ Administrator privileges required. Right-click the program and select 'Run as administrator'."));
         }
     }
 
@@ -1291,7 +1324,7 @@ pub fn run_scan_core(
 
     // Fetch and load mappings
     report("加载映射数据 / Loading mappings...");
-    info!("=== 加载映射数据 / Loading mappings ===");
+    info!("加载映射数据... / Loading mappings...");
     let overrides = user_config.to_overrides();
     let mappings = Arc::new(MappingManager::new(&overrides)?);
     info!(
@@ -1303,8 +1336,11 @@ pub fn run_scan_core(
 
     // Find and focus the game window
     report("查找游戏窗口 / Finding game window...");
-    let game_info = GoodScannerApplication::get_game_info()?;
-    let mut ctrl = GenshinGameController::new(game_info)?;
+    let game_info = GoodScannerApplication::get_game_info()
+        .context("请确认原神已启动、未最小化、且使用16:9分辨率（如1920×1080）\
+                 / Ensure Genshin Impact is running, not minimized, and using a 16:9 resolution (e.g. 1920×1080)")?;
+    let mut ctrl = GenshinGameController::new(game_info)
+        .context("屏幕截图初始化失败 / Screen capture initialization failed")?;
     let token = cancel_token.unwrap_or_else(yas::cancel::CancelToken::new);
     ctrl.set_cancel_token(token.clone());
     ctrl.focus_game_window();
@@ -1323,7 +1359,7 @@ pub fn run_scan_core(
     // Scan characters
     if config.scan_characters {
         report("扫描角色 / Scanning characters...");
-        info!("=== 扫描角色 / Scanning characters ===");
+        info!("扫描角色... / Scanning characters...");
         let char_config = GoodScannerApplication::make_char_config(&scanner_config, user_config);
         let scanner = GoodCharacterScanner::new(char_config, mappings.clone())?;
         let result = scanner.scan(&mut ctrl, 0, &pools)?;
@@ -1338,7 +1374,7 @@ pub fn run_scan_core(
     // Scan weapons
     if config.scan_weapons && !token.is_cancelled() {
         report("扫描武器 / Scanning weapons...");
-        info!("=== 扫描武器 / Scanning weapons ===");
+        info!("扫描武器... / Scanning weapons...");
         let weapon_config = GoodScannerApplication::make_weapon_config(&scanner_config, user_config);
         let scanner = GoodWeaponScanner::new(weapon_config, mappings.clone())?;
         let result = scanner.scan(&mut ctrl, false, 0, &pools)?;
@@ -1349,7 +1385,7 @@ pub fn run_scan_core(
     // Scan artifacts
     if config.scan_artifacts && !token.is_cancelled() {
         report("扫描圣遗物 / Scanning artifacts...");
-        info!("=== 扫描圣遗物 / Scanning artifacts ===");
+        info!("扫描圣遗物... / Scanning artifacts...");
         let artifact_config = GoodScannerApplication::make_artifact_config(&scanner_config, user_config);
         let skip_open = config.scan_weapons;
         let scanner = GoodArtifactScanner::new(artifact_config, mappings.clone())?;
@@ -1394,14 +1430,16 @@ pub fn run_server_core(
     stop_on_all_matched: bool,
     dump_images: bool,
 ) -> Result<()> {
+    init_rayon_pool();
+
     #[cfg(target_os = "windows")]
     {
         if !yas::utils::is_admin() {
-            return Err(anyhow!("请以管理员身份运行 / Please run as administrator"));
+            return Err(anyhow!("需要管理员权限，请右键点击程序选择「以管理员身份运行」/ Administrator privileges required. Right-click the program and select 'Run as administrator'."));
         }
     }
 
-    info!("=== 加载映射数据 / Loading mappings ===");
+    info!("加载映射数据... / Loading mappings...");
     let overrides = user_config.to_overrides();
     let mappings = Arc::new(MappingManager::new(&overrides)?);
     info!(
@@ -1428,9 +1466,14 @@ pub fn run_server_core(
 
         crate::manager::ui_actions::set_manager_delays(mgr_delays.clone());
         let pool_config = OcrPoolConfig::detect();
-        let pools = Arc::new(SharedOcrPools::new(pool_config, &ocr_be, &substat_ocr)?);
-        let game_info = GoodScannerApplication::get_game_info()?;
-        let ctrl = GenshinGameController::new(game_info)?;
+        let pools = Arc::new(SharedOcrPools::new(pool_config, &ocr_be, &substat_ocr)
+            .context("OCR模型加载失败，请确认内存充足（建议8GB以上）\
+                     / OCR model load failed — ensure sufficient memory (8 GB+ recommended)")?);
+        let game_info = GoodScannerApplication::get_game_info()
+            .context("请确认原神已启动、未最小化、且使用16:9分辨率（如1920×1080）\
+                     / Ensure Genshin Impact is running, not minimized, and using a 16:9 resolution (e.g. 1920×1080)")?;
+        let ctrl = GenshinGameController::new(game_info)
+            .context("屏幕截图初始化失败 / Screen capture initialization failed")?;
         let manager = crate::manager::orchestrator::ArtifactManager::new(
             mappings_clone,
             pools,
@@ -1456,7 +1499,7 @@ pub fn run_manage_json(
     #[cfg(target_os = "windows")]
     {
         if !yas::utils::is_admin() {
-            return Err(anyhow!("请以管理员身份运行 / Please run as administrator"));
+            return Err(anyhow!("需要管理员权限，请右键点击程序选择「以管理员身份运行」/ Administrator privileges required. Right-click the program and select 'Run as administrator'."));
         }
     }
 
@@ -1481,10 +1524,12 @@ pub fn run_manage_json(
     let overrides = user_config.to_overrides();
     let mappings = Arc::new(MappingManager::new(&overrides)?);
 
-    let game_info = GoodScannerApplication::get_game_info()?;
-    let mut ctrl = GenshinGameController::new(game_info)?;
+    let game_info = GoodScannerApplication::get_game_info()
+        .context("请确认原神已启动、未最小化、且使用16:9分辨率（如1920×1080）\
+                 / Ensure Genshin Impact is running, not minimized, and using a 16:9 resolution (e.g. 1920×1080)")?;
+    let mut ctrl = GenshinGameController::new(game_info)
+        .context("屏幕截图初始化失败 / Screen capture initialization failed")?;
     let token = cancel_token.unwrap_or_else(yas::cancel::CancelToken::new);
-
 
     let ocr_be = ocr_backend.unwrap_or("ppocrv5");
     let pool_config = OcrPoolConfig::detect();

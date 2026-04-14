@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use image::RgbImage;
 
 use yas::ocr::ImageToText;
@@ -17,7 +17,9 @@ pub fn create_ocr_model(backend: &str) -> Result<Box<dyn ImageToText<RgbImage> +
             let dict_str = include_str!("models/ppocr_keys_v1.txt");
             let mut dict_vec: Vec<String> = dict_str.lines().map(|l| l.trim().to_string()).collect();
             dict_vec.push(String::from(" "));
-            let model = yas::ocr::PPOCRModel::new(model_bytes, dict_vec)?;
+            let model = yas::ocr::PPOCRModel::new(model_bytes, dict_vec)
+                .context("ONNX v4模型初始化失败，请确认onnxruntime.dll存在且版本正确\
+                         / ONNX v4 model init failed — ensure onnxruntime.dll exists and is the correct version")?;
             Ok(Box::new(model))
         }
         _ => {
@@ -26,7 +28,9 @@ pub fn create_ocr_model(backend: &str) -> Result<Box<dyn ImageToText<RgbImage> +
             let dict_str = include_str!("models/ppocrv5_dict.txt");
             let mut dict_vec: Vec<String> = dict_str.lines().map(|l| l.trim().to_string()).collect();
             dict_vec.push(String::from(" "));
-            let model = yas::ocr::PPOCRModel::new(model_bytes, dict_vec)?;
+            let model = yas::ocr::PPOCRModel::new(model_bytes, dict_vec)
+                .context("ONNX v5模型初始化失败，请确认onnxruntime.dll存在且版本正确\
+                         / ONNX v5 model init failed — ensure onnxruntime.dll exists and is the correct version")?;
             Ok(Box::new(model))
         }
     }
