@@ -15,4 +15,5 @@ debug_images/
 diff_report.md
 *.log
 .claude/
-docs/superpowers/genshin/log/
+docs/superpowers/
+genshin/log/
