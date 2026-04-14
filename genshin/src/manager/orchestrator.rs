@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use log::{debug, info};
+use yas::{log_debug, log_info};
 
 use yas::cancel::CancelToken;
 
@@ -85,11 +85,9 @@ impl ArtifactManager {
 
         report(all_results.len(), "锁定变更 / Lock changes");
 
-        info!(
-            "[manager] 执行 {} 个锁定目标（{} 锁定, {} 解锁）/ Executing {} lock targets ({} lock, {} unlock)",
-            targets.len(),
-            targets.iter().filter(|t| t.desired_lock).count(),
-            targets.iter().filter(|t| !t.desired_lock).count(),
+        log_info!(
+            "[manager] 执行 {} 个锁定目标（{} 锁定, {} 解锁）",
+            "[manager] Executing {} lock targets ({} lock, {} unlock)",
             targets.len(),
             targets.iter().filter(|t| t.desired_lock).count(),
             targets.iter().filter(|t| !t.desired_lock).count(),
@@ -135,9 +133,9 @@ impl ArtifactManager {
         }
 
         let summary = ManageSummary::from_results(&all_results);
-        info!(
-            "[manager] 完成：{} 成功, {} 已正确, {} 未找到, {} 错误, {} 中断 / Done: {} success, {} already correct, {} not found, {} errors, {} aborted",
-            summary.success, summary.already_correct, summary.not_found, summary.errors, summary.aborted,
+        log_info!(
+            "[manager] 完成：{} 成功, {} 已正确, {} 未找到, {} 错误, {} 中断",
+            "[manager] Done: {} success, {} already correct, {} not found, {} errors, {} aborted",
             summary.success, summary.already_correct, summary.not_found, summary.errors, summary.aborted,
         );
 
@@ -179,7 +177,7 @@ impl ArtifactManager {
 
         report(0, "装备变更 / Equip changes");
 
-        debug!("[manager] 执行 {} 个��备目标 / executing {} equip targets", targets.len(), targets.len());
+        log_debug!("[manager] 执行 {} 个装备目标", "[manager] executing {} equip targets", targets.len());
 
         let equip_mgr = EquipManager::new(
             self.mappings.clone(),
@@ -191,9 +189,9 @@ impl ArtifactManager {
         report(results.len(), "装备变更 / Equip changes");
 
         let summary = ManageSummary::from_results(&results);
-        info!(
-            "[manager] 装备完成：{} 成功, {} 已正确, {} 未找到, {} 错误, {} 中断 / equip done: {} ok, {} already correct, {} not found, {} errors, {} aborted",
-            summary.success, summary.already_correct, summary.not_found, summary.errors, summary.aborted,
+        log_info!(
+            "[manager] 装备完成：{} 成功, {} 已正确, {} 未找到, {} 错误, {} 中断",
+            "[manager] equip done: {} ok, {} already correct, {} not found, {} errors, {} aborted",
             summary.success, summary.already_correct, summary.not_found, summary.errors, summary.aborted,
         );
 

@@ -52,7 +52,7 @@ pub fn run_gui() {
                     *update_state.lock().unwrap() = UpdateState::None;
                 }
                 Err(e) => {
-                    log::debug!("更新检查失败 / Update check failed: {}", e);
+                    yas::log_debug!("更新检查失败: {}", "Update check failed: {}", e);
                     *update_state.lock().unwrap() = UpdateState::None;
                 }
             }
@@ -362,12 +362,13 @@ fn show_restart_dialog(
 
     match result {
         rfd::MessageDialogResult::Yes => {
-            log::info!("用户选择立即重启 / User chose to restart now");
+            yas::log_info!("用户选择立即重启", "User chose to restart now");
             match std::process::Command::new(&exe_path).spawn() {
                 Ok(_) => std::process::exit(0),
                 Err(e) => {
-                    log::error!(
-                        "启动新版本失败 / Failed to launch new version: {}",
+                    yas::log_error!(
+                        "启动新版本失败: {}",
+                        "Failed to launch new version: {}",
                         e
                     );
                     *update_state.lock().unwrap() = UpdateState::Ready;
@@ -375,7 +376,7 @@ fn show_restart_dialog(
             }
         }
         _ => {
-            log::info!("用户选择稍后重启 / User chose to restart later");
+            yas::log_info!("用户选择稍后重启", "User chose to restart later");
             *update_state.lock().unwrap() = UpdateState::Ready;
         }
     }

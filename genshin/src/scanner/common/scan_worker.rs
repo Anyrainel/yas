@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use image::RgbImage;
 use indicatif::{ProgressBar, ProgressStyle};
-use log::error;
+use yas::log_error;
 
 /// A work item sent from the capture thread to the worker pool.
 pub struct WorkItem<M: Send> {
@@ -116,10 +116,10 @@ where
                         consecutive_errors = 0;
                     }
                     Err(e) => {
-                        error!("[worker] 第{}项错误: {} / [worker] item {} error: {}", next_index - 1, e, next_index - 1, e);
+                        log_error!("[worker] 第{}项错误: {}", "[worker] item {} error: {}", next_index - 1, e);
                         consecutive_errors += 1;
                         if consecutive_errors >= 10 {
-                            error!("[worker] 连续{}个错误，发送停止信号 / [worker] {} consecutive errors, signaling stop", consecutive_errors, consecutive_errors);
+                            log_error!("[worker] 连续{}个错误，发送停止信号", "[worker] {} consecutive errors, signaling stop", consecutive_errors);
                             should_stop_clone.store(true, Ordering::Relaxed);
                         }
                     }

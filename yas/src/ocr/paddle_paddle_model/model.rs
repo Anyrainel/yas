@@ -215,8 +215,9 @@ impl ImageToText<RgbImage> for PPOCRModel {
                     out_of_bounds_count += 1;
                     if out_of_bounds_count == 1 {
                         // 只在第一次越界时记录详细信息
-                        log::debug!("PaddleOCR 索引越界: index={}, 有效范围=[1, {}], 位置={}, 已跳过该字符 / PaddleOCR index out of bounds: index={}, valid range=[1, {}], position={}, character skipped",
-                                   index, self.index_to_word.len(), _pos, index, self.index_to_word.len(), _pos);
+                        log_debug!("PaddleOCR 索引越界: index={}, 有效范围=[1, {}], 位置={}, 已跳过该字符",
+                                   "PaddleOCR index out of bounds: index={}, valid range=[1, {}], position={}, character skipped",
+                                   index, self.index_to_word.len(), _pos);
                     }
                 } else {
                     let ch = &self.index_to_word[index - 1];
@@ -229,7 +230,7 @@ impl ImageToText<RgbImage> for PPOCRModel {
         }
         
         if out_of_bounds_count > 0 {
-            log::debug!("PaddleOCR 本次识别共有 {} 个字符索引越界被跳过，最终识别结果: '{}' / PaddleOCR {} characters skipped due to index out of bounds, final result: '{}'", out_of_bounds_count, s, out_of_bounds_count, s);
+            log_debug!("PaddleOCR 本次识别共有 {} 个字符索引越界被跳过，最终识别结果: '{}'", "PaddleOCR {} characters skipped due to index out of bounds, final result: '{}'", out_of_bounds_count, s);
         }
         
         // log::info!("[OCR调试] 最终识别结果: {}", s);

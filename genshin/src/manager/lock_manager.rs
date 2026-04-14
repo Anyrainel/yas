@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crossbeam_channel;
 
-use log::{debug, info, warn};
+use yas::{log_debug, log_info, log_warn};
 
 use crate::scanner::artifact::GoodArtifactScanner;
 use crate::scanner::common::backpack_scanner::{
@@ -117,11 +117,11 @@ impl LockManager {
             ctrl, "artifact", 1200, 400, &count_ocr_guard,
         ) {
             Ok((count, _max)) => {
-                debug!("[lock_manager] 共 {} 个圣遗物 / {} artifacts total", count, count);
+                log_debug!("[lock_manager] 共 {} 个圣遗物", "[lock_manager] {} artifacts total", count);
                 count as usize
             }
             Err(e) => {
-                warn!("无法读取圣遗物数量 / Cannot read artifact count: {}", e);
+                log_warn!("无法读取圣遗物数量: {}", "Cannot read artifact count: {}", e);
                 return (
                     make_error_results(targets, InstructionStatus::OcrError),
                     scanned_artifacts,
@@ -132,7 +132,7 @@ impl LockManager {
         };
 
         if total == 0 {
-            info!("[lock_manager] 背包中没有圣遗物，无法执行锁定操作 / No artifacts in backpack, cannot perform lock operations");
+            log_info!("[lock_manager] 背包中没有圣遗物，无法执行锁定操作", "[lock_manager] No artifacts in backpack, cannot perform lock operations");
             return (
                 targets.iter().map(|t| InstructionResult {
                     id: t.result_id.clone(),
@@ -201,9 +201,9 @@ impl LockManager {
                         &scaler_cb,
                     );
                     if level > max_target_level {
-                        debug!(
-                            "[lock_manager] 页面跳过：末尾等级={} > 最高目���等级={} (page_start={}) / Page skip: last level={} > max target={} (page_start={})",
-                            level, max_target_level, page_start_idx,
+                        log_debug!(
+                            "[lock_manager] 页面跳过：末尾等级={} > 最高目标等级={} (page_start={})",
+                            "[lock_manager] Page skip: last level={} > max target={} (page_start={})",
                             level, max_target_level, page_start_idx
                         );
                         ScanAction::SkipPage
@@ -241,7 +241,7 @@ impl LockManager {
                                     &d_img, &sc, &mp, gi,
                                 ) {
                                     Ok(a) => a,
-                                    Err(e) => { warn!("[lock_manager] OCR失败 #{}: {} / OCR failed", d_idx, e); None }
+                                    Err(e) => { log_warn!("[lock_manager] OCR失败 #{}: {}", "[lock_manager] OCR failed #{}: {}", d_idx, e); None }
                                 };
                                 let _ = tx.send((d_idx, d_row, d_col, artifact));
                             });
@@ -258,8 +258,9 @@ impl LockManager {
                             GoodArtifactScanner::scan_level_only(&guard, &image, &scaler_cb) <= 0
                         }
                     {
-                        debug!(
-                            "[lock_manager] 检测到低稀有度lv0圣遗物，当前页后停止 / Low rarity lv0 artifact detected, stopping after current page"
+                        log_debug!(
+                            "[lock_manager] 检测到低稀有度lv0圣遗物，当前页后停止",
+                            "[lock_manager] Low rarity lv0 artifact detected, stopping after current page"
                         );
                         rarity_stopped = true;
                         stop_requested = true;
@@ -298,7 +299,7 @@ impl LockManager {
                                 &d_img, &sc, &mp, gi,
                             ) {
                                 Ok(a) => a,
-                                Err(e) => { warn!("[lock_manager] OCR失败 #{}: {} / OCR failed", d_idx, e); None }
+                                Err(e) => { log_warn!("[lock_manager] OCR失败 #{}: {}", "[lock_manager] OCR failed #{}: {}", d_idx, e); None }
                             };
                             let _ = tx.send((d_idx, d_row, d_col, artifact));
                         });
@@ -371,7 +372,7 @@ impl LockManager {
                         yas::utils::sleep(d_cell());
 
                         if let Err(e) = ui_actions::click_lock_button(ctrl_cb, toggle.y_shift) {
-                            warn!("[lock_manager] 锁定切换失败 / Lock toggle failed: {}", e);
+                            log_warn!("[lock_manager] 锁定切换失败: {}", "[lock_manager] Lock toggle failed: {}", e);
                             results.insert(toggle.result_id.clone(), InstructionResult {
                                 id: toggle.result_id.clone(),
                                 status: InstructionStatus::UiError,
@@ -383,7 +384,7 @@ impl LockManager {
                         let image = match ctrl_cb.capture_game() {
                             Ok(img) => img,
                             Err(e) => {
-                                warn!("[lock_manager] 截图失败 / Capture failed: {}", e);
+                                log_warn!("[lock_manager] 截图失败: {}", "[lock_manager] Capture failed: {}", e);
                                 results.insert(toggle.result_id.clone(), InstructionResult {
                                     id: toggle.result_id.clone(),
                                     status: InstructionStatus::UiError,
@@ -410,23 +411,19 @@ impl LockManager {
                         toggle_counter += 1;
 
                         if new_lock == toggle.desired_lock {
-                            let (cn, en) = if toggle.desired_lock {
-                                ("锁定成功", "Lock success")
+                            if toggle.desired_lock {
+                                log_debug!("[lock_manager] 锁定成功 ({},{})", "[lock_manager] Lock success ({},{})", toggle.row, toggle.col);
                             } else {
-                                ("解锁成功", "Unlock success")
-                            };
-                            debug!(
-                                "[lock_manager] {} ({},{}) / {}",
-                                cn, toggle.row, toggle.col, en
-                            );
+                                log_debug!("[lock_manager] 解锁成功 ({},{})", "[lock_manager] Unlock success ({},{})", toggle.row, toggle.col);
+                            }
                             results.insert(toggle.result_id.clone(), InstructionResult {
                                 id: toggle.result_id.clone(),
                                 status: InstructionStatus::Success,
                             });
                         } else {
-                            warn!(
-                                "[lock_manager] 锁定验证失败 ({},{}): 期望={} 实际={} / Lock verify failed ({},{}): expected={} actual={}",
-                                toggle.row, toggle.col, toggle.desired_lock, new_lock,
+                            log_warn!(
+                                "[lock_manager] 锁定验证失败 ({},{}): 期望={} 实际={}",
+                                "[lock_manager] Lock verify failed ({},{}): expected={} actual={}",
                                 toggle.row, toggle.col, toggle.desired_lock, new_lock
                             );
                             results.insert(toggle.result_id.clone(), InstructionResult {
@@ -438,7 +435,7 @@ impl LockManager {
 
                     // Early stop if all targets matched (fast mode only).
                     if stop_on_all_matched && matched.len() == targets.len() {
-                        info!("[lock_manager] 所有目标已匹配，提前停止 / All targets matched, stopping early");
+                        log_info!("[lock_manager] 所有目标已匹配，提前停止", "[lock_manager] All targets matched, stopping early");
                         stop_requested = true;
                     }
 

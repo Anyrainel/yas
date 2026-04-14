@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use image::RgbImage;
-use log::{debug, info, warn};
+use yas::{log_debug, log_info, log_warn};
 
 use yas::ocr::ImageToText;
 use crate::scanner::common::constants::*;
@@ -119,7 +119,7 @@ impl EquipManager {
         yas::utils::sleep(d_action() * 5 / 8);
 
         if let Err(e) = ui_actions::ensure_character_screen(ctrl, ocr, &self.mappings) {
-            warn!("[equip_roster] 无法打开角色界面: {} / cannot open character screen: {}", e, e);
+            log_warn!("[equip_roster] 无法打开角色界面: {}", "[equip_roster] cannot open character screen: {}", e);
             for targets in char_groups.values() {
                 for target in targets {
                     results.insert(target.result_id.clone(), InstructionResult {
@@ -143,7 +143,7 @@ impl EquipManager {
             // OCR character name
             let name_text = ctrl.ocr_region(ocr, CHAR_NAME_RECT).unwrap_or_default();
             let name_trimmed = name_text.trim().to_string();
-            debug!("[equip_roster] #{}: OCR识别='{}' / OCR='{}'", i, name_trimmed, name_trimmed);
+            log_debug!("[equip_roster] #{}: OCR识别='{}'", "[equip_roster] #{}: OCR='{}'", i, name_trimmed);
 
             if self.dump_images {
                 if let Ok(image) = ctrl.capture_game() {
@@ -159,7 +159,7 @@ impl EquipManager {
                     let cur_name = clean_char_name(&name_trimmed);
                     let first_char_name = clean_char_name(first);
                     if !cur_name.is_empty() && cur_name == first_char_name {
-                        debug!("[equip_roster] 已遍历全部角色 / all characters visited (cycled)");
+                        log_debug!("[equip_roster] 已遍历全部角色", "[equip_roster] all characters visited (cycled)");
                         break;
                     }
                 }
@@ -173,7 +173,7 @@ impl EquipManager {
             let matched_key = self.match_character_name(&name_trimmed, &clean_name, char_groups, results);
 
             if let Some(char_key) = matched_key {
-                debug!("[equip_roster] 在位置{}找到{} / found {} at position {}", i, char_key, char_key, i);
+                log_debug!("[equip_roster] 在位置{}找到{}", "[equip_roster] found {} at position {}", i, char_key);
 
                 if let Some(targets) = char_groups.get(char_key.as_str()) {
                     let slot_targets: Vec<&EquipTarget> = targets.iter()
@@ -289,7 +289,7 @@ impl EquipManager {
         // The main set filter is applied last so the game remembers it.
         let (flex_indices, main_sets) = analyze_set_composition(targets);
 
-        debug!("[equip_slots] flex={:?}, main_sets={:?} / analyzing {} targets",
+        log_debug!("[equip_slots] flex={:?}, main_sets={:?}, {} 个目标", "[equip_slots] flex={:?}, main_sets={:?}, analyzing {} targets",
             flex_indices, main_sets, targets.len());
 
         // Build ordered slot list: all flex first, then all non-flex
@@ -348,7 +348,7 @@ impl EquipManager {
 
             // Click slot tab
             if let Err(e) = ui_actions::click_slot_tab(ctrl, &target.artifact.slot_key) {
-                warn!("[equip_slot] 点击栏位标签失败: {} / click slot tab failed: {}", e, e);
+                log_warn!("[equip_slot] 点击栏位标签失败: {}", "[equip_slot] click slot tab failed: {}", e);
                 results.insert(target.result_id.clone(), InstructionResult {
                     id: target.result_id.clone(),
                     status: InstructionStatus::UiError,
@@ -359,7 +359,7 @@ impl EquipManager {
             // Check if the currently equipped artifact already matches (live OCR check)
             match ui_actions::check_current_artifact_matches(ctrl, &target.artifact, ocr, &self.mappings) {
                 Ok(true) => {
-                    info!("[equip_slot] {} 已正确装备 / already correct", target.result_id);
+                    log_info!("[equip_slot] {} 已正确装备", "[equip_slot] {} already correct", target.result_id);
                     results.insert(target.result_id.clone(), InstructionResult {
                         id: target.result_id.clone(),
                         status: InstructionStatus::AlreadyCorrect,
@@ -368,28 +368,28 @@ impl EquipManager {
                 }
                 Ok(false) => { /* need to find the artifact */ }
                 Err(e) => {
-                    debug!("[equip_slot] 检查当前圣遗物失败: {} / check current failed: {}", e, e);
+                    log_debug!("[equip_slot] 检查当前圣遗物失败: {}", "[equip_slot] check current failed: {}", e);
                 }
             }
 
             // Search the grid for the target artifact
             match ui_actions::find_artifact_in_grid_with_dump(ctrl, &target.artifact, ocr, &self.mappings, true, self.dump_images) {
                 Ok(true) => {
-                    info!("[equip_slot] 装备成功: {} / equip success", target.result_id);
+                    log_info!("[equip_slot] 装备成功: {}", "[equip_slot] equip success: {}", target.result_id);
                     results.insert(target.result_id.clone(), InstructionResult {
                         id: target.result_id.clone(),
                         status: InstructionStatus::Success,
                     });
                 }
                 Ok(false) => {
-                    warn!("[equip_slot] 未找到: {} / not found", target.result_id);
+                    log_warn!("[equip_slot] 未找到: {}", "[equip_slot] not found: {}", target.result_id);
                     results.insert(target.result_id.clone(), InstructionResult {
                         id: target.result_id.clone(),
                         status: InstructionStatus::NotFound,
                     });
                 }
                 Err(e) => {
-                    warn!("[equip_slot] 装备失败: {} / equip error", e);
+                    log_warn!("[equip_slot] 装备失败: {}", "[equip_slot] equip error: {}", e);
                     results.insert(target.result_id.clone(), InstructionResult {
                         id: target.result_id.clone(),
                         status: InstructionStatus::UiError,
@@ -411,7 +411,7 @@ impl EquipManager {
         ocr: &dyn ImageToText<RgbImage>,
     ) -> InstructionResult {
         if let Err(e) = ui_actions::open_character_screen(ctrl, current_owner, &self.mappings, ocr) {
-            warn!("[equip_manager] 打开角色界面失败: {} / open character screen failed: {}", e, e);
+            log_warn!("[equip_manager] 打开角色界面失败: {}", "[equip_manager] open character screen failed: {}", e);
             return InstructionResult {
                 id: target.result_id.clone(),
                 status: InstructionStatus::UiError,
@@ -419,7 +419,7 @@ impl EquipManager {
         }
 
         if let Err(e) = ui_actions::click_equipment_slot(ctrl, &target.artifact.slot_key) {
-            warn!("[equip_manager] 点击装备栏位失败: {} / click equipment slot failed: {}", e, e);
+            log_warn!("[equip_manager] 点击装备栏位失败: {}", "[equip_manager] click equipment slot failed: {}", e);
             return InstructionResult {
                 id: target.result_id.clone(),
                 status: InstructionStatus::UiError,
@@ -427,14 +427,14 @@ impl EquipManager {
         }
 
         if let Err(e) = ui_actions::click_unequip_button(ctrl) {
-            warn!("[equip_manager] 卸下操作失败: {} / unequip failed: {}", e, e);
+            log_warn!("[equip_manager] 卸下操作失败: {}", "[equip_manager] unequip failed: {}", e);
             return InstructionResult {
                 id: target.result_id.clone(),
                 status: InstructionStatus::UiError,
             };
         }
 
-        info!("[equip_manager] 卸下成功: {} (from {}) / unequip success", target.result_id, current_owner);
+        log_info!("[equip_manager] 卸下成功: {} (from {})", "[equip_manager] unequip success: {} (from {})", target.result_id, current_owner);
         InstructionResult {
             id: target.result_id.clone(),
             status: InstructionStatus::Success,

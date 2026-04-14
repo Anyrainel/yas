@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
 use anyhow::{anyhow, Result};
-use log::{debug, error, info, warn};
+use yas::{log_debug, log_error, log_info, log_warn};
 use tiny_http::{Header, Method, Response, Server};
 
 use crate::manager::models::*;
@@ -53,7 +53,7 @@ fn save_request(endpoint: &str, body: &str) {
     let filename = format!("{}_{}.json", endpoint, ts);
     let path = log_dir.join(&filename);
     if let Err(e) = std::fs::write(&path, body) {
-        error!("保存请求失败 / Failed to save request {}: {}", filename, e);
+        log_error!("保存请求失败: {}: {}", "Failed to save request {}: {}", filename, e);
     }
 }
 
@@ -208,7 +208,7 @@ fn respond_json(request: tiny_http::Request, status: u16, json: &str, origin: Op
         );
     }
     if let Err(e) = request.respond(resp) {
-        error!("响应失败 / Response failed: {}", e);
+        log_error!("响应失败: {}", "Response failed: {}", e);
     }
 }
 
@@ -249,9 +249,10 @@ where
         })?;
     let server = Arc::new(server);
 
-    info!(
-        "HTTP服务器已启动：http://{} / HTTP server running at http://{}",
-        addr, addr
+    log_info!(
+        "HTTP服务器已启动：http://{}",
+        "HTTP server running at http://{}",
+        addr
     );
 
     // Shared state for async job tracking
@@ -279,7 +280,7 @@ where
         while !shutdown_flag.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
-        info!("收到关闭信号 / Shutdown signal received, stopping HTTP server");
+        log_info!("收到关闭信号，停止HTTP服务器", "Shutdown signal received, stopping HTTP server");
         shutdown_server.unblock();
         // Drop the original sender so job_rx.recv() unblocks once the HTTP thread also exits
         drop(job_tx);
@@ -302,7 +303,7 @@ where
                     Some(o.trim_end_matches('/').to_string())
                 }
                 Some(o) => {
-                    warn!("拒绝非法来源 / Rejected disallowed origin: {}", o);
+                    log_warn!("拒绝非法来源: {}", "Rejected disallowed origin: {}", o);
                     respond_json(request, 403,
                         r#"{"error":"Origin not allowed"}"#, None);
                     continue;
@@ -320,7 +321,7 @@ where
                     }
                 }
                 if let Err(e) = request.respond(resp) {
-                    debug!("CORS preflight 响应失败 / CORS preflight response failed: {}", e);
+                    log_debug!("CORS preflight 响应失败: {}", "CORS preflight response failed: {}", e);
                 }
                 continue;
             }
@@ -454,17 +455,18 @@ where
     // This thread owns ctrl (which is !Send) so it must be the original thread.
     // Game controller + manager are created lazily on first job to avoid
     // focusing the game window at server startup.
-    debug!("执行线程就绪 / Execution thread ready");
+    log_debug!("执行线程就绪", "Execution thread ready");
     let mut executor: Option<Box<dyn ManageExecutor>> = None;
     let mut init_executor = Some(init_executor);
 
     while let Ok((job_id, request)) = job_rx.recv() {
         if shutdown.load(Ordering::Relaxed) {
-            info!("[job {}] 服务器关闭中，跳过 / Server shutting down, skipping job", job_id);
+            log_info!("[job {}] 服务器关闭中，跳过", "[job {}] Server shutting down, skipping job", job_id);
             break;
         }
-        info!(
-            "[job {}] 收到任务，1秒后开始执行 / Job received, starting in 1 second",
+        log_info!(
+            "[job {}] 收到任务，1秒后开始执行",
+            "[job {}] Job received, starting in 1 second",
             job_id
         );
 
@@ -480,8 +482,9 @@ where
                         executor = Some(e);
                     }
                     Err(e) => {
-                        error!(
-                            "[job {}] 游戏初始化失败 / Game init failed:\n{:#}",
+                        log_error!(
+                            "[job {}] 游戏初始化失败:\n{:#}",
+                            "[job {}] Game init failed:\n{:#}",
                             job_id, e
                         );
                         let mut state = job_state.lock().unwrap();
@@ -521,7 +524,7 @@ where
                 let mut cache = artifact_cache.lock().unwrap();
                 if matches!(*cache, ArtifactCache::Complete(_)) {
                     *cache = ArtifactCache::Incomplete;
-                    debug!("[job {}] 执行前清除快照缓存 / Pre-execution: artifact cache invalidated", job_id);
+                    log_debug!("[job {}] 执行前清除快照缓存", "[job {}] Pre-execution: artifact cache invalidated", job_id);
                 }
             }
         }
@@ -562,7 +565,7 @@ where
                 } else {
                     "unknown panic".to_string()
                 };
-                error!("[job {}] 执行时发生panic: {} / Panic during execution: {}", job_id, msg, msg);
+                log_error!("[job {}] 执行时发生panic: {}", "[job {}] Panic during execution: {}", job_id, msg);
                 let summary = ManageSummary {
                     total: 0, success: 0, already_correct: 0, not_found: 0,
                     errors: 1, aborted: 0,
@@ -578,7 +581,7 @@ where
             Some(snapshot) => {
                 let count = snapshot.len();
                 *artifact_cache.lock().unwrap() = ArtifactCache::Complete(snapshot);
-                info!("[job {}] 圣遗物快照已更新（{} 个）/ Artifact snapshot updated ({} items)", job_id, count, count);
+                log_info!("[job {}] 圣遗物快照已更新（{} 个）", "[job {}] Artifact snapshot updated ({} items)", job_id, count);
             }
             None => {
                 // No snapshot returned — scan was incomplete, equip-only, or interrupted.
@@ -587,7 +590,7 @@ where
                     let mut cache = artifact_cache.lock().unwrap();
                     if matches!(*cache, ArtifactCache::Complete(_)) {
                         *cache = ArtifactCache::Incomplete;
-                        info!("[job {}] 游戏内状态已变更，快照已失效 / In-game state changed, artifact snapshot invalidated", job_id);
+                        log_info!("[job {}] 游戏内状态已变更，快照已失效", "[job {}] In-game state changed, artifact snapshot invalidated", job_id);
                     }
                 }
             }
@@ -598,11 +601,11 @@ where
             *state = JobState::completed(job_id.clone(), result);
         }
 
-        info!("[job {}] 执行完成 / Execution completed", job_id);
+        log_info!("[job {}] 执行完成", "[job {}] Execution completed", job_id);
     }
 
     // Channel disconnected — HTTP thread exited
-    debug!("HTTP 线程已断开 / HTTP thread disconnected, shutting down");
+    log_debug!("HTTP 线程已断开，正在关闭", "HTTP thread disconnected, shutting down");
     Ok(())
 }
 
@@ -636,7 +639,7 @@ fn handle_manage(
 ) {
     // Check if manager is enabled
     if !enabled.load(Ordering::Relaxed) {
-        warn!("管理器已暂停，拒绝请求 / Manager paused, rejecting request");
+        log_warn!("管理器已暂停，拒绝请求", "Manager paused, rejecting request");
         respond_json(
             request,
             503,
@@ -747,10 +750,10 @@ fn handle_manage(
     let total = manage_request.lock.len() + manage_request.unlock.len();
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    info!(
-        "[job {}] 收到 {} 条管理请求（lock: {}, unlock: {}）/ Received {} manage items (lock: {}, unlock: {})",
-        job_id, total, manage_request.lock.len(), manage_request.unlock.len(),
-        total, manage_request.lock.len(), manage_request.unlock.len()
+    log_info!(
+        "[job {}] 收到 {} 条管理请求（lock: {}, unlock: {}）",
+        "[job {}] Received {} manage items (lock: {}, unlock: {})",
+        job_id, total, manage_request.lock.len(), manage_request.unlock.len()
     );
 
     // Set state to Running
@@ -786,7 +789,7 @@ fn handle_equip(
     cors_origin: Option<&str>,
 ) {
     if !enabled.load(Ordering::Relaxed) {
-        warn!("管理器已暂停，拒绝请求 / Manager paused, rejecting request");
+        log_warn!("管理器已暂停，拒绝请求", "Manager paused, rejecting request");
         respond_json(
             request,
             503,
@@ -890,9 +893,10 @@ fn handle_equip(
     let total = equip_request.equip.len();
     let job_id = uuid::Uuid::new_v4().to_string();
 
-    info!(
-        "[job {}] 收到 {} 条装备请求 / Received {} equip instructions",
-        job_id, total, total
+    log_info!(
+        "[job {}] 收到 {} 条装备请求",
+        "[job {}] Received {} equip instructions",
+        job_id, total
     );
 
     {

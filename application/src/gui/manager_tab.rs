@@ -140,7 +140,7 @@ fn action_bar(
                 state.server_enabled.store(true, Ordering::Relaxed);
                 // Force immediate save before starting server
                 if let Err(e) = yas_genshin::cli::save_config(&state.user_config) {
-                    log::warn!("配置保存失败: {} / Config save failed: {}", e, e);
+                    yas::log_warn!("配置保存失败: {}", "Config save failed: {}", e);
                 }
                 state.config_dirty_since = None;
                 *server_handle = Some(worker::spawn_server(state));

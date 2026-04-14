@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use log::{debug, info, warn};
+use yas::{log_debug, log_info, log_warn};
 use serde::Deserialize;
 
 /// Asset filename to look for in each release.
@@ -116,7 +116,7 @@ pub fn current_version_display() -> String {
 /// Strategy 1: GitHub REST API (fast, works in most regions).
 fn get_tag_via_api() -> Option<String> {
     let url = "https://api.github.com/repos/Anyrainel/GOODScanner/releases/latest";
-    debug!("检查更新(API) / Checking via API: {}", url);
+    log_debug!("检查更新(API): {}", "Checking via API: {}", url);
 
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -127,7 +127,7 @@ fn get_tag_via_api() -> Option<String> {
 
     let resp = client.get(url).send().ok()?;
     if !resp.status().is_success() {
-        debug!("API 返回 / API returned: {}", resp.status());
+        log_debug!("API 返回: {}", "API returned: {}", resp.status());
         return None;
     }
     let release: GitHubRelease = resp.json().ok()?;
@@ -135,8 +135,9 @@ fn get_tag_via_api() -> Option<String> {
     if parse_calver_tag(&release.tag_name).is_some() {
         Some(release.tag_name)
     } else {
-        debug!(
-            "无法解析版本号 / Cannot parse release tag: {}",
+        log_debug!(
+            "无法解析版本号: {}",
+            "Cannot parse release tag: {}",
             release.tag_name
         );
         None
@@ -163,19 +164,19 @@ fn get_tag_via_redirect() -> Option<String> {
         } else {
             format!("{}{}", mirror, RELEASES_LATEST_URL)
         };
-        debug!("检查更新(redirect) / Checking via redirect: {}", url);
+        log_debug!("检查更新(redirect): {}", "Checking via redirect: {}", url);
 
         let resp = match client.get(&url).send() {
             Ok(r) => r,
             Err(e) => {
-                debug!("连接失败 / Connection failed: {}", e);
+                log_debug!("连接失败: {}", "Connection failed: {}", e);
                 continue;
             }
         };
 
         // Look for 3xx redirect with Location header
         if !resp.status().is_redirection() {
-            debug!("非重定向响应 / Non-redirect response: {}", resp.status());
+            log_debug!("非重定向响应: {}", "Non-redirect response: {}", resp.status());
             continue;
         }
 
@@ -225,7 +226,7 @@ pub fn check_for_update() -> Result<UpdateStatus> {
     // Try API first, then redirect fallback
     let latest_tag = get_tag_via_api()
         .or_else(|| {
-            debug!("API失败，尝试redirect方式 / API failed, trying redirect");
+            log_debug!("API失败，尝试redirect方式", "API failed, trying redirect");
             get_tag_via_redirect()
         })
         .ok_or_else(|| anyhow!("无法获取最新版本信息 / Cannot determine latest version"))?;
@@ -263,8 +264,8 @@ pub fn cleanup_old_exe() {
         let old = exe.with_extension("exe.old");
         if old.exists() {
             match std::fs::remove_file(&old) {
-                Ok(()) => debug!("已清理旧版本 / Cleaned up old exe"),
-                Err(e) => debug!("清理旧版本失败 / Failed to clean up old exe: {}", e),
+                Ok(()) => log_debug!("已清理旧版本", "Cleaned up old exe"),
+                Err(e) => log_debug!("清理旧版本失败: {}", "Failed to clean up old exe: {}", e),
             }
         }
     }
@@ -303,10 +304,9 @@ pub fn download_and_replace(download_url: &str) -> Result<PathBuf> {
             format!("{}{}", mirror, download_url)
         };
 
-        info!(
-            "尝试下载源 {}/{} / Trying source {}/{}: {}",
-            i + 1,
-            DOWNLOAD_MIRRORS.len(),
+        log_info!(
+            "尝试下载源 {}/{}: {}",
+            "Trying source {}/{}: {}",
             i + 1,
             DOWNLOAD_MIRRORS.len(),
             url,
@@ -315,9 +315,9 @@ pub fn download_and_replace(download_url: &str) -> Result<PathBuf> {
         match client.get(&url).send() {
             Ok(resp) if resp.status().is_success() => match resp.bytes() {
                 Ok(bytes) => {
-                    info!(
-                        "下载完成（{} 字节）/ Downloaded ({} bytes)",
-                        bytes.len(),
+                    log_info!(
+                        "下载完成（{} 字节）",
+                        "Downloaded ({} bytes)",
                         bytes.len(),
                     );
 
@@ -325,7 +325,7 @@ pub fn download_and_replace(download_url: &str) -> Result<PathBuf> {
                     if bytes.get(..2) != Some(b"MZ") {
                         last_error =
                             "下载文件不是有效的exe / Not a valid PE executable".into();
-                        warn!("{}", last_error);
+                        log_warn!("{}", "{}", last_error);
                         continue;
                     }
                     if bytes.len() < MIN_EXE_SIZE {
@@ -336,14 +336,14 @@ pub fn download_and_replace(download_url: &str) -> Result<PathBuf> {
                             bytes.len(),
                             MIN_EXE_SIZE,
                         );
-                        warn!("{}", last_error);
+                        log_warn!("{}", "{}", last_error);
                         continue;
                     }
 
                     // Self-replace: rename running exe → .old, write new
                     if old_path.exists() {
                         if let Err(e) = std::fs::remove_file(&old_path) {
-                            warn!("无法删除旧版本备份: {} / Cannot remove old backup: {}", e, e);
+                            log_warn!("无法删除旧版本备份: {}", "Cannot remove old backup: {}", e);
                         }
                     }
                     std::fs::rename(&exe_path, &old_path).map_err(|e| {
@@ -353,7 +353,7 @@ pub fn download_and_replace(download_url: &str) -> Result<PathBuf> {
                     if let Err(e) = std::fs::write(&exe_path, &bytes) {
                         // Rollback: restore the original exe
                         if let Err(re) = std::fs::rename(&old_path, &exe_path) {
-                            warn!("回滚失败: {} / Rollback failed: {}", re, re);
+                            log_warn!("回滚失败: {}", "Rollback failed: {}", re);
                         }
                         return Err(anyhow!(
                             "无法写入新版本 / Cannot write new version: {}",
@@ -361,26 +361,26 @@ pub fn download_and_replace(download_url: &str) -> Result<PathBuf> {
                         ));
                     }
 
-                    info!("更新完成！请重启程序。/ Update complete! Please restart.");
+                    log_info!("更新完成！请重启程序。", "Update complete! Please restart.");
                     return Ok(exe_path);
                 }
                 Err(e) => {
                     last_error = format!("{}", e);
-                    warn!("下载失败 / Download failed: {}", last_error);
+                    log_warn!("下载失败: {}", "Download failed: {}", last_error);
                 }
             },
             Ok(resp) => {
                 last_error = format!("HTTP {}", resp.status());
-                warn!(
-                    "源 {} 失败 / Source {} failed: {}",
-                    i + 1,
+                log_warn!(
+                    "源 {} 失败: {}",
+                    "Source {} failed: {}",
                     i + 1,
                     last_error,
                 );
             }
             Err(e) => {
                 last_error = format!("{}", e);
-                warn!("连接失败 / Connection failed: {}", last_error);
+                log_warn!("连接失败: {}", "Connection failed: {}", last_error);
             }
         }
     }

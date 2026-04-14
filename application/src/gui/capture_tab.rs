@@ -105,9 +105,10 @@ fn spawn_capture(
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
-                log::error!(
-                    "创建运行时失败: {} / Failed to create runtime: {}",
-                    e, e
+                yas::log_error!(
+                    "创建运行时失败: {}",
+                    "Failed to create runtime: {}",
+                    e
                 );
                 if let Ok(mut s) = state.lock() {
                     s.error = Some(format!("{}", e));
@@ -123,9 +124,10 @@ fn spawn_capture(
             ) {
                 Ok(m) => m,
                 Err(e) => {
-                    log::error!(
-                        "初始化抓包监控失败: {} / Failed to initialize capture monitor: {}",
-                        e, e
+                    yas::log_error!(
+                        "初始化抓包监控失败: {}",
+                        "Failed to initialize capture monitor: {}",
+                        e
                     );
                     if let Ok(mut s) = state.lock() {
                         s.error = Some(format!("{}", e));
@@ -368,9 +370,10 @@ fn update_phase(tab: &mut CaptureTabState, l: Lang) {
                                     cc, wc, ac
                                 ),
                             };
-                            log::info!(
-                                "{} → {} / {} → {}",
-                                summary, path.display(), summary, path.display()
+                            yas::log_info!(
+                                "{} → {}",
+                                "{} → {}",
+                                summary, path.display()
                             );
                             tab.phase = Phase::Done {
                                 summary,

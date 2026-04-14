@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Result};
-use log::{debug, info};
+use yas::{log_debug, log_info, log_warn};
 use serde::{Deserialize, Serialize};
 
 const MAPPINGS_URL: &str = "https://ggartifact.com/good/mappings.json";
@@ -63,17 +63,17 @@ fn load_meta() -> MappingsMeta {
 fn save_meta(meta: &MappingsMeta) {
     if let Some(parent) = Path::new(MAPPINGS_META_PATH).parent() {
         if let Err(e) = fs::create_dir_all(parent) {
-            log::warn!("无法创建缓存目录: {} / Cannot create cache directory: {}", e, e);
+            log_warn!("无法创建缓存目录: {}", "Cannot create cache directory: {}", e);
         }
     }
     match serde_json::to_string(meta) {
         Ok(json) => {
             if let Err(e) = fs::write(MAPPINGS_META_PATH, json) {
-                log::warn!("无法保存映射缓存信息: {} / Cannot save mapping cache metadata: {}", e, e);
+                log_warn!("无法保存映射缓存信息: {}", "Cannot save mapping cache metadata: {}", e);
             }
         }
         Err(e) => {
-            log::warn!("无法序列化缓存信息: {} / Cannot serialize cache metadata: {}", e, e);
+            log_warn!("无法序列化缓存信息: {}", "Cannot serialize cache metadata: {}", e);
         }
     }
 }
@@ -187,7 +187,7 @@ impl MappingManager {
             return Ok(());
         }
 
-        info!("正在获取游戏数据映射... / Fetching game data mappings...");
+        log_info!("正在获取游戏数据映射...", "Fetching game data mappings...");
 
         // Ensure data directory exists
         if let Some(parent) = Path::new(MAPPINGS_CACHE_PATH).parent() {
@@ -204,12 +204,13 @@ impl MappingManager {
                     save_meta(&MappingsMeta {
                         last_fetch_time: now_secs(),
                     });
-                    debug!("游戏数据映射已更新 / Game data mappings updated");
+                    log_debug!("游戏数据映射已更新", "Game data mappings updated");
                 } else {
                     if cache_exists {
-                        log::warn!(
-                            "获取数据失败 (HTTP {})，使用本地缓存 / Fetch failed (HTTP {}), using local cache",
-                            response.status(), response.status()
+                        log_warn!(
+                            "获取数据失败 (HTTP {})，使用本地缓存",
+                            "Fetch failed (HTTP {}), using local cache",
+                            response.status()
                         );
                     } else {
                         bail!(
@@ -222,9 +223,10 @@ impl MappingManager {
             }
             Err(e) => {
                 if cache_exists {
-                    log::warn!(
-                        "获取数据失败 ({})，使用本地缓存 / Fetch failed ({}), using local cache",
-                        e, e
+                    log_warn!(
+                        "获取数据失败 ({})，使用本地缓存",
+                        "Fetch failed ({}), using local cache",
+                        e
                     );
                 } else {
                     bail!(

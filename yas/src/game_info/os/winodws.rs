@@ -57,8 +57,9 @@ fn get_window(window_names: &[&str]) -> Result<(HWND, bool)> {
 
     // Log all matches for diagnostics (helps debug launcher interference).
     for (hwnd, title, class) in &viable_handles {
-        log::debug!(
-            "匹配到窗口 / Matched window: title={:?}, class={:?}, hwnd={:?}",
+        log_debug!(
+            "匹配到窗口: title={:?}, class={:?}, hwnd={:?}",
+            "Matched window: title={:?}, class={:?}, hwnd={:?}",
             title, class, hwnd,
         );
     }
@@ -76,14 +77,14 @@ fn get_window(window_names: &[&str]) -> Result<(HWND, bool)> {
 
     // Class filter found 0 or >1 — fall back to title-only list.
     if game_only.is_empty() && viable_handles.len() >= 1 {
-        log::warn!(
-            "标题匹配到 {} 个窗口但无已知游戏窗口类（可能是HoYoPlay启动器），将使用第一个 / \
-             {} windows matched by title but none have a known game class \
+        log_warn!(
+            "标题匹配到 {} 个窗口但无已知游戏窗口类（可能是HoYoPlay启动器），将使用第一个",
+            "{} windows matched by title but none have a known game class \
              (could be HoYoPlay launcher); using first match",
-            viable_handles.len(), viable_handles.len(),
+            viable_handles.len(),
         );
         for (hwnd, title, class) in &viable_handles {
-            log::warn!("  窗口 / window: title={:?}, class={:?}, hwnd={:?}", title, class, hwnd);
+            log_warn!("  窗口: title={:?}, class={:?}, hwnd={:?}", "  window: title={:?}, class={:?}, hwnd={:?}", title, class, hwnd);
         }
     }
 

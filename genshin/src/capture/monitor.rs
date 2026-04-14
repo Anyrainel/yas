@@ -5,29 +5,31 @@
 ///
 /// ## Version resilience
 ///
-/// Command matching uses heuristic protobuf parsing instead of hardcoded command IDs.
-/// Every decrypted command is tentatively parsed as both `PacketWithItems` and
-/// `AvatarDataNotify`; only structurally valid packets are accepted.  This
-/// eliminates the most frequent breakage when the game client updates (command
-/// ID rotation).
+/// Both command IDs and protobuf field numbers change across game versions.
+/// The monitor is resilient to both:
 ///
-/// To avoid false positives from loose protobuf parsing, the heuristic requires:
-/// - Items: ≥5 items with equip data (weapon or reliquary)
-/// - Avatars: ≥4 characters AND ≥2 with non-empty equip_guid_list
+/// - **Command IDs**: every decrypted command is tested heuristically,
+///   regardless of its `command_id`.
+/// - **Outer field numbers**: instead of relying on a fixed proto schema for
+///   the outer container (`PacketWithItems.items = field 10`,
+///   `AvatarDataNotify.avatar_list = field 15`), we parse the outer message
+///   as `Unk` (generic protobuf) and try every repeated length-delimited
+///   field as `Item` or `AvatarInfo`.  Only structurally valid results are
+///   accepted (≥5 items with weapon/reliquary data, ≥4 avatars with ≥2
+///   having equipment).
 ///
-/// Dispatch keys are loaded from an external `keys/gi.json` file first (next to
-/// the exe), falling back to the compile-time embedded copy.  This allows key
-/// updates without recompiling.
+/// Dispatch keys are loaded from an external `keys/gi.json` file first
+/// (next to the exe), falling back to the compile-time embedded copy.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow};
-use auto_artifactarium::r#gen::protos::{AvatarInfo, Item};
-use auto_artifactarium::{
-    GamePacket, GameSniffer, matches_avatars_all_data_notify, matches_items_all_data_notify,
-};
+use auto_artifactarium::r#gen::protos::{AvatarInfo, Item, Unk};
+use auto_artifactarium::{GamePacket, GameSniffer};
 use base64::prelude::*;
-use log::{debug, error, info, warn};
+use protobuf::Message;
+use protobuf::UnknownValueRef;
+use yas::{log_debug, log_error, log_info, log_warn};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -101,9 +103,9 @@ impl CaptureMonitor {
         let dump_dir = crate::cli::exe_dir().join("debug_capture");
         if dump_packets {
             std::fs::create_dir_all(&dump_dir).ok();
-            info!(
-                "数据包转储已开启 → {} / Packet dump enabled → {}",
-                dump_dir.display(),
+            log_info!(
+                "数据包转储已开启 → {}",
+                "Packet dump enabled → {}",
                 dump_dir.display(),
             );
         }
@@ -210,17 +212,15 @@ impl CaptureMonitor {
                     self.dump_counter, command.command_id
                 ));
                 if let Err(e) = std::fs::write(&path, &command.proto_data) {
-                    warn!("转储失败 / Dump failed: {}", e);
+                    log_warn!("转储失败: {}", "Dump failed: {}", e);
                 }
                 self.dump_counter += 1;
             }
 
             if let Some(items) = try_match_items(&command.proto_data) {
-                info!(
-                    "捕获到物品数据包 (cmd={})，共 {} 个物品 / \
-                     Captured item packet (cmd={}), {} items",
-                    command.command_id,
-                    items.len(),
+                log_info!(
+                    "捕获到物品数据包 (cmd={})，共 {} 个物品",
+                    "Captured item packet (cmd={}), {} items",
                     command.command_id,
                     items.len(),
                 );
@@ -231,11 +231,9 @@ impl CaptureMonitor {
                     state.artifact_count = self.player_data.artifact_count();
                 }
             } else if let Some(avatars) = try_match_avatars(&command.proto_data) {
-                info!(
-                    "捕获到角色数据包 (cmd={})，共 {} 个角色 / \
-                     Captured avatar packet (cmd={}), {} avatars",
-                    command.command_id,
-                    avatars.len(),
+                log_info!(
+                    "捕获到角色数据包 (cmd={})，共 {} 个角色",
+                    "Captured avatar packet (cmd={}), {} avatars",
                     command.command_id,
                     avatars.len(),
                 );
@@ -253,8 +251,9 @@ impl CaptureMonitor {
             .lock()
             .map_or(false, |s| s.has_characters && s.has_items && s.capturing);
         if should_stop {
-            info!(
-                "已收集到所有数据，自动停止抓包 / All data collected, stopping capture automatically"
+            log_info!(
+                "已收集到所有数据，自动停止抓包",
+                "All data collected, stopping capture automatically"
             );
             self.stop_capture();
             if let Ok(mut state) = self.state.lock() {
@@ -264,62 +263,126 @@ impl CaptureMonitor {
     }
 }
 
-/// Strict heuristic match for item packets (PlayerStoreNotify).
+/// Field-number-agnostic item packet detection.
 ///
-/// The upstream `matches_items_all_data_notify` only requires ≥10 items with
-/// non-zero ids — too loose when applied to every decrypted command.  We require
-/// items with actual weapon or reliquary data (not just the `Equip` wrapper),
-/// and enough of them to be a real inventory dump.
+/// Parses the outer message as `Unk` (generic protobuf), iterates all
+/// repeated length-delimited fields, and tries parsing each sub-message as
+/// `Item`.  Accepts the field with the most valid items, provided there are
+/// ≥5 items with actual weapon/reliquary data.
+///
+/// This survives both command ID rotation AND outer field number changes.
 fn try_match_items(proto_data: &[u8]) -> Option<Vec<Item>> {
-    let items = matches_items_all_data_notify(proto_data)?;
+    let unk = Unk::parse_from_bytes(proto_data).ok()?;
+
+    // Collect items from whichever field yields the most valid ones
+    let mut best: Option<Vec<Item>> = None;
+    let mut best_field = 0u32;
+
+    // Group entries by field number
+    let mut field_map: HashMap<u32, Vec<&[u8]>> = HashMap::new();
+    for (field_num, value) in unk.unknown_fields().iter() {
+        if let UnknownValueRef::LengthDelimited(bytes) = value {
+            field_map.entry(field_num).or_default().push(bytes);
+        }
+    }
+
+    for (field_num, blobs) in &field_map {
+        if blobs.len() < 10 {
+            continue; // Too few sub-messages to be an item list
+        }
+        let items: Vec<Item> = blobs
+            .iter()
+            .filter_map(|b| Item::parse_from_bytes(b).ok())
+            .filter(|item| item.item_id != 0 && item.guid != 0)
+            .collect();
+        if items.len() >= 10 && best.as_ref().map_or(true, |b| items.len() > b.len()) {
+            best = Some(items);
+            best_field = *field_num;
+        }
+    }
+
+    let items = best?;
     let gear_count = items
         .iter()
         .filter(|i| i.has_equip() && (i.equip().has_weapon() || i.equip().has_reliquary()))
         .count();
     if gear_count < 5 {
-        debug!(
-            "物品数据包候选被拒（{} 个物品，{} 个武器/圣遗物）/ \
-             Item packet candidate rejected ({} items, {} weapons/artifacts)",
-            items.len(),
-            gear_count,
+        log_debug!(
+            "物品数据包候选被拒（field={}, {} 个物品，{} 个武器/圣遗物）",
+            "Item packet candidate rejected (field={}, {} items, {} weapons/artifacts)",
+            best_field,
             items.len(),
             gear_count,
         );
         return None;
     }
+
+    log_debug!(
+        "物品数据包匹配成功（field={}, {} 个物品）",
+        "Item packet matched (field={}, {} items)",
+        best_field,
+        items.len(),
+    );
     Some(items)
 }
 
-/// Strict heuristic match for avatar packets (AvatarDataNotify).
+/// Field-number-agnostic avatar packet detection.
 ///
-/// Requires ≥4 avatars (every account has Traveler + 3 free characters) and
-/// ≥2 avatars with non-empty `equip_guid_list` (active characters have weapons).
+/// Same approach as items: parse as `Unk`, try all repeated fields as
+/// `AvatarInfo`.  Requires ≥4 avatars and ≥2 with non-empty `prop_map`
+/// (every real avatar has property entries like level/ascension).
 fn try_match_avatars(proto_data: &[u8]) -> Option<Vec<AvatarInfo>> {
-    let avatars = matches_avatars_all_data_notify(proto_data)?;
-    if avatars.len() < 4 {
-        debug!(
-            "角色数据包候选被拒（仅 {} 个角色）/ \
-             Avatar packet candidate rejected (only {} avatars)",
-            avatars.len(),
-            avatars.len(),
-        );
-        return None;
+    let unk = Unk::parse_from_bytes(proto_data).ok()?;
+
+    let mut best: Option<Vec<AvatarInfo>> = None;
+    let mut best_field = 0u32;
+
+    let mut field_map: HashMap<u32, Vec<&[u8]>> = HashMap::new();
+    for (field_num, value) in unk.unknown_fields().iter() {
+        if let UnknownValueRef::LengthDelimited(bytes) = value {
+            field_map.entry(field_num).or_default().push(bytes);
+        }
     }
-    let equipped = avatars
+
+    for (field_num, blobs) in &field_map {
+        if blobs.len() < 4 {
+            continue;
+        }
+        let avatars: Vec<AvatarInfo> = blobs
+            .iter()
+            .filter_map(|b| AvatarInfo::parse_from_bytes(b).ok())
+            .filter(|a| a.avatar_id != 0 && a.guid != 0)
+            .collect();
+        if avatars.len() >= 4 && best.as_ref().map_or(true, |b| avatars.len() > b.len()) {
+            best = Some(avatars);
+            best_field = *field_num;
+        }
+    }
+
+    let avatars = best?;
+
+    // Validate: real avatars have prop_map entries (level, ascension, etc.)
+    let has_props = avatars
         .iter()
-        .filter(|a| !a.equip_guid_list.is_empty())
+        .filter(|a| !a.prop_map.is_empty())
         .count();
-    if equipped < 2 {
-        debug!(
-            "角色数据包候选被拒（{} 个角色，仅 {} 个有装备）/ \
-             Avatar packet candidate rejected ({} avatars, only {} equipped)",
+    if has_props < 2 {
+        log_debug!(
+            "角色数据包候选被拒（field={}, {} 个角色，仅 {} 个有属性）",
+            "Avatar packet candidate rejected (field={}, {} avatars, only {} with props)",
+            best_field,
             avatars.len(),
-            equipped,
-            avatars.len(),
-            equipped,
+            has_props,
         );
         return None;
     }
+
+    log_debug!(
+        "角色数据包匹配成功（field={}, {} 个角色）",
+        "Avatar packet matched (field={}, {} avatars)",
+        best_field,
+        avatars.len(),
+    );
     Some(avatars)
 }
 
@@ -329,7 +392,7 @@ async fn capture_task(
 ) -> Result<()> {
     let mut capture =
         PacketCapture::new().map_err(|e| anyhow!("创建抓包失败 / Error creating packet capture: {e}"))?;
-    info!("开始抓包 / Starting packet capture");
+    log_info!("开始抓包", "Starting packet capture");
     loop {
         let packet = tokio::select!(
             packet = capture.next_packet() => packet,
@@ -338,15 +401,15 @@ async fn capture_task(
         let packet = match packet {
             Ok(packet) => packet,
             Err(e) => {
-                error!("接收数据包出错 / Error receiving packet: {e}");
+                log_error!("接收数据包出错: {}", "Error receiving packet: {}", e);
                 continue;
             }
         };
         if let Err(e) = packet_tx.send(packet) {
-            error!("发送数据包出错 / Error sending captured packet: {e}");
+            log_error!("发送数据包出错: {}", "Error sending captured packet: {}", e);
         }
     }
-    info!("抓包已停止 / Packet capture stopped");
+    log_info!("抓包已停止", "Packet capture stopped");
     Ok(())
 }
 
@@ -378,14 +441,16 @@ fn load_keys() -> Result<HashMap<u16, Vec<u8>>> {
                         all_keys.insert(*version, decoded);
                     }
                 }
-                info!(
-                    "已加载外部密钥文件（{} 个密钥，{} 个新增）/ Loaded external key file ({} keys, {} new)",
-                    external.len(), added, external.len(), added,
+                log_info!(
+                    "已加载外部密钥文件（{} 个密钥，{} 个新增）",
+                    "Loaded external key file ({} keys, {} new)",
+                    external.len(), added,
                 );
             }
-            Err(e) => warn!(
-                "外部密钥文件格式错误: {} / External key file parse error: {}",
-                e, e
+            Err(e) => log_warn!(
+                "外部密钥文件格式错误: {}",
+                "External key file parse error: {}",
+                e
             ),
         },
         Err(_) => {} // No external file — use embedded only

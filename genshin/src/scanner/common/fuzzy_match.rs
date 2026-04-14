@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use log::debug;
+use yas::log_debug;
 
 /// OCR confusion pairs: (wrong char, correct char)
 /// When OCR produces one character, try substituting the other.
@@ -104,7 +104,7 @@ pub fn fuzzy_match_map(text: &str, map: &HashMap<String, String>) -> Option<Stri
         }).collect();
         if combined != cleaned {
             if let Some(val) = map.get(&combined) {
-                debug!("[fuzzy] 组合OCR混淆匹配: cleaned={:?} → combined={:?} → {:?} / [fuzzy] combined OCR confusion match: cleaned={:?} → combined={:?} → {:?}", cleaned, combined, val, cleaned, combined, val);
+                log_debug!("[fuzzy] 组合OCR混淆匹配: cleaned={:?} → combined={:?} → {:?}", "[fuzzy] combined OCR confusion match: cleaned={:?} → combined={:?} → {:?}", cleaned, combined, val);
                 return Some(val.clone());
             }
         }
@@ -112,7 +112,7 @@ pub fn fuzzy_match_map(text: &str, map: &HashMap<String, String>) -> Option<Stri
 
     // Exact match
     if let Some(val) = map.get(&cleaned) {
-        debug!("[fuzzy] 精确匹配: cleaned={:?} → {:?} / [fuzzy] exact match: cleaned={:?} → {:?}", cleaned, val, cleaned, val);
+        log_debug!("[fuzzy] 精确匹配: cleaned={:?} → {:?}", "[fuzzy] exact match: cleaned={:?} → {:?}", cleaned, val);
         return Some(val.clone());
     }
 
@@ -129,7 +129,7 @@ pub fn fuzzy_match_map(text: &str, map: &HashMap<String, String>) -> Option<Stri
         }
     }
     if best_match.is_some() {
-        debug!("[fuzzy] 子串匹配(cleaned⊃key): cleaned={:?} → {:?} / [fuzzy] substring match (cleaned⊃key): cleaned={:?} → {:?}", cleaned, best_match, cleaned, best_match);
+        log_debug!("[fuzzy] 子串匹配(cleaned⊃key): cleaned={:?} → {:?}", "[fuzzy] substring match (cleaned⊃key): cleaned={:?} → {:?}", cleaned, best_match);
         return best_match;
     }
 
@@ -141,7 +141,7 @@ pub fn fuzzy_match_map(text: &str, map: &HashMap<String, String>) -> Option<Stri
         }
     }
     if best_match.is_some() {
-        debug!("[fuzzy] 反向子串匹配(key⊃cleaned): cleaned={:?} → {:?} / [fuzzy] reverse substring (key⊃cleaned): cleaned={:?} → {:?}", cleaned, best_match, cleaned, best_match);
+        log_debug!("[fuzzy] 反向子串匹配(key⊃cleaned): cleaned={:?} → {:?}", "[fuzzy] reverse substring (key⊃cleaned): cleaned={:?} → {:?}", cleaned, best_match);
         return best_match;
     }
 
@@ -162,8 +162,8 @@ pub fn fuzzy_match_map(text: &str, map: &HashMap<String, String>) -> Option<Stri
     }
 
     if best_match.is_some() {
-        debug!("[fuzzy] Levenshtein匹配: cleaned={:?} → {:?} (name={:?}, dist={}, map_size={}) / [fuzzy] Levenshtein match: cleaned={:?} → {:?} (name={:?}, dist={}, map_size={})",
-            cleaned, best_match, best_debug_name, min_dist, map.len(), cleaned, best_match, best_debug_name, min_dist, map.len());
+        log_debug!("[fuzzy] Levenshtein匹配: cleaned={:?} → {:?} (name={:?}, dist={}, map_size={})", "[fuzzy] Levenshtein match: cleaned={:?} → {:?} (name={:?}, dist={}, map_size={})",
+            cleaned, best_match, best_debug_name, min_dist, map.len());
         return best_match;
     }
 
@@ -195,13 +195,13 @@ pub fn fuzzy_match_map(text: &str, map: &HashMap<String, String>) -> Option<Stri
     }
 
     if best_lcs_len >= LCS_MIN_CHARS && is_unique {
-        debug!("[fuzzy] LCS唯一性匹配: cleaned={:?} → {:?} (name={:?}, lcs_len={}, map_size={}) / [fuzzy] LCS uniqueness match: cleaned={:?} → {:?} (name={:?}, lcs_len={}, map_size={})",
-            cleaned, best_lcs_match, best_lcs_name, best_lcs_len, map.len(), cleaned, best_lcs_match, best_lcs_name, best_lcs_len, map.len());
+        log_debug!("[fuzzy] LCS唯一性匹配: cleaned={:?} → {:?} (name={:?}, lcs_len={}, map_size={})", "[fuzzy] LCS uniqueness match: cleaned={:?} → {:?} (name={:?}, lcs_len={}, map_size={})",
+            cleaned, best_lcs_match, best_lcs_name, best_lcs_len, map.len());
         return best_lcs_match;
     }
 
-    debug!("[fuzzy] 无匹配: cleaned={:?} (chars={}, map_size={}) / [fuzzy] NO MATCH: cleaned={:?} (chars={}, map_size={})",
-        cleaned, cleaned_chars.len(), map.len(), cleaned, cleaned_chars.len(), map.len());
+    log_debug!("[fuzzy] 无匹配: cleaned={:?} (chars={}, map_size={})", "[fuzzy] NO MATCH: cleaned={:?} (chars={}, map_size={})",
+        cleaned, cleaned_chars.len(), map.len());
     None
 }
 

@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use clap::{command, ArgMatches, Args, FromArgMatches};
-use log::{debug, info};
+use yas::{log_debug, log_info, log_warn, log_error};
 use serde::{Deserialize, Serialize};
 
 use yas::game_info::{GameInfo, GameInfoBuilder};
@@ -69,7 +69,7 @@ pub fn check_onnxruntime() -> bool {
 #[cfg(target_os = "windows")]
 pub fn download_onnxruntime() -> Result<()> {
     let dll_path = exe_dir().join(ORT_DLL_NAME);
-    info!("正在下载 ONNX Runtime... / Downloading ONNX Runtime...");
+    log_info!("正在下载 ONNX Runtime...", "Downloading ONNX Runtime...");
     download_onnxruntime_inner(&dll_path)
 }
 
@@ -82,32 +82,29 @@ fn download_onnxruntime_inner(dll_path: &std::path::Path) -> Result<()> {
 
     let mut last_error = String::new();
     for (i, url) in ORT_DOWNLOAD_URLS.iter().enumerate() {
-        info!("尝试源 {} / Trying source {}:  {}", i + 1, i + 1, url);
+        log_info!("尝试源 {}: {}", "Trying source {}:  {}", i + 1, url);
 
         match client.get(*url).send() {
             Ok(response) => {
                 if !response.status().is_success() {
                     last_error = format!("HTTP {}", response.status());
-                    log::warn!("源 {} 失败 / Source {} failed: {}", i + 1, i + 1, last_error);
+                    log_warn!("源 {} 失败: {}", "Source {} failed: {}", i + 1, last_error);
                     continue;
                 }
                 match response.bytes() {
                     Ok(bytes) => {
-                        info!(
-                            "下载完成（{}字节），正在解压... / Downloaded ({} bytes), extracting...",
-                            bytes.len(), bytes.len()
-                        );
+                        log_info!("下载完成（{}字节），正在解压...", "Downloaded ({} bytes), extracting...", bytes.len());
                         match extract_onnxruntime_dll(&bytes, dll_path) {
                             Ok(()) => {
-                                info!("ONNX Runtime 已安装到 / installed to: {}", dll_path.display());
+                                log_info!("ONNX Runtime 已安装到: {}", "installed to: {}", dll_path.display());
                                 std::env::set_var("ORT_DYLIB_PATH", dll_path);
                                 return Ok(());
                             }
                             Err(e) => {
                                 last_error = format!("{}", e);
-                                log::warn!("解压失败 / Extract failed: {}", last_error);
+                                log_warn!("解压失败: {}", "Extract failed: {}", last_error);
                                 if let Err(e) = std::fs::remove_file(dll_path) {
-                                    log::warn!("清理失败的下载文件失败: {} / Failed to clean up partial download: {}", e, e);
+                                    log_warn!("清理失败的下载文件失败: {}", "Failed to clean up partial download: {}", e);
                                 }
                                 continue;
                             }
@@ -115,14 +112,14 @@ fn download_onnxruntime_inner(dll_path: &std::path::Path) -> Result<()> {
                     }
                     Err(e) => {
                         last_error = format!("{}", e);
-                        log::warn!("下载失败 / Download failed: {}", last_error);
+                        log_warn!("下载失败: {}", "Download failed: {}", last_error);
                         continue;
                     }
                 }
             }
             Err(e) => {
                 last_error = format!("{}", e);
-                log::warn!("连接失败 / Connection failed: {}", last_error);
+                log_warn!("连接失败: {}", "Connection failed: {}", last_error);
                 continue;
             }
         }
@@ -428,26 +425,18 @@ pub fn load_config_or_default() -> GoodUserConfig {
                     config.normalize_delays();
                     // Re-save to strip delay entries that are at/below defaults
                     if let Err(e) = save_config(&config) {
-                        log::warn!("配置重新保存失败: {} / Config re-save failed: {}", e, e);
+                        log_warn!("配置重新保存失败: {}", "Config re-save failed: {}", e);
                     }
                     config
                 }
                 Err(e) => {
-                    log::error!(
-                        "配置文件解析失败，将使用默认值 / Config parse error (using defaults): {}: {}",
-                        path.display(),
-                        e
-                    );
+                    log_error!("配置文件解析失败，将使用默认值: {}: {}", "Config parse error (using defaults): {}: {}", path.display(), e);
                     GoodUserConfig::default()
                 }
             }
         }
         Err(e) => {
-            log::error!(
-                "配置文件读取失败，将使用默认值 / Config read error (using defaults): {}: {}",
-                path.display(),
-                e
-            );
+            log_error!("配置文件读取失败，将使用默认值: {}: {}", "Config read error (using defaults): {}: {}", path.display(), e);
             GoodUserConfig::default()
         }
     }
@@ -469,7 +458,7 @@ pub fn save_config(config: &GoodUserConfig) -> Result<()> {
 /// (via the GUI, or manually).
 fn load_or_create_config() -> Result<GoodUserConfig> {
     let path = config_path();
-    debug!("正在查找配置文件... / Looking for config at: {}", path.display());
+    log_debug!("正在查找配置文件: {}", "Looking for config at: {}", path.display());
 
     if !path.exists() {
         return Err(anyhow!(
@@ -490,11 +479,11 @@ fn load_or_create_config() -> Result<GoodUserConfig> {
     let mut config: GoodUserConfig = serde_json::from_value(val)
         .map_err(|e| anyhow!("配置解析失败 / Failed to parse {}: {}", path.display(), e))?;
     config.normalize_delays();
-    debug!("已加载配置 / Loaded config from {}", path.display());
+    log_debug!("已加载配置: {}", "Loaded config from {}", path.display());
 
     // Re-save to strip invalid/default entries and add any new default fields
     if let Err(e) = save_config(&config) {
-        log::warn!("配置重新保存失败: {} / Config re-save failed: {}", e, e);
+        log_warn!("配置重新保存失败: {}", "Config re-save failed: {}", e);
     }
 
     Ok(config)
@@ -775,27 +764,24 @@ impl GoodScannerApplication {
         let scan_artifacts = config.scan_artifacts || config.scan_all || no_flags;
 
         // Fetch and load mappings (before game interaction — no focus steal)
-        debug!("加载映射数据... / Loading mappings...");
+        log_debug!("加载映射数据...", "Loading mappings...");
         let overrides = user_config.to_overrides();
-        if let Some(ref n) = overrides.traveler_name { debug!("旅行者 / Traveler: {}", n); }
-        if let Some(ref n) = overrides.wanderer_name { debug!("流浪者 / Wanderer: {}", n); }
-        if let Some(ref n) = overrides.manekin_name { debug!("奇偶·男性 / Manekin: {}", n); }
-        if let Some(ref n) = overrides.manekina_name { debug!("奇偶·女性 / Manekina: {}", n); }
+        if let Some(ref n) = overrides.traveler_name { log_debug!("旅行者: {}", "Traveler: {}", n); }
+        if let Some(ref n) = overrides.wanderer_name { log_debug!("流浪者: {}", "Wanderer: {}", n); }
+        if let Some(ref n) = overrides.manekin_name { log_debug!("奇偶·男性: {}", "Manekin: {}", n); }
+        if let Some(ref n) = overrides.manekina_name { log_debug!("奇偶·女性: {}", "Manekina: {}", n); }
         let mappings = Arc::new(MappingManager::new(&overrides)?);
-        debug!(
-            "已加载 / Loaded: {} characters, {} weapons, {} artifact sets",
-            mappings.character_name_map.len(),
-            mappings.weapon_name_map.len(),
-            mappings.artifact_set_map.len(),
-        );
+        log_debug!(
+            "已加载: {} 角色, {} 武器, {} 圣遗物套装",
+            "Loaded: {} characters, {} weapons, {} artifact sets", mappings.character_name_map.len(), mappings.weapon_name_map.len(), mappings.artifact_set_map.len());
 
         // Find and focus the game window
         let game_info = Self::get_game_info()
             .context("请确认原神已启动、未最小化、且使用16:9分辨率（如1920×1080）\
                      / Ensure Genshin Impact is running, not minimized, and using a 16:9 resolution (e.g. 1920×1080)")?;
-        debug!("窗口 / window: {:?}", game_info.window);
-        debug!("界面 / ui: {:?}", game_info.ui);
-        debug!("云游戏 / cloud: {}", game_info.is_cloud);
+        log_debug!("窗口: {:?}", "window: {:?}", game_info.window);
+        log_debug!("界面: {:?}", "ui: {:?}", game_info.ui);
+        log_debug!("云游戏: {}", "cloud: {}", game_info.is_cloud);
 
         let mut ctrl = GenshinGameController::new(game_info)
             .context("屏幕截图初始化失败 / Screen capture initialization failed")?;
@@ -809,7 +795,7 @@ impl GoodScannerApplication {
 
         // Log OCR backend selection
         if let Some(ref backend) = config.ocr_backend {
-            debug!("OCR后端覆盖 / OCR backend override: {}", backend);
+            log_debug!("OCR后端覆盖: {}", "OCR backend override: {}", backend);
         }
 
         // Create shared OCR pools for all scanners
@@ -821,7 +807,7 @@ impl GoodScannerApplication {
 
         // Scan characters
         if scan_characters {
-            info!("扫描角色... / Scanning characters...");
+            log_info!("扫描角色...", "Scanning characters...");
             let char_config = Self::make_char_config(&config, &user_config);
             let scanner = GoodCharacterScanner::new(
                 char_config, mappings.clone(),
@@ -831,9 +817,11 @@ impl GoodScannerApplication {
             if config.debug_timing {
                 let elapsed = t.elapsed();
                 let avg = if result.is_empty() { 0 } else { elapsed.as_millis() as usize / result.len() };
-                debug!("[timing] 角色: {}项 耗时{:?}（平均{}ms/项） / [timing] characters: {} items in {:?} (avg {}ms/item)", result.len(), elapsed, avg, result.len(), elapsed, avg);
+                log_debug!(
+                    "[timing] 角色: {}项 耗时{:?}（平均{}ms/项）",
+                    "[timing] characters: {} items in {:?} (avg {}ms/item)", result.len(), elapsed, avg);
             }
-            info!("已扫描 / Scanned {} characters", result.len());
+            log_info!("已扫描 {} 个角色", "Scanned {} characters", result.len());
             characters = Some(result);
 
             if !token.is_cancelled() {
@@ -843,7 +831,7 @@ impl GoodScannerApplication {
 
         // Scan weapons
         if scan_weapons && !token.is_cancelled() {
-            info!("扫描武器... / Scanning weapons...");
+            log_info!("扫描武器...", "Scanning weapons...");
             let weapon_config = Self::make_weapon_config(&config, &user_config);
             let scanner = GoodWeaponScanner::new(
                 weapon_config, mappings.clone(),
@@ -853,15 +841,17 @@ impl GoodScannerApplication {
             if config.debug_timing {
                 let elapsed = t.elapsed();
                 let avg = if result.is_empty() { 0 } else { elapsed.as_millis() as usize / result.len() };
-                debug!("[timing] 武器: {}项 耗时{:?}（平均{}ms/项） / [timing] weapons: {} items in {:?} (avg {}ms/item)", result.len(), elapsed, avg, result.len(), elapsed, avg);
+                log_debug!(
+                    "[timing] 武器: {}项 耗时{:?}（平均{}ms/项）",
+                    "[timing] weapons: {} items in {:?} (avg {}ms/item)", result.len(), elapsed, avg);
             }
-            info!("已扫描 / Scanned {} weapons", result.len());
+            log_info!("已扫描 {} 个武器", "Scanned {} weapons", result.len());
             weapons = Some(result);
         }
 
         // Scan artifacts
         if scan_artifacts && !token.is_cancelled() {
-            info!("扫描圣遗物... / Scanning artifacts...");
+            log_info!("扫描圣遗物...", "Scanning artifacts...");
             let artifact_config = Self::make_artifact_config(&config, &user_config);
             let skip_open = scan_weapons;
             let scanner = GoodArtifactScanner::new(
@@ -872,14 +862,16 @@ impl GoodScannerApplication {
             if config.debug_timing {
                 let elapsed = t.elapsed();
                 let avg = if result.is_empty() { 0 } else { elapsed.as_millis() as usize / result.len() };
-                debug!("[timing] 圣遗物: {}项 耗时{:?}（平均{}ms/项） / [timing] artifacts: {} items in {:?} (avg {}ms/item)", result.len(), elapsed, avg, result.len(), elapsed, avg);
+                log_debug!(
+                    "[timing] 圣遗物: {}项 耗时{:?}（平均{}ms/项）",
+                    "[timing] artifacts: {} items in {:?} (avg {}ms/item)", result.len(), elapsed, avg);
             }
-            info!("已扫描 / Scanned {} artifacts", result.len());
+            log_info!("已扫描 {} 个圣遗物", "Scanned {} artifacts", result.len());
             artifacts = Some(result);
         }
 
         if token.is_cancelled() {
-            info!("扫描被用户中断 / Scan aborted by user (right-click)");
+            log_info!("扫描被用户中断", "Scan aborted by user (right-click)");
         }
 
         // Export as GOOD v3
@@ -893,11 +885,11 @@ impl GoodScannerApplication {
         let path = output_dir.join(&filename);
 
         std::fs::write(&path, &json)?;
-        info!("已导出 / Exported to {}", path.display());
+        log_info!("已导出: {}", "Exported to {}", path.display());
 
         // Post-scan groundtruth comparison
         if let Some(ref compare_path) = config.debug_compare {
-            debug!("真值对比... / Comparing against groundtruth...");
+            log_debug!("真值对比...", "Comparing against groundtruth...");
             let gt_json = std::fs::read_to_string(compare_path)?;
             let groundtruth: GoodExport = serde_json::from_str(&gt_json)?;
             let result = diff::diff_exports(&export, &groundtruth);
@@ -909,7 +901,7 @@ impl GoodScannerApplication {
                     result.summary.total_errors()
                 ));
             }
-            debug!("真值对比通过 / Groundtruth comparison passed!");
+            log_debug!("真值对比通过", "Groundtruth comparison passed!");
         }
 
         Ok(())
@@ -931,9 +923,9 @@ impl GoodScannerApplication {
         let col: usize = parts[1].trim().parse()
             .map_err(|_| anyhow!("无效的列号 / Invalid col in rescan pos"))?;
 
-        debug!("重扫模式: type={} pos=({},{}) count={} / Re-scan mode: type={} pos=({},{}) count={}",
-            config.debug_rescan_type, row, col, config.debug_rescan_count,
-            config.debug_rescan_type, row, col, config.debug_rescan_count);
+        log_debug!(
+            "重扫模式: type={} pos=({},{}) count={}",
+            "Re-scan mode: type={} pos=({},{}) count={}", config.debug_rescan_type, row, col, config.debug_rescan_count);
 
         let game_info = Self::get_game_info()
             .context("请确认原神已启动、未最小化、且使用16:9分辨率（如1920×1080）\
@@ -977,7 +969,7 @@ impl GoodScannerApplication {
                 let max_iter = if config.debug_rescan_count == 0 { usize::MAX } else { config.debug_rescan_count };
                 for i in 0..max_iter {
                     if token.check_rmb() {
-                        debug!("[rescan] 用户中断 / interrupted by user");
+                        log_debug!("[rescan] 用户中断", "interrupted by user");
                         break;
                     }
                     println!("\n--- Re-scan iteration {} ---", i + 1);
@@ -1005,7 +997,9 @@ impl GoodScannerApplication {
                     let items_per_page = GRID_COLS * GRID_ROWS;
                     let pages_to_skip = config.debug_start_at / items_per_page;
                     if pages_to_skip > 0 {
-                        debug!("[rescan] 滚动{}页（{}行）... / [rescan] scrolling {} pages ({} rows)...", pages_to_skip, pages_to_skip * GRID_ROWS, pages_to_skip, pages_to_skip * GRID_ROWS);
+                        log_debug!(
+                            "[rescan] 滚动{}页（{}行）...",
+                            "[rescan] scrolling {} pages ({} rows)...", pages_to_skip, pages_to_skip * GRID_ROWS);
                         let estimated_ticks = pages_to_skip * GRID_ROWS * 5;
                         for _ in 0..estimated_ticks {
                             ctrl.mouse_scroll(-1);
@@ -1028,7 +1022,7 @@ impl GoodScannerApplication {
 
                         for i in 0..max_iter {
                             if token.check_rmb() {
-                                debug!("[rescan] 用户中断 / interrupted by user");
+                                log_debug!("[rescan] 用户中断", "interrupted by user");
                                 break;
                             }
                             println!("\n--- Re-scan iteration {} ---", i + 1);
@@ -1049,7 +1043,7 @@ impl GoodScannerApplication {
 
                         for i in 0..max_iter {
                             if token.check_rmb() {
-                                debug!("[rescan] 用户中断 / interrupted by user");
+                                log_debug!("[rescan] 用户中断", "interrupted by user");
                                 break;
                             }
                             println!("\n--- Re-scan iteration {} ---", i + 1);
@@ -1067,7 +1061,7 @@ impl GoodScannerApplication {
             }
         }
 
-        debug!("重扫完成 / Re-scan complete");
+        log_debug!("重扫完成", "Re-scan complete");
         Ok(())
     }
 
@@ -1085,15 +1079,12 @@ impl GoodScannerApplication {
         }
 
         // Load mappings
-        debug!("加载映射数据... / Loading mappings...");
+        log_debug!("加载映射数据...", "Loading mappings...");
         let overrides = user_config.to_overrides();
         let mappings = Arc::new(MappingManager::new(&overrides)?);
-        debug!(
-            "已加载 / Loaded: {} characters, {} weapons, {} artifact sets",
-            mappings.character_name_map.len(),
-            mappings.weapon_name_map.len(),
-            mappings.artifact_set_map.len(),
-        );
+        log_debug!(
+            "已加载: {}角色, {}武器, {}套装",
+            "Loaded: {} characters, {} weapons, {} artifact sets", mappings.character_name_map.len(), mappings.weapon_name_map.len(), mappings.artifact_set_map.len());
 
         // Create artifact manager
         let ocr_backend = config.ocr_backend.clone().unwrap_or_else(|| "ppocrv5".to_string());
@@ -1127,9 +1118,9 @@ impl GoodScannerApplication {
 
     /// Standalone diff mode: compare two existing JSON files without game.
     fn run_standalone_diff(compare_path: &str, actual_path: &str) -> Result<()> {
-        debug!("离线对比模式 / Standalone diff mode");
-        debug!("真值文件 / Groundtruth: {}", compare_path);
-        debug!("实际文件 / Actual: {}", actual_path);
+        log_debug!("离线对比模式", "Standalone diff mode");
+        log_debug!("真值文件: {}", "Groundtruth: {}", compare_path);
+        log_debug!("实际文件: {}", "Actual: {}", actual_path);
 
         let gt_json = std::fs::read_to_string(compare_path)?;
         let groundtruth: GoodExport = serde_json::from_str(&gt_json)?;
@@ -1146,7 +1137,7 @@ impl GoodScannerApplication {
                 result.summary.total_errors(), result.summary.total_errors()
             ));
         }
-        info!("文件匹配 / Files match!");
+        log_info!("文件匹配", "Files match!");
         Ok(())
     }
 }
@@ -1324,15 +1315,12 @@ pub fn run_scan_core(
 
     // Fetch and load mappings
     report("加载映射数据 / Loading mappings...");
-    info!("加载映射数据... / Loading mappings...");
+    log_info!("加载映射数据...", "Loading mappings...");
     let overrides = user_config.to_overrides();
     let mappings = Arc::new(MappingManager::new(&overrides)?);
-    info!(
-        "已加载 / Loaded: {} characters, {} weapons, {} artifact sets",
-        mappings.character_name_map.len(),
-        mappings.weapon_name_map.len(),
-        mappings.artifact_set_map.len(),
-    );
+    log_info!(
+        "已加载: {} 角色, {} 武器, {} 圣遗物套装",
+        "Loaded: {} characters, {} weapons, {} artifact sets", mappings.character_name_map.len(), mappings.weapon_name_map.len(), mappings.artifact_set_map.len());
 
     // Find and focus the game window
     report("查找游戏窗口 / Finding game window...");
@@ -1359,11 +1347,11 @@ pub fn run_scan_core(
     // Scan characters
     if config.scan_characters {
         report("扫描角色 / Scanning characters...");
-        info!("扫描角色... / Scanning characters...");
+        log_info!("扫描角色...", "Scanning characters...");
         let char_config = GoodScannerApplication::make_char_config(&scanner_config, user_config);
         let scanner = GoodCharacterScanner::new(char_config, mappings.clone())?;
         let result = scanner.scan(&mut ctrl, 0, &pools)?;
-        info!("已扫描 / Scanned {} characters", result.len());
+        log_info!("已扫描 {} 个角色", "Scanned {} characters", result.len());
         characters = Some(result);
 
         if !token.is_cancelled() {
@@ -1374,28 +1362,28 @@ pub fn run_scan_core(
     // Scan weapons
     if config.scan_weapons && !token.is_cancelled() {
         report("扫描武器 / Scanning weapons...");
-        info!("扫描武器... / Scanning weapons...");
+        log_info!("扫描武器...", "Scanning weapons...");
         let weapon_config = GoodScannerApplication::make_weapon_config(&scanner_config, user_config);
         let scanner = GoodWeaponScanner::new(weapon_config, mappings.clone())?;
         let result = scanner.scan(&mut ctrl, false, 0, &pools)?;
-        info!("已扫描 / Scanned {} weapons", result.len());
+        log_info!("已扫描 {} 个武器", "Scanned {} weapons", result.len());
         weapons = Some(result);
     }
 
     // Scan artifacts
     if config.scan_artifacts && !token.is_cancelled() {
         report("扫描圣遗物 / Scanning artifacts...");
-        info!("扫描圣遗物... / Scanning artifacts...");
+        log_info!("扫描圣遗物...", "Scanning artifacts...");
         let artifact_config = GoodScannerApplication::make_artifact_config(&scanner_config, user_config);
         let skip_open = config.scan_weapons;
         let scanner = GoodArtifactScanner::new(artifact_config, mappings.clone())?;
         let result = scanner.scan(&mut ctrl, skip_open, 0, &pools)?;
-        info!("已扫描 / Scanned {} artifacts", result.len());
+        log_info!("已扫描 {} 个圣遗物", "Scanned {} artifacts", result.len());
         artifacts = Some(result);
     }
 
     if token.is_cancelled() {
-        info!("扫描被用户中断 / Scan aborted by user (right-click)");
+        log_info!("扫描被用户中断", "Scan aborted by user (right-click)");
     }
 
     // Export as GOOD v3
@@ -1410,7 +1398,7 @@ pub fn run_scan_core(
 
     std::fs::write(&path, &json)?;
     let path_str = path.display().to_string();
-    info!("已导出 / Exported to {}", path_str);
+    log_info!("已导出: {}", "Exported to {}", path_str);
 
     Ok(path_str)
 }
@@ -1439,15 +1427,12 @@ pub fn run_server_core(
         }
     }
 
-    info!("加载映射数据... / Loading mappings...");
+    log_info!("加载映射数据...", "Loading mappings...");
     let overrides = user_config.to_overrides();
     let mappings = Arc::new(MappingManager::new(&overrides)?);
-    info!(
-        "已加载 / Loaded: {} characters, {} weapons, {} artifact sets",
-        mappings.character_name_map.len(),
-        mappings.weapon_name_map.len(),
-        mappings.artifact_set_map.len(),
-    );
+    log_info!(
+        "已加载: {}角色, {}武器, {}套装",
+        "Loaded: {} characters, {} weapons, {} artifact sets", mappings.character_name_map.len(), mappings.weapon_name_map.len(), mappings.artifact_set_map.len());
 
     let ocr_be = ocr_backend.unwrap_or("ppocrv5").to_string();
     let substat_ocr = artifact_substat_ocr.to_string();
@@ -1515,11 +1500,9 @@ pub fn run_manage_json(
             .map_err(|e| anyhow!("JSON解析失败 / JSON parse error: {}", e))?;
 
     let total = request.lock.len() + request.unlock.len();
-    info!(
-        "执行 {} 条管理请求（lock: {}, unlock: {}）/ Executing {} manage items (lock: {}, unlock: {})",
-        total, request.lock.len(), request.unlock.len(),
-        total, request.lock.len(), request.unlock.len()
-    );
+    log_info!(
+        "执行 {} 条管理请求（lock: {}, unlock: {}）",
+        "Executing {} manage items (lock: {}, unlock: {})", total, request.lock.len(), request.unlock.len());
 
     let overrides = user_config.to_overrides();
     let mappings = Arc::new(MappingManager::new(&overrides)?);

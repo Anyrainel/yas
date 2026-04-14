@@ -148,15 +148,15 @@ fn action_bar(
 
                 if required_missing {
                     state.names_need_attention = true;
-                    log::warn!("{}", l.t(
+                    yas::log_warn!(
                         "旅行者、奇偶·男性、奇偶·女性为必填项",
-                        "Traveler, Manekin, and Manekina names are required",
-                    ));
+                        "Traveler, Manekin, and Manekina names are required"
+                    );
                 } else {
                     state.names_need_attention = false;
                     // Force immediate save before scanning (don't wait for debounce)
                     if let Err(e) = yas_genshin::cli::save_config(&state.user_config) {
-                        log::warn!("配置保存失败: {} / Config save failed: {}", e, e);
+                        yas::log_warn!("配置保存失败: {}", "Config save failed: {}", e);
                     }
                     state.config_dirty_since = None;
                     *scan_handle = Some(worker::spawn_scan(state));

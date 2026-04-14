@@ -7,7 +7,6 @@ use std::pin::{Pin, pin};
 use std::ptr::{null, null_mut, slice_from_raw_parts_mut};
 
 use anyhow::{anyhow, Result};
-use log::{info, warn};
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
 use windows_sys::Win32::Security::*;
@@ -127,7 +126,7 @@ pub fn set_dpi_awareness() {
         let utf16 = encode_lpcstr("Shcore.dll");
         LoadLibraryA(utf16.as_ptr())
     };
-    log::debug!("Shcore.dll handle: {:?}", h_lib);
+    log_debug!("Shcore.dll handle: {:?}", "Shcore.dll handle: {:?}", h_lib);
     if h_lib.is_null() {
         unsafe {
             SetProcessDPIAware();
@@ -135,9 +134,9 @@ pub fn set_dpi_awareness() {
     } else {
         unsafe {
             let addr = GetProcAddress(h_lib, encode_lpcstr("SetProcessDpiAwareness").as_ptr());
-            log::debug!("SetProcessDpiAwareness addr: {:?}", addr);
+            log_debug!("SetProcessDpiAwareness addr: {:?}", "SetProcessDpiAwareness addr: {:?}", addr);
             if addr.is_none() {
-                warn!("找不到函数SetProcessDpiAwareness，但Shcore.dll存在 / cannot find process SetProcessDpiAwareness, but Shcore.dll exists");
+                log_warn!("找不到函数SetProcessDpiAwareness，但Shcore.dll存在", "cannot find process SetProcessDpiAwareness, but Shcore.dll exists");
                 SetProcessDPIAware();
             } else {
                 let proc = addr.unwrap();

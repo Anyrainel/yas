@@ -3,7 +3,7 @@ use std::time::SystemTime;
 
 use anyhow::{anyhow, Result};
 use image::RgbImage;
-use log::debug;
+use yas::{log_debug, log_warn};
 
 use yas::cancel::CancelToken;
 use yas::capture::{Capturer, GenericCapturer};
@@ -177,7 +177,7 @@ impl GenshinGameController {
     /// Returns true if main UI was detected, false if still uncertain.
     pub fn return_to_main_ui(&mut self, max_attempts: u32) -> bool {
         if self.is_likely_main_world() {
-            debug!("[return_to_main_ui] 已在主界面 / [return_to_main_ui] already in main world");
+            log_debug!("[return_to_main_ui] 已在主界面", "[return_to_main_ui] already in main world");
             return true;
         }
 
@@ -189,7 +189,7 @@ impl GenshinGameController {
             utils::sleep(900);
 
             if self.is_likely_main_world() {
-                debug!("[return_to_main_ui] 按{}次Escape后到达主界面 / [return_to_main_ui] reached main world after {} Escape(s)", i + 1, i + 1);
+                log_debug!("[return_to_main_ui] 按{}次Escape后到达主界面", "[return_to_main_ui] reached main world after {} Escape(s)", i + 1);
                 return true;
             }
         }
@@ -199,7 +199,7 @@ impl GenshinGameController {
         }
 
         // Fallback: Enter (dismiss any stuck dialog) + Escape
-        debug!("[return_to_main_ui] 回退策略: Enter + Escape / [return_to_main_ui] fallback: Enter + Escape");
+        log_debug!("[return_to_main_ui] 回退策略: Enter + Escape", "[return_to_main_ui] fallback: Enter + Escape");
         self.key_press(enigo::Key::Return);
         utils::sleep(500);
         self.key_press(enigo::Key::Escape);
@@ -207,9 +207,9 @@ impl GenshinGameController {
 
         let result = self.is_likely_main_world();
         if result {
-            debug!("[return_to_main_ui] 回退后到达主界面 / [return_to_main_ui] reached main world after fallback");
+            log_debug!("[return_to_main_ui] 回退后到达主界面", "[return_to_main_ui] reached main world after fallback");
         } else {
-            log::warn!("[return_to_main_ui] 尝试{}次+回退后可能仍未在主界面 / [return_to_main_ui] may not be in main world after {} attempts + fallback", max_attempts, max_attempts);
+            log_warn!("[return_to_main_ui] 尝试{}次+回退后可能仍未在主界面", "[return_to_main_ui] may not be in main world after {} attempts + fallback", max_attempts);
         }
         result
     }
@@ -221,7 +221,8 @@ impl GenshinGameController {
     pub fn click_at(&mut self, base_x: f64, base_y: f64) {
         let x = self.game_info.window.left as f64 + self.scaler.scale_x(base_x);
         let y = self.game_info.window.top as f64 + self.scaler.scale_y(base_y);
-        log::debug!("[click_at] base=({:.0},{:.0}) -> screen=({},{}), window=({},{})",
+        log_debug!("[click_at] base=({:.0},{:.0}) -> screen=({},{}), window=({},{})",
+            "[click_at] base=({:.0},{:.0}) -> screen=({},{}), window=({},{})",
             base_x, base_y, x as i32, y as i32,
             self.game_info.window.left, self.game_info.window.top);
         self.system_control.mouse_move_to(x as i32, y as i32).unwrap();
@@ -303,7 +304,7 @@ impl GenshinGameController {
     pub fn save_screenshot(&self, path: &str) -> Result<()> {
         let im = self.capture_game()?;
         im.save(path).map_err(|e| anyhow!("截图保存失败 / Failed to save screenshot: {}", e))?;
-        debug!("[screenshot] 已保存完整截图: {} / [screenshot] saved full: {}", path, path);
+        log_debug!("[screenshot] 已保存完整截图: {}", "[screenshot] saved full: {}", path);
         Ok(())
     }
 
@@ -319,7 +320,7 @@ impl GenshinGameController {
     ) -> Result<()> {
         let im = self.capture_region(base_x, base_y, base_w, base_h)?;
         im.save(path).map_err(|e| anyhow!("截图保存失败 / Failed to save screenshot: {}", e))?;
-        debug!("[screenshot] 已保存区域截图({},{},{},{}) -> {} / [screenshot] saved region ({},{},{},{}) -> {}", base_x, base_y, base_w, base_h, path, base_x, base_y, base_w, base_h, path);
+        log_debug!("[screenshot] 已保存区域截图({},{},{},{}) -> {}", "[screenshot] saved region ({},{},{},{}) -> {}", base_x, base_y, base_w, base_h, path);
         Ok(())
     }
 }
@@ -395,7 +396,7 @@ impl GenshinGameController {
         }
 
         // Timeout — proceed anyway (better than hanging)
-        debug!("[controller] 面板加载检测超时({}ms) / [controller] panel load detection timed out after {}ms", timeout_ms, timeout_ms);
+        log_debug!("[controller] 面板加载检测超时({}ms)", "[controller] panel load detection timed out after {}ms", timeout_ms);
         Ok(())
     }
 

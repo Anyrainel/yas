@@ -1,4 +1,5 @@
 use image::RgbImage;
+use yas::log_debug;
 
 use super::coord_scaler::CoordScaler;
 
@@ -126,9 +127,10 @@ pub fn detect_dark_icon(
     let d1 = is_pixel_dark(image, scaler, x1, y1);
     let d2 = is_pixel_dark(image, scaler, x2, y2);
     if d1 != d2 {
-        log::debug!(
-            "[{}] 检测不一致: ({},{})={} ({},{})={} / [{}] detection inconsistent: ({},{})={} ({},{})={}",
-            label, x1, y1, d1, x2, y2, d2, label, x1, y1, d1, x2, y2, d2
+        log_debug!(
+            "[{}] 检测不一致: ({},{})={} ({},{})={}",
+            "[{}] detection inconsistent: ({},{})={} ({},{})={}",
+            label, x1, y1, d1, x2, y2, d2
         );
     }
     d1
@@ -141,8 +143,9 @@ pub fn is_five_star_filter_active(image: &RgbImage, scaler: &CoordScaler) -> boo
     use super::constants::ARTIFACT_FIVE_STAR_FILTER_POS;
     let bright = !is_pixel_dark(image, scaler, ARTIFACT_FIVE_STAR_FILTER_POS.0, ARTIFACT_FIVE_STAR_FILTER_POS.1);
     if bright {
-        log::debug!(
-            "[backpack] 检测到五星排序筛选已开启，将点击关闭 / [backpack] 5-star sort filter detected as active, will click to dismiss"
+        log_debug!(
+            "[backpack] 检测到五星排序筛选已开启，将点击关闭",
+            "[backpack] 5-star sort filter detected as active, will click to dismiss"
         );
     }
     bright
@@ -254,7 +257,7 @@ pub fn detect_artifact_rarity(image: &RgbImage, scaler: &CoordScaler) -> i32 {
         }
     };
 
-    log::debug!("[rarity] 最右x={}, 数量={}, 结果={}星 / [rarity] rightmost_x={}, count={}, result={}*", rightmost_star_x, star_pixel_count, rarity, rightmost_star_x, star_pixel_count, rarity);
+    log_debug!("[rarity] 最右x={}, 数量={}, 结果={}星", "[rarity] rightmost_x={}, count={}, result={}*", rightmost_star_x, star_pixel_count, rarity);
     rarity
 }
 
@@ -262,9 +265,10 @@ pub fn detect_artifact_rarity(image: &RgbImage, scaler: &CoordScaler) -> i32 {
 pub fn artifact_below_min_rarity(image: &RgbImage, scaler: &CoordScaler, min_rarity: i32) -> bool {
     let rarity = detect_artifact_rarity(image, scaler);
     if rarity < min_rarity {
-        log::debug!(
-            "[rarity] {}星 < 最低{}星，应停止 / [rarity] {}* < min {}*, should stop",
-            rarity, min_rarity, rarity, min_rarity
+        log_debug!(
+            "[rarity] {}星 < 最低{}星，应停止",
+            "[rarity] {}* < min {}*, should stop",
+            rarity, min_rarity
         );
         true
     } else {
@@ -276,9 +280,10 @@ pub fn artifact_below_min_rarity(image: &RgbImage, scaler: &CoordScaler, min_rar
 pub fn weapon_below_min_rarity(image: &RgbImage, scaler: &CoordScaler, min_rarity: i32) -> bool {
     let rarity = detect_weapon_rarity(image, scaler);
     if rarity < min_rarity {
-        log::debug!(
-            "[rarity] {}星 < 最低{}星，应停止 / [rarity] {}* < min {}*, should stop",
-            rarity, min_rarity, rarity, min_rarity
+        log_debug!(
+            "[rarity] {}星 < 最低{}星，应停止",
+            "[rarity] {}* < min {}*, should stop",
+            rarity, min_rarity
         );
         true
     } else {
@@ -409,9 +414,10 @@ pub fn verify_artifact_lock_toggled(
         // Expect brightening: above "definitely dark" threshold
         b1 > ICON_BRIGHT_PRESENT || b2 > ICON_BRIGHT_PRESENT
     };
-    log::debug!(
-        "[verify_lock] desired={} b1={} b2={} ok={} / [verify_lock] desired={} b1={} b2={} ok={}",
-        desired_lock, b1, b2, ok, desired_lock, b1, b2, ok
+    log_debug!(
+        "[verify_lock] desired={} b1={} b2={} ok={}",
+        "[verify_lock] desired={} b1={} b2={} ok={}",
+        desired_lock, b1, b2, ok
     );
     ok
 }
@@ -522,24 +528,18 @@ pub fn detect_constellation_pixel(image: &RgbImage, scaler: &CoordScaler) -> (i3
 
     let det_str: String = active.iter().map(|&a| if a { 'A' } else { 'L' }).collect();
     if non_monotonic {
-        log::debug!(
-            "[constellation-pixel] 非单调: [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{} / [constellation-pixel] NON-MONOTONIC: [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{}",
-            det_str,
-            brightnesses[0], brightnesses[1], brightnesses[2],
-            brightnesses[3], brightnesses[4], brightnesses[5],
-            constellation,
+        log_debug!(
+            "[constellation-pixel] 非单调: [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{}",
+            "[constellation-pixel] NON-MONOTONIC: [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{}",
             det_str,
             brightnesses[0], brightnesses[1], brightnesses[2],
             brightnesses[3], brightnesses[4], brightnesses[5],
             constellation
         );
     } else {
-        log::debug!(
-            "[constellation-pixel] [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{} / [constellation-pixel] [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{}",
-            det_str,
-            brightnesses[0], brightnesses[1], brightnesses[2],
-            brightnesses[3], brightnesses[4], brightnesses[5],
-            constellation,
+        log_debug!(
+            "[constellation-pixel] [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{}",
+            "[constellation-pixel] [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{}",
             det_str,
             brightnesses[0], brightnesses[1], brightnesses[2],
             brightnesses[3], brightnesses[4], brightnesses[5],

@@ -9,7 +9,7 @@ use std::sync::{mpsc, Arc, Mutex};
 
 use anyhow::{bail, Result};
 use image::RgbImage;
-use log::{debug, info, warn};
+use yas::{log_debug, log_info, log_warn};
 
 use yas::ocr::ImageToText;
 
@@ -281,16 +281,12 @@ pub fn ensure_character_screen(
 
         let name_text = ctrl.ocr_region(ocr, CHAR_NAME_RECT).unwrap_or_default();
         if is_character_screen_name(&name_text, mappings) {
-            debug!(
-                "[ensure_character_screen] 已打开（第{}次尝试），名称='{}' / opened (attempt {}), name='{}'",
-                attempt, name_text.trim(), attempt, name_text.trim()
-            );
+            log_debug!("[ensure_character_screen] 已打开（第{}次尝试），名称='{}'", "opened (attempt {}), name='{}'", attempt, name_text.trim());
             return Ok(());
         }
-        debug!(
-            "[ensure_character_screen] 第{}次尝试失败（OCR: '{}'），按Escape重试 / attempt {} failed (OCR: '{}'), pressing Escape and retrying",
-            attempt, name_text.trim(), attempt, name_text.trim()
-        );
+        log_debug!(
+            "[ensure_character_screen] 第{}次尝试失败（OCR: '{}'），按Escape重试",
+            "attempt {} failed (OCR: '{}'), pressing Escape and retrying", attempt, name_text.trim());
         ctrl.key_press(enigo::Key::Escape);
         yas::utils::sleep(d_action());
     }
@@ -348,7 +344,7 @@ pub fn open_character_screen(
         // OCR character name
         let name_text = ctrl.ocr_region(ocr, CHAR_NAME_RECT)?;
         let name_trimmed = name_text.trim().to_string();
-        debug!("[open_character_screen] #{}: OCR识别名称='{}' / OCR name = '{}'", i, name_trimmed, name_trimmed);
+        log_debug!("[open_character_screen] #{}: OCR识别名称='{}'", "#{}: OCR name='{}'", i, name_trimmed);
 
         // Check for full cycle (returned to first character).
         // Use cleaned names (stripped of trailing garbage) for robust comparison.
@@ -356,7 +352,9 @@ pub fn open_character_screen(
             if let Some(ref first) = first_name {
                 let cur_name = clean_char_name(&name_trimmed);
                 let first_char_name = clean_char_name(first);
-                debug!("[open_character_screen] #{}: 当前='{}' vs 首个='{}' / cur='{}' vs first='{}'", i, cur_name, first_char_name, cur_name, first_char_name);
+                log_debug!(
+                    "[open_character_screen] #{}: 当前='{}' vs 首个='{}'",
+                    "#{}: cur='{}' vs first='{}'", i, cur_name, first_char_name);
                 if !cur_name.is_empty() && cur_name == first_char_name {
                     bail!(
                         "角色 {} 未找到（已遍历全部角色）/ \
@@ -375,7 +373,7 @@ pub fn open_character_screen(
 
         // Match against GOOD key directly (OCR might return English name)
         if name_trimmed.contains(char_key) {
-            info!("[open_character_screen] 在位置{}找到{} / found {} at position {}", i, char_key, char_key, i);
+            log_info!("[open_character_screen] 找到{}，位置{}", "found {} at position {}", char_key, i);
             return Ok(());
         }
 
@@ -383,13 +381,14 @@ pub fn open_character_screen(
         let mut found = false;
         for cn in &cn_names {
             if name_trimmed.contains(cn.as_str()) {
-                info!("[open_character_screen] 在位置{}找到{}（中文: {}） / found {} (cn: {}) at position {}", i, char_key, cn, char_key, cn, i);
+                log_info!("[open_character_screen] 找到{}（中文: {}），位置{}", "found {} (cn: {}) at position {}", char_key, cn, i);
                 return Ok(());
             }
             // Fuzzy match: allow 1 character difference for names >= 2 chars
             if fuzzy_char_match(&clean_name, cn) {
-                info!("[open_character_screen] 在位置{}找到{}（中文: {}，模糊匹配'{}'） / found {} (cn: {}, fuzzy match '{}') at position {}",
-                    i, char_key, cn, clean_name, char_key, cn, clean_name, i);
+                log_info!(
+                    "[open_character_screen] 找到{}（中文: {}，模糊匹配'{}'），位置{}",
+                    "found {} (cn: {}, fuzzy match '{}') at position {}", char_key, cn, clean_name, i);
                 found = true;
                 break;
             }
@@ -402,7 +401,7 @@ pub fn open_character_screen(
         for try_name in &[&name_trimmed, &clean_name] {
             if let Some(matched_key) = mappings.character_name_map.get(try_name.as_str()) {
                 if matched_key == char_key {
-                    info!("[open_character_screen] 通过映射在位置{}找到{} / found {} via mapping at position {}", i, char_key, char_key, i);
+                    log_info!("[open_character_screen] 通过映射找到{}，位置{}", "found {} via mapping at position {}", char_key, i);
                     return Ok(());
                 }
             }
@@ -445,18 +444,20 @@ pub fn click_equipment_slot(
     yas::utils::sleep(d_cell() * 2);
 
     // Step 1: Click 圣遗物 menu to show artifact circles
-    debug!("[click_equipment_slot] 点击圣遗物菜单 / clicking artifact menu");
+    log_debug!("[click_equipment_slot] 点击圣遗物菜单", "clicking artifact menu");
     ctrl.click_at(CHAR_ARTIFACT_MENU_X, CHAR_ARTIFACT_MENU_Y);
     yas::utils::sleep(d_transition() * 4 / 5); // wait for circle animation
 
     // Step 2: Click "替换" button to open the artifact selection list.
     // The button appears at the bottom-right of the character artifact view.
-    debug!("[click_equipment_slot] 点击替换按钮({}, {}) / clicking replace button at ({}, {})", CHAR_REPLACE_BUTTON_X, CHAR_REPLACE_BUTTON_Y, CHAR_REPLACE_BUTTON_X, CHAR_REPLACE_BUTTON_Y);
+    log_debug!(
+        "[click_equipment_slot] 点击替换按钮({}, {})",
+        "clicking replace button at ({}, {})", CHAR_REPLACE_BUTTON_X, CHAR_REPLACE_BUTTON_Y);
     ctrl.click_at(CHAR_REPLACE_BUTTON_X, CHAR_REPLACE_BUTTON_Y);
     yas::utils::sleep(d_transition() * 4 / 3); // wait for selection view to load
 
     // Step 3: Click the correct slot tab
-    debug!("[click_equipment_slot] 点击{}标签({}, {}) / clicking {} tab at ({}, {})", slot_key, tab_pos.0, tab_pos.1, slot_key, tab_pos.0, tab_pos.1);
+    log_debug!("[click_equipment_slot] 点击{}标签({}, {})", "clicking {} tab at ({}, {})", slot_key, tab_pos.0, tab_pos.1);
     ctrl.click_at(tab_pos.0, tab_pos.1);
     yas::utils::sleep(d_action());
 
@@ -500,7 +501,9 @@ pub fn detect_set_in_visible_rows(
         if let Some(key) = fuzzy_match_map(&left_text, &mappings.artifact_set_map) {
             detected_keys.push(key.clone());
             if key == set_key && result.is_none() {
-                debug!("[set_filter] found '{}' in left col row {} (OCR: '{}')", set_key, row, left_text);
+                log_debug!(
+                    "[set_filter] found '{}' in left col row {} (OCR: '{}')",
+                    "[set_filter] found '{}' in left col row {} (OCR: '{}')", set_key, row, left_text);
                 result = Some((FILTER_LEFT_CLICK_X, y));
             }
         }
@@ -514,13 +517,17 @@ pub fn detect_set_in_visible_rows(
         if let Some(key) = fuzzy_match_map(&right_text, &mappings.artifact_set_map) {
             detected_keys.push(key.clone());
             if key == set_key && result.is_none() {
-                debug!("[set_filter] found '{}' in right col row {} (OCR: '{}')", set_key, row, right_text);
+                log_debug!(
+                    "[set_filter] found '{}' in right col row {} (OCR: '{}')",
+                    "[set_filter] found '{}' in right col row {} (OCR: '{}')", set_key, row, right_text);
                 result = Some((FILTER_RIGHT_CLICK_X, y));
             }
         }
     }
 
-    debug!("[set_filter] visible scan: {} sets detected: {:?}", detected_keys.len(), detected_keys);
+    log_debug!(
+        "[set_filter] visible scan: {} sets detected: {:?}",
+        "[set_filter] visible scan: {} sets detected: {:?}", detected_keys.len(), detected_keys);
     Ok(result)
 }
 
@@ -774,12 +781,12 @@ pub fn apply_set_filter(
     {
         Some(name) => name,
         None => {
-            info!("[set_filter] 套装'{}'未在映射中找到，跳过筛选 / set key '{}' not found in mappings, skipping filter", set_key, set_key);
+            log_info!("[set_filter] 套装'{}'未在映射中找到，跳过筛选", "set key '{}' not found in mappings, skipping filter", set_key);
             return Ok(false);
         }
     };
 
-    info!("[set_filter] 正在筛选{}（{}） / applying filter for {} ({})", set_key, cn_name, set_key, cn_name);
+    log_info!("[set_filter] 正在筛选{}（{}）", "applying filter for {} ({})", set_key, cn_name);
 
     // Open filter panel
     ctrl.click_at(FILTER_FUNNEL_X, FILTER_FUNNEL_Y);
@@ -796,7 +803,7 @@ pub fn apply_set_filter(
             Ok(true)
         }
         None => {
-            info!("[set_filter] 套装'{}'（{}）未在筛选列表中找到 / set '{}' ({}) not found in filter list", set_key, cn_name, set_key, cn_name);
+            log_info!("[set_filter] 套装'{}'（{}）未在筛选列表中找到", "set '{}' ({}) not found in filter list", set_key, cn_name);
             ctrl.click_at(FILTER_CLOSE_X, FILTER_CLOSE_Y);
             yas::utils::sleep(d_action() * 5 / 8);
             Ok(false)
@@ -840,12 +847,11 @@ pub fn apply_multi_set_filter(
     }).collect();
 
     if cn_targets.is_empty() {
-        info!("[set_filter] 无有效套装映射 / no valid set mappings found");
+        log_info!("[set_filter] 无有效套装映射", "no valid set mappings found");
         return Ok(0);
     }
 
-    info!("[set_filter] 正在筛选{}个套装 / applying filter for {} sets: {:?}",
-        cn_targets.len(), cn_targets.len(), set_keys);
+    log_info!("[set_filter] 正在筛选{}个套装: {:?}", "applying filter for {} sets: {:?}", cn_targets.len(), set_keys);
 
     // Open filter panel
     ctrl.click_at(FILTER_FUNNEL_X, FILTER_FUNNEL_Y);
@@ -886,8 +892,9 @@ pub fn apply_multi_set_filter(
 
             if let Some(matched_key) = fuzzy_match_map(&left_text, &mappings.artifact_set_map) {
                 if let Some(pos) = remaining_keys.iter().position(|k| *k == matched_key) {
-                    debug!("[set_filter] 在左列第{}行找到'{}' (OCR: '{}') / found '{}' in left col row {}",
-                        row, matched_key, left_text, matched_key, row);
+                    log_debug!(
+                        "[set_filter] 左列找到'{}' 第{}行 (OCR: '{}')",
+                        "found '{}' in left col row {} (OCR: '{}')", matched_key, row, left_text);
                     ctrl.click_at(FILTER_LEFT_CLICK_X, y);
                     yas::utils::sleep(d_action() * 3 / 8);
                     remaining_keys.remove(pos);
@@ -904,8 +911,9 @@ pub fn apply_multi_set_filter(
 
             if let Some(matched_key) = fuzzy_match_map(&right_text, &mappings.artifact_set_map) {
                 if let Some(pos) = remaining_keys.iter().position(|k| *k == matched_key) {
-                    debug!("[set_filter] 在右列第{}行找到'{}' (OCR: '{}') / found '{}' in right col row {}",
-                        row, matched_key, right_text, matched_key, row);
+                    log_debug!(
+                        "[set_filter] 右列找到'{}' 第{}行 (OCR: '{}')",
+                        "found '{}' in right col row {} (OCR: '{}')", matched_key, row, right_text);
                     ctrl.click_at(FILTER_RIGHT_CLICK_X, y);
                     yas::utils::sleep(d_action() * 3 / 8);
                     remaining_keys.remove(pos);
@@ -925,7 +933,7 @@ pub fn apply_multi_set_filter(
     if found_count > 0 {
         ctrl.click_at(FILTER_CONFIRM_X, FILTER_CONFIRM_Y);
         yas::utils::sleep(d_action());
-        info!("[set_filter] 已应用{}个套装筛选 / applied {} set filters", found_count, found_count);
+        log_info!("[set_filter] 已应用{}个套装筛选", "applied {} set filters", found_count);
     } else {
         ctrl.click_at(FILTER_CLOSE_X, FILTER_CLOSE_Y);
         yas::utils::sleep(d_action() * 5 / 8);
@@ -1041,9 +1049,7 @@ fn find_artifact_in_grid_inner(
     let max_pages = 50;
     let mut total_checked: usize = 0;
 
-    debug!("[grid_scan] 开始搜索: set={} slot={} lv={} / starting: set={} slot={} lv={}",
-        target.set_key, target.slot_key, target.level,
-        target.set_key, target.slot_key, target.level);
+    log_debug!("[grid_scan] 开始搜索: set={} slot={} lv={}", "starting: set={} slot={} lv={}", target.set_key, target.slot_key, target.level);
 
     // Scroll to top
     {
@@ -1163,7 +1169,9 @@ fn find_artifact_in_grid_inner(
                                 Ok((verdict, details)) => {
                                     match verdict {
                                         MatchVerdict::Match => {
-                                            debug!("[grid_async] 匹配成功 page={} row={} col={} / MATCH at page={} row={} col={}", page, row, col, page, row, col);
+                                            log_debug!(
+                                                "[grid_async] 匹配成功 page={} row={} col={}",
+                                                "MATCH at page={} row={} col={}", page, row, col);
                                             *match_result.lock().unwrap() = Some((row, col));
                                             found.store(true, Ordering::SeqCst);
                                             (Some(true), details)
@@ -1180,7 +1188,7 @@ fn find_artifact_in_grid_inner(
                                     }
                                 }
                                 Err(e) => {
-                                    debug!("[grid_async] match error ({},{}): {}", row, col, e);
+                                    log_debug!("[grid_async] match error ({},{}): {}", "[grid_async] match error ({},{}): {}", row, col, e);
                                     if level_matches {
                                         retries.lock().unwrap().push((row, col));
                                     }
@@ -1222,7 +1230,7 @@ fn find_artifact_in_grid_inner(
                                 let _ = tx.send((row, col, img));
                             }
                             Err(e) => {
-                                debug!("[grid_scan] capture failed ({},{}): {}", row, col, e);
+                                log_debug!("[grid_scan] capture failed ({},{}): {}", "[grid_scan] capture failed ({},{}): {}", row, col, e);
                             }
                         }
                     }
@@ -1248,8 +1256,7 @@ fn find_artifact_in_grid_inner(
 
         // Check match
         if let Some((row, col)) = *match_cell.lock().unwrap() {
-            debug!("[grid_scan] 已找到 page={} ({},{})，共检查{} / found at page={} ({},{}) after {} checked",
-                page, row, col, total_checked, page, row, col, total_checked);
+            log_debug!("[grid_scan] 已找到 page={} ({},{})，共检查{}", "found at page={} ({},{}) after {} checked", page, row, col, total_checked);
 
             // Re-click the matched cell to select it
             let x = SEL_FIRST_X + col as f64 * SEL_OFFSET_X;
@@ -1272,7 +1279,7 @@ fn find_artifact_in_grid_inner(
             Err(arc) => arc.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         };
         if !retries_vec.is_empty() {
-            debug!("[grid_scan] 重试第{}页的{}个格子 / retrying {} cells on page {}", page, retries_vec.len(), retries_vec.len(), page);
+            log_debug!("[grid_scan] 重试第{}页的{}个格子", "retrying on page {}, {} cells", page, retries_vec.len());
             for (row, col) in &retries_vec {
                 if ctrl.check_rmb() {
                     bail!("{}", ctrl.cancel_token().reason().unwrap());
@@ -1291,7 +1298,9 @@ fn find_artifact_in_grid_inner(
 
                         match full_match_from_panel_verbose(&panel_img, target, ocr, mappings) {
                             Ok((MatchVerdict::Match, details)) => {
-                                debug!("[grid_scan] 重试匹配成功 page={} ({},{}) / RETRY MATCH at page={} ({},{}):\n{}", page, row, col, page, row, col, details);
+                                log_debug!(
+                                    "[grid_scan] 重试匹配成功 page={} ({},{}):\n{}",
+                                    "RETRY MATCH at page={} ({},{}):\n{}", page, row, col, details);
                                 if equip {
                                     if !click_equip_button_safe(ctrl, ocr, "grid_retry", page, *row, *col)? {
                                         return Ok(true); // already equipped
@@ -1300,7 +1309,7 @@ fn find_artifact_in_grid_inner(
                                 return Ok(true);
                             }
                             Ok((_, details)) => {
-                                debug!("[grid_scan] 重试失败 ({},{}) / retry failed ({},{}): {}", row, col, row, col, details);
+                                log_debug!("[grid_scan] 重试失败 ({},{}): {}", "retry failed ({},{}): {}", row, col, details);
                                 if let Some(ref mut out) = debug_out {
                                     out.push(GridCellDebug {
                                         page, row: *row, col: *col,
@@ -1314,12 +1323,14 @@ fn find_artifact_in_grid_inner(
                                 }
                             }
                             Err(e) => {
-                                debug!("[grid_scan] retry error ({},{}): {}", row, col, e);
+                                log_debug!("[grid_scan] retry error ({},{}): {}", "[grid_scan] retry error ({},{}): {}", row, col, e);
                             }
                         }
                     }
                     Err(e) => {
-                        debug!("[grid_scan] retry capture failed ({},{}): {}", row, col, e);
+                        log_debug!(
+                            "[grid_scan] retry capture failed ({},{}): {}",
+                            "[grid_scan] retry capture failed ({},{}): {}", row, col, e);
                     }
                 }
             }
@@ -1327,7 +1338,7 @@ fn find_artifact_in_grid_inner(
 
         // Check end of list (empty cells)
         if page_ended_flag.load(Ordering::SeqCst) {
-            debug!("[grid_scan] 列表结束（空格子），共检查{} / page ended (empty cells) after {} checked", total_checked, total_checked);
+            log_debug!("[grid_scan] 列表结束（空格子），共检查{}", "page ended (empty cells) after {} checked", total_checked);
             return Ok(false);
         }
 
@@ -1339,8 +1350,9 @@ fn find_artifact_in_grid_inner(
             if Some(cur_retry_count) == prev_retry_count && cur_retry_count > 0 {
                 same_retry_count += 1;
                 if same_retry_count >= 2 {
-                    debug!("[grid_scan] 连续{}页重试数相同（{}），列表结束 / same retry count ({}) for {} pages, end of list",
-                        same_retry_count + 1, cur_retry_count, cur_retry_count, same_retry_count + 1);
+                    log_debug!(
+                        "[grid_scan] 连续{}页重试数相同（{}），列表结束",
+                        "{} consecutive pages with same retry count ({}), end of list", same_retry_count + 1, cur_retry_count);
                     return Ok(false);
                 }
             } else {
@@ -1354,7 +1366,7 @@ fn find_artifact_in_grid_inner(
         if page > 0 && fp == prev_fingerprint {
             same_fp_count += 1;
             if same_fp_count >= 2 {
-                debug!("[grid_scan] 指纹连续{}次未变化，列表结束 / fingerprint unchanged {} times, end of list", same_fp_count, same_fp_count);
+                log_debug!("[grid_scan] 指纹连续{}次未变化，列表结束", "fingerprint unchanged {} times, end of list", same_fp_count);
                 return Ok(false);
             }
         } else {
@@ -1372,7 +1384,7 @@ fn find_artifact_in_grid_inner(
         scroll_ticks_dir(ctrl, SEL_SCROLL_TICKS, 1); // DOWN (positive = down)
     }
 
-    debug!("[grid_scan] 未找到，共检查{} / not found after {} checked", total_checked, total_checked);
+    log_debug!("[grid_scan] 未找到，共检查{}", "not found after {} checked", total_checked);
     Ok(false)
 }
 
@@ -1406,9 +1418,9 @@ pub fn find_and_click_artifact_in_selection(
     let filter_applied = apply_set_filter(ctrl, &target.set_key, mappings, ocr)?;
     if filter_applied {
         click_slot_tab(ctrl, &target.slot_key)?;
-        info!("[selection] 已应用套装筛选 / set filter applied, scanning filtered grid");
+        log_info!("[selection] 已应用套装筛选", "set filter applied, scanning filtered grid");
     } else {
-        info!("[selection] 未应用套装筛选 / set filter not applied, scanning full grid");
+        log_info!("[selection] 未应用套装筛选", "set filter not applied, scanning full grid");
     }
 
     find_artifact_in_grid(ctrl, target, ocr, mappings, true)
@@ -1432,8 +1444,7 @@ fn full_match_detail_panel(
     let level_text = ocr_region_enhanced(ctrl, ocr, SEL_LEVEL_RECT).unwrap_or_default();
     let level = parse_level(&level_text);
     if level >= 0 && level != target.level {
-        debug!("[{}] level不匹配: OCR={} 期望={} / level mismatch: OCR={} expected={}",
-            tag, level, target.level, level, target.level);
+        log_debug!("[{}] level不匹配: OCR={} 期望={}", "[{}] level mismatch: OCR={} expected={}", tag, level, target.level);
         return Ok(false);
     }
 
@@ -1450,9 +1461,9 @@ fn full_match_detail_panel(
         if let Some(parsed) = stat_parser::parse_stat_from_text(&main_text) {
             let ocr_key = fixup_key(&parsed.key);
             if ocr_key != target.main_stat_key {
-                debug!("[{}] 主词条不匹配: OCR='{}' -> '{}' 期望='{}' / main stat mismatch: OCR='{}' -> '{}' expected='{}'",
-                    tag, main_text, ocr_key, target.main_stat_key,
-                    main_text, ocr_key, target.main_stat_key);
+                log_debug!(
+                    "[{}] 主词条不匹配: OCR='{}' -> '{}' 期望='{}'",
+                    "[{}] main stat mismatch: OCR='{}' -> '{}' expected='{}'", tag, main_text, ocr_key, target.main_stat_key);
                 return Ok(false);
             }
         } else {
@@ -1460,8 +1471,7 @@ fn full_match_detail_panel(
             if let Some((key, _has_pct, _)) = stat_parser::try_extract_stat_key(&main_text) {
                 let ocr_key = fixup_key(&key);
                 if ocr_key != target.main_stat_key {
-                    debug!("[{}] 主词条key不匹配: '{}' vs '{}' / main stat key mismatch",
-                        tag, ocr_key, target.main_stat_key);
+                    log_debug!("[{}] 主词条key不匹配: '{}' vs '{}'", "[{}] main stat key mismatch: '{}' vs '{}'", tag, ocr_key, target.main_stat_key);
                     return Ok(false);
                 }
             }
@@ -1477,15 +1487,16 @@ fn full_match_detail_panel(
     for (idx, rect) in sub_rects.iter().enumerate() {
         let text = ocr_region_enhanced(ctrl, ocr, *rect).unwrap_or_default();
         if text.is_empty() {
-            debug!("[{}] 副词条{}为空 / substat {} is empty", tag, idx, idx);
+            log_debug!("[{}] 副词条{}为空", "[{}] substat {} is empty", tag, idx);
             continue;
         }
         if let Some(parsed) = stat_parser::parse_stat_from_text(&text) {
-            debug!("[{}] 副词条{} OCR='{}' -> key='{}' val={} inactive={} / substat {} parsed",
-                tag, idx, text, parsed.key, parsed.value, parsed.inactive, idx);
+            log_debug!(
+                "[{}] 副词条{} OCR='{}' -> key='{}' val={} inactive={}",
+                "[{}] substat {} OCR='{}' -> key='{}' val={} inactive={}", tag, idx, text, parsed.key, parsed.value, parsed.inactive);
             ocr_stats.push((parsed.key, parsed.value, parsed.inactive));
         } else {
-            debug!("[{}] 副词条{} OCR='{}' 解析失败 / substat {} parse failed", tag, idx, text, idx);
+            log_debug!("[{}] 副词条{} OCR='{}' 解析失败", "[{}] substat {} OCR='{}' parse failed", tag, idx, text);
         }
     }
 
@@ -1525,9 +1536,9 @@ fn full_match_detail_panel(
             }
         }
         if !found {
-            debug!("[{}] 副词条不匹配: key='{}' val={} inactive={} / substat not matched: key='{}' val={} inactive={}",
-                tag, target_sub.key, target_sub.value, target_inactive,
-                target_sub.key, target_sub.value, target_inactive);
+            log_debug!(
+                "[{}] 副词条不匹配: key='{}' val={} inactive={}",
+                "[{}] substat not matched: key='{}' val={} inactive={}", tag, target_sub.key, target_sub.value, target_inactive);
             return Ok(false);
         }
     }
@@ -1536,8 +1547,9 @@ fn full_match_detail_panel(
     // (would indicate a different artifact with extra substats)
     if ocr_stats.len() > all_target_subs.len() + 1 {
         // Allow +1 tolerance for OCR noise (e.g., set bonus text parsed as a sub)
-        debug!("[{}] OCR副词条过多: {} vs 期望{} / too many OCR substats: {} vs expected {}",
-            tag, ocr_stats.len(), all_target_subs.len(), ocr_stats.len(), all_target_subs.len());
+        log_debug!(
+            "[{}] OCR副词条过多: {} vs 期望{}",
+            "[{}] too many OCR substats: {} vs expected {}", tag, ocr_stats.len(), all_target_subs.len());
         return Ok(false);
     }
 
@@ -1558,9 +1570,9 @@ fn full_match_detail_panel(
             .trim();
         if let Some(ocr_set_key) = fuzzy_match_map(cleaned, &mappings.artifact_set_map) {
             if ocr_set_key != target.set_key {
-                debug!("[{}] 套装不匹配: OCR='{}' -> '{}' 期望='{}' / set mismatch: OCR='{}' -> '{}' expected='{}'",
-                    tag, set_text, ocr_set_key, target.set_key,
-                    set_text, ocr_set_key, target.set_key);
+                log_debug!(
+                    "[{}] 套装不匹配: OCR='{}' -> '{}' 期望='{}'",
+                    "[{}] set mismatch: OCR='{}' -> '{}' expected='{}'", tag, set_text, ocr_set_key, target.set_key);
                 return Ok(false);
             }
         }
@@ -1568,8 +1580,9 @@ fn full_match_detail_panel(
         // The combination of level + main stat + all substats is already very unique.
     }
 
-    info!("[{}] 全匹配成功: lv={}, main={}, {}个副词条, set={} / full match OK",
-        tag, target.level, target.main_stat_key, match_count, target.set_key);
+    log_info!(
+        "[{}] 全匹配成功: lv={}, main={}, {}个副词条, set={}",
+        "[{}] full match OK: lv={}, main={}, {} substats, set={}", tag, target.level, target.main_stat_key, match_count, target.set_key);
     Ok(true)
 }
 
@@ -1644,7 +1657,9 @@ fn click_equip_button_safe(
     let btn_clean: String = btn_text.chars().filter(|c| !c.is_whitespace()).collect();
 
     if btn_clean.contains("卸") {
-        debug!("[{}] 按钮='{}' (卸下) p{}_r{}_c{}，已装备 / button='{}' (unequip) at p{}_r{}_c{}, already equipped", tag, btn_clean, page, row, col, btn_clean, page, row, col);
+        log_debug!(
+            "[{}] 按钮='{}' (卸下) p{}_r{}_c{}，已装备",
+            "[{}] button='{}' (unequip) at p{}_r{}_c{}, already equipped", tag, btn_clean, page, row, col);
         return Ok(false);
     }
 
@@ -1658,7 +1673,9 @@ fn click_equip_button_safe(
     }
 
     // Neither detected — save debug image and bail
-    warn!("[{}] 按钮OCR='{}' p{}_r{}_c{}，预期为「装备」或「卸下」/ button OCR='{}' at p{}_r{}_c{}, expected '装备' or '卸下'", tag, btn_clean, page, row, col, btn_clean, page, row, col);
+    log_warn!(
+        "[{}] 按钮OCR='{}' p{}_r{}_c{}，预期为「装备」或「卸下」",
+        "[{}] button OCR='{}' at p{}_r{}_c{}, expected '装备' or '卸下'", tag, btn_clean, page, row, col);
     let dir = std::path::Path::new("debug_images/grid_scan");
     let _ = std::fs::create_dir_all(dir);
     if let Ok(btn_img) = ctrl.capture_region(

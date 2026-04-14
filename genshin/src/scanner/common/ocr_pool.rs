@@ -5,6 +5,7 @@ use anyhow::Result;
 use image::RgbImage;
 
 use yas::ocr::ImageToText;
+use yas::{log_debug, log_error};
 use crate::scanner::common::ocr_factory;
 
 /// A pool of OCR model instances for true parallel OCR.
@@ -98,26 +99,26 @@ impl OcrPoolConfig {
         let (v5_count, v4_count) = match available {
             Some(bytes) if bytes < EIGHT_GB => {
                 let gb = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-                log::debug!(
-                    "可用内存 {:.1} GB < 8 GB，使用小型OCR池 (1×v5 + 1×v4) / \
-                     Available memory {:.1} GB < 8 GB, using small OCR pool (1×v5 + 1×v4)",
-                    gb, gb,
+                log_debug!(
+                    "可用内存 {:.1} GB < 8 GB，使用小型OCR池 (1×v5 + 1×v4)",
+                    "Available memory {:.1} GB < 8 GB, using small OCR pool (1×v5 + 1×v4)",
+                    gb,
                 );
                 (1, 1)
             }
             Some(bytes) => {
                 let gb = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-                log::debug!(
-                    "可用内存 {:.1} GB，使用标准OCR池 (2×v5 + 4×v4) / \
-                     Available memory {:.1} GB, using normal OCR pool (2×v5 + 4×v4)",
-                    gb, gb,
+                log_debug!(
+                    "可用内存 {:.1} GB，使用标准OCR池 (2×v5 + 4×v4)",
+                    "Available memory {:.1} GB, using normal OCR pool (2×v5 + 4×v4)",
+                    gb,
                 );
                 (2, 4)
             }
             None => {
-                log::debug!(
-                    "无法检测内存，使用小型OCR池 (1×v5 + 1×v4) / \
-                     Cannot detect memory, using small OCR pool (1×v5 + 1×v4)",
+                log_debug!(
+                    "无法检测内存，使用小型OCR池 (1×v5 + 1×v4)",
+                    "Cannot detect memory, using small OCR pool (1×v5 + 1×v4)",
                 );
                 (1, 1)
             }
@@ -166,9 +167,9 @@ impl SharedOcrPools {
             "v4",
         )?);
 
-        log::debug!(
-            "OCR池已创建: v5={}, v4={} / OCR pools created: v5={}, v4={}",
-            config.v5_count, config.v4_count,
+        log_debug!(
+            "OCR池已创建: v5={}, v4={}",
+            "OCR pools created: v5={}, v4={}",
             config.v5_count, config.v4_count,
         );
 
@@ -232,7 +233,7 @@ where
 /// | error  | "not supported in this build" | ORT format version mismatch |
 fn diagnose_error(msg: String) -> anyhow::Error {
     // Always log the raw error — essential for remote debugging
-    log::error!("OCR模型加载失败 / OCR model failed to load: {}", msg);
+    log_error!("OCR模型加载失败: {}", "OCR model failed to load: {}", msg);
 
     let lower = msg.to_lowercase();
     const VCPP_URL: &str = "https://aka.ms/vs/17/release/vc_redist.x64.exe";
@@ -242,17 +243,18 @@ fn diagnose_error(msg: String) -> anyhow::Error {
     // so "LoadLibraryExW failed" means a *dependency* is missing — almost
     // always the VC++ runtime.
     if lower.contains("loadlibraryexw failed") || lower.contains("loadlibrary") {
-        log::error!(
-            "onnxruntime.dll 加载失败，最常见原因：缺少 Visual C++ 运行库 / \
-             onnxruntime.dll failed to load. Most common cause: missing Visual C++ runtime"
+        log_error!(
+            "onnxruntime.dll 加载失败，最常见原因：缺少 Visual C++ 运行库",
+            "onnxruntime.dll failed to load. Most common cause: missing Visual C++ runtime"
         );
-        log::error!(
-            "请安装 VC++ 2015-2022 Redistributable (x64) / \
-             Install VC++ 2015-2022 Redistributable (x64): {}", VCPP_URL
+        log_error!(
+            "请安装 VC++ 2015-2022 Redistributable (x64): {}",
+            "Install VC++ 2015-2022 Redistributable (x64): {}",
+            VCPP_URL
         );
-        log::error!(
-            "若已安装，请删除 onnxruntime.dll 后重启程序以重新下载 / \
-             If already installed, delete onnxruntime.dll and restart to re-download"
+        log_error!(
+            "若已安装，请删除 onnxruntime.dll 后重启程序以重新下载",
+            "If already installed, delete onnxruntime.dll and restart to re-download"
         );
         return anyhow::anyhow!("{}", msg);
     }
@@ -261,18 +263,18 @@ fn diagnose_error(msg: String) -> anyhow::Error {
     if lower.contains("is not compatible with the onnx runtime binary")
         || lower.contains("not supported in this build")
     {
-        log::error!(
-            "onnxruntime.dll 版本不兼容，请删除后重启程序以重新下载正确版本 / \
-             onnxruntime.dll version is incompatible. Delete it and restart to re-download the correct version"
+        log_error!(
+            "onnxruntime.dll 版本不兼容，请删除后重启程序以重新下载正确版本",
+            "onnxruntime.dll version is incompatible. Delete it and restart to re-download the correct version"
         );
         return anyhow::anyhow!("{}", msg);
     }
 
     // Corrupt or invalid DLL
     if lower.contains("ortgetapibase") {
-        log::error!(
-            "onnxruntime.dll 文件损坏或无效，请删除后重启程序以重新下载 / \
-             onnxruntime.dll is corrupt or invalid. Delete it and restart to re-download"
+        log_error!(
+            "onnxruntime.dll 文件损坏或无效，请删除后重启程序以重新下载",
+            "onnxruntime.dll is corrupt or invalid. Delete it and restart to re-download"
         );
         return anyhow::anyhow!("{}", msg);
     }
@@ -283,18 +285,18 @@ fn diagnose_error(msg: String) -> anyhow::Error {
         || lower.contains("could not parse model")
         || lower.contains("model verification failed")
     {
-        log::error!(
-            "OCR模型文件损坏，请重新下载本程序 / \
-             OCR model data is corrupt. Please re-download this program"
+        log_error!(
+            "OCR模型文件损坏，请重新下载本程序",
+            "OCR model data is corrupt. Please re-download this program"
         );
         return anyhow::anyhow!("{}", msg);
     }
 
     // Out of memory
     if lower.contains("bad_alloc") || lower.contains("out of memory") {
-        log::error!(
-            "内存不足，无法加载OCR模型。请关闭其他程序后重试 / \
-             Out of memory loading OCR model. Close other programs and try again"
+        log_error!(
+            "内存不足，无法加载OCR模型。请关闭其他程序后重试",
+            "Out of memory loading OCR model. Close other programs and try again"
         );
         return anyhow::anyhow!("{}", msg);
     }

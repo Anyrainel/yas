@@ -55,10 +55,10 @@ impl Profiler {
     }
 
     pub fn print(&self) {
-        log::debug!("Profile:");
+        log_debug!("Profile:", "Profile:");
         for (k, v) in self.time_table.iter() {
             let ms = v.1.as_millis() as f64 / (v.0 as f64);
-            log::debug!("{}: avg {}ms, execution count: {}", k, ms, v.0);
+            log_debug!("{}: avg {}ms, execution count: {}", "{}: avg {}ms, execution count: {}", k, ms, v.0);
         }
     }
 }

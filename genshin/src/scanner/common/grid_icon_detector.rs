@@ -24,7 +24,7 @@
 /// slightly shift its icon position).
 
 use image::RgbImage;
-use log::debug;
+use yas::log_debug;
 
 use super::coord_scaler::CoordScaler;
 
@@ -330,10 +330,9 @@ fn calibrate_grid(
 
     let off_y = (best_gy - grid_cy) / scaler.factor_y();
 
-    debug!(
-        "[grid-cal] 网格校准: gy={:.1} 偏移_y={:+.1} 模式={:?} / \
-         [grid-cal] grid calibration: gy={:.1} off_y={:+.1} mode={:?}",
-        best_gy, off_y, mode,
+    log_debug!(
+        "[grid-cal] 网格校准: gy={:.1} 偏移_y={:+.1} 模式={:?}",
+        "[grid-cal] grid calibration: gy={:.1} off_y={:+.1} mode={:?}",
         best_gy, off_y, mode,
     );
 
@@ -395,7 +394,7 @@ fn detect_page_icons(
                 }
 
                 if has_astral && !has_lock {
-                    debug!("[grid-icon] idx={} 星标但无锁，强制锁定 / [grid-icon] idx={} astral but no lock, forcing lock", i, i);
+                    log_debug!("[grid-icon] idx={} 星标但无锁，强制锁定", "[grid-icon] idx={} astral but no lock, forcing lock", i);
                 }
 
                 results.push(GridIconResult { lock: has_lock, astral: has_astral, elixir: has_elixir });

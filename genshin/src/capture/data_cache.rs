@@ -6,8 +6,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use log::{info, warn};
 use serde::{Deserialize, Serialize};
+use yas::{log_info, log_warn};
 
 use super::data_types::DataCache;
 
@@ -88,7 +88,7 @@ pub fn load_data_cache() -> Result<DataCache> {
     if !cache_path.exists()
         || !is_cache_fresh(meta.last_fetch_time, DATA_CACHE_TTL_SECS)
     {
-        info!("正在下载抓包数据缓存... / Downloading capture data cache...");
+        log_info!("正在下载抓包数据缓存...", "Downloading capture data cache...");
         match fetch_remote() {
             Ok(data) => {
                 // Validate JSON before writing
@@ -98,13 +98,14 @@ pub fn load_data_cache() -> Result<DataCache> {
                 write_meta(&CacheMeta {
                     last_fetch_time: now_secs(),
                 });
-                info!("抓包数据缓存已更新 / Capture data cache updated");
+                log_info!("抓包数据缓存已更新", "Capture data cache updated");
             }
             Err(e) => {
                 if cache_path.exists() {
-                    warn!(
-                        "下载抓包数据缓存失败（{}），使用本地缓存 / Failed to fetch data cache ({}), using stale cache",
-                        e, e
+                    log_warn!(
+                        "下载抓包数据缓存失败（{}），使用本地缓存",
+                        "Failed to fetch data cache ({}), using stale cache",
+                        e
                     );
                 } else {
                     anyhow::bail!(

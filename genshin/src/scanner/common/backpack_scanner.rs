@@ -1,6 +1,6 @@
 use anyhow::Result;
 use image::RgbImage;
-use log::{debug, error, info};
+use yas::{log_debug, log_error, log_info, log_warn};
 use regex::Regex;
 
 use yas::ocr::ImageToText;
@@ -18,7 +18,7 @@ pub fn dismiss_five_star_filter(ctrl: &mut GenshinGameController, tab_delay: u64
     let image = match ctrl.capture_game() {
         Ok(img) => img,
         Err(e) => {
-            log::warn!("[backpack] 截图失败，跳过筛选检测 / capture failed, skipping filter check: {}", e);
+            log_warn!("[backpack] 截图失败，跳过筛选检测: {}", "[backpack] capture failed, skipping filter check: {}", e);
             return;
         }
     };
@@ -87,7 +87,7 @@ pub fn open_backpack_to_tab(
     };
 
     if count == 0 {
-        info!("[backpack] 标签'{}'数量=0，重新打开背包... / [backpack] count=0 on tab '{}', reopening backpack...", tab, tab);
+        log_info!("[backpack] 标签'{}'数量=0，重新打开背包...", "[backpack] count=0 on tab '{}', reopening backpack...", tab);
         if ctrl.check_rmb() {
             anyhow::bail!("cancelled");
         }
@@ -217,7 +217,7 @@ impl<'a> BackpackScanner<'a> {
             "weapon" => TAB_WEAPON,
             "artifact" => TAB_ARTIFACT,
             _ => {
-                error!("[backpack] 未知标签: {} / [backpack] unknown tab: {}", tab, tab);
+                log_error!("[backpack] 未知标签: {}", "[backpack] unknown tab: {}", tab);
                 return;
             }
         };
@@ -267,16 +267,18 @@ impl<'a> BackpackScanner<'a> {
                 && self.pages_scrolled % SCROLL_CORRECTION_INTERVAL as u32 == 0
             {
                 ticks -= 1;
-                debug!(
-                    "[backpack] 第{}页滚动修正(-1刻度) / [backpack] scroll correction at page {} (-1 tick)",
-                    self.pages_scrolled, self.pages_scrolled
+                log_debug!(
+                    "[backpack] 第{}页滚动修正(-1刻度)",
+                    "[backpack] scroll correction at page {} (-1 tick)",
+                    self.pages_scrolled
                 );
             }
         }
 
-        debug!(
-            "[backpack] 滚动{}行({}刻度，第{}页) / [backpack] scroll {} rows ({} ticks, page {})",
-            row_count, ticks, self.pages_scrolled, row_count, ticks, self.pages_scrolled
+        log_debug!(
+            "[backpack] 滚动{}行({}刻度，第{}页)",
+            "[backpack] scroll {} rows ({} ticks, page {})",
+            row_count, ticks, self.pages_scrolled
         );
 
         // Send scroll ticks with small delays to avoid overwhelming the game
@@ -317,9 +319,10 @@ impl<'a> BackpackScanner<'a> {
         let total_row = (total + GRID_COLS - 1) / GRID_COLS;
         let last_row_col = if total % GRID_COLS == 0 { GRID_COLS } else { total % GRID_COLS };
 
-        debug!(
-            "[backpack] 总计={}个物品，{}行，最后一行有{}个 / [backpack] total={} items, {} rows, last row has {} items",
-            total, total_row, last_row_col, total, total_row, last_row_col
+        log_debug!(
+            "[backpack] 总计={}个物品，{}行，最后一行有{}个",
+            "[backpack] total={} items, {} rows, last row has {} items",
+            total, total_row, last_row_col
         );
 
         // Click the first grid position to ensure focus
@@ -336,9 +339,10 @@ impl<'a> BackpackScanner<'a> {
             let skip_rows = start_at / GRID_COLS;
             let full_pages = skip_rows / GRID_ROWS;
             if full_pages > 0 {
-                debug!(
-                    "[backpack] 跳转到第{}个物品(跳过{}行) / [backpack] jumping to item {} ({} rows to skip)",
-                    start_at, skip_rows, start_at, skip_rows
+                log_debug!(
+                    "[backpack] 跳转到第{}个物品(跳过{}行)",
+                    "[backpack] jumping to item {} ({} rows to skip)",
+                    start_at, skip_rows
                 );
                 let rows_to_scroll = full_pages * GRID_ROWS;
                 if !self.scroll_rows(rows_to_scroll) {
@@ -392,9 +396,10 @@ impl<'a> BackpackScanner<'a> {
                         }
                     }
                     Err(e) => {
-                        error!(
-                            "[backpack] 探测截图失败: {} / [backpack] probe capture failed: {}",
-                            e, e
+                        log_error!(
+                            "[backpack] 探测截图失败: {}",
+                            "[backpack] probe capture failed: {}",
+                            e
                         );
                     }
                 }
@@ -459,7 +464,7 @@ impl<'a> BackpackScanner<'a> {
                         let image = match self.ctrl.capture_game() {
                             Ok(img) => img,
                             Err(e) => {
-                                error!("[backpack] 截图失败: {} / [backpack] capture failed: {}", e, e);
+                                log_error!("[backpack] 截图失败: {}", "[backpack] capture failed: {}", e);
                                 scanned_count += 1;
                                 continue;
                             }
@@ -484,8 +489,9 @@ impl<'a> BackpackScanner<'a> {
                             }
                             ScanAction::SkipPage => {
                                 // SkipPage is only valid from PageStarted.
-                                log::debug!(
-                                    "[backpack] Item处理返回SkipPage，已忽略，视为Continue / SkipPage from Item handler is ignored; treating as Continue"
+                                log_debug!(
+                                    "[backpack] Item处理返回SkipPage，已忽略，视为Continue",
+                                    "[backpack] SkipPage from Item handler is ignored; treating as Continue"
                                 );
                             }
                         }

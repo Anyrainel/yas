@@ -112,7 +112,7 @@ pub fn spawn_scan(state: &AppState) -> TaskHandle {
 
         if let Err(panic_info) = result {
             let msg = panic_message(&panic_info);
-            log::error!("{}", msg);
+            yas::log_error!("{}", "{}", msg);
             if let Ok(mut guard) = status_for_panic.lock() {
                 *guard = TaskStatus::Failed(localize(&msg));
             }
@@ -169,7 +169,7 @@ pub fn spawn_server(state: &AppState) -> TaskHandle {
 
         if let Err(panic_info) = result {
             let msg = panic_message(&panic_info);
-            log::error!("{}", msg);
+            yas::log_error!("{}", "{}", msg);
             if let Ok(mut guard) = status_for_panic.lock() {
                 *guard = TaskStatus::Failed(localize(&msg));
             }
