@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use super::state::{AppState, TaskStatus};
+use super::state::{AppState, RefreshState, TaskStatus};
 use super::widgets;
 use super::worker::{self, TaskHandle};
 
@@ -96,6 +96,34 @@ pub fn show(
                         ui.add_space(8.0);
                         ui.label(l.t("圣遗物:", "Art:"));
                         max_count_field(ui, &mut state.artifact_max_count);
+                    });
+
+                    ui.add_space(4.0);
+                    state.mappings_refresh.poll();
+                    ui.horizontal(|ui| {
+                        let busy = state.mappings_refresh.is_running();
+                        if ui.add_enabled(!busy, egui::Button::new(
+                            l.t("刷新游戏数据映射", "Refresh game data"),
+                        )).clicked() {
+                            state.mappings_refresh = RefreshState::Running(
+                                std::thread::spawn(|| {
+                                    yas_genshin::scanner::common::mappings::force_refresh()
+                                        .map_err(|e| format!("{}", e))
+                                }),
+                            );
+                        }
+                        match &state.mappings_refresh {
+                            RefreshState::Ok => {
+                                ui.colored_label(egui::Color32::GREEN, "OK");
+                            }
+                            RefreshState::Failed(msg) => {
+                                ui.colored_label(egui::Color32::RED, msg.as_str());
+                            }
+                            RefreshState::Running(_) => {
+                                ui.spinner();
+                            }
+                            RefreshState::Idle => {}
+                        }
                     });
                 });
             });

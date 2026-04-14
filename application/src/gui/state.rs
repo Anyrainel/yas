@@ -79,6 +79,35 @@ pub enum UpdateState {
     Failed(String),
 }
 
+/// State of a one-shot data refresh operation.
+pub enum RefreshState {
+    Idle,
+    Running(std::thread::JoinHandle<Result<(), String>>),
+    Ok,
+    Failed(String),
+}
+
+impl RefreshState {
+    /// Poll the background thread; transition Running → Ok/Failed when done.
+    pub fn poll(&mut self) {
+        let finished = matches!(self, RefreshState::Running(h) if h.is_finished());
+        if finished {
+            let old = std::mem::replace(self, RefreshState::Idle);
+            if let RefreshState::Running(h) = old {
+                match h.join() {
+                    Ok(Ok(())) => *self = RefreshState::Ok,
+                    Ok(Err(msg)) => *self = RefreshState::Failed(msg),
+                    Err(_) => *self = RefreshState::Failed("thread panicked".into()),
+                }
+            }
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        matches!(self, RefreshState::Running(_))
+    }
+}
+
 /// Shared state between GUI thread and background workers.
 pub struct AppState {
     // --- Language ---
@@ -125,6 +154,9 @@ pub struct AppState {
     // --- Per-tab log buffers ---
     pub scanner_log_lines: Arc<Mutex<Vec<LogEntry>>>,
     pub manager_log_lines: Arc<Mutex<Vec<LogEntry>>>,
+
+    // --- Data refresh ---
+    pub mappings_refresh: RefreshState,
 }
 
 impl AppState {
@@ -157,6 +189,7 @@ impl AppState {
             server_status: Arc::new(Mutex::new(TaskStatus::Idle)),
             scanner_log_lines: Arc::new(Mutex::new(Vec::with_capacity(1000))),
             manager_log_lines: Arc::new(Mutex::new(Vec::with_capacity(1000))),
+            mappings_refresh: RefreshState::Idle,
         }
     }
 

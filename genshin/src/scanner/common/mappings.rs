@@ -12,21 +12,10 @@ const MAPPINGS_CACHE_PATH: &str = "data/mappings.json";
 const MAPPINGS_META_PATH: &str = "data/mappings_meta.json";
 const MAPPINGS_TTL_SECS: u64 = 24 * 3600; // 1 day
 
-/// Unified metadata file written by the old cache_meta module.
-/// Used for one-time migration only.
-const UNIFIED_META_PATH: &str = "data/metadata.json";
-
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 struct MappingsMeta {
     #[serde(rename = "lastFetchTime")]
     last_fetch_time: u64,
-}
-
-/// Shape of the old unified metadata.json (read-only, for migration).
-#[derive(Deserialize)]
-struct UnifiedMeta {
-    #[serde(default, rename = "mappingsLastFetchTime")]
-    mappings_last_fetch_time: u64,
 }
 
 fn now_secs() -> u64 {
@@ -37,26 +26,11 @@ fn now_secs() -> u64 {
 }
 
 fn load_meta() -> MappingsMeta {
-    // Try reading the per-file meta
     if let Ok(content) = fs::read_to_string(MAPPINGS_META_PATH) {
         if let Ok(meta) = serde_json::from_str::<MappingsMeta>(&content) {
             return meta;
         }
     }
-
-    // Migrate from unified metadata.json if it exists
-    if let Ok(content) = fs::read_to_string(UNIFIED_META_PATH) {
-        if let Ok(unified) = serde_json::from_str::<UnifiedMeta>(&content) {
-            if unified.mappings_last_fetch_time > 0 {
-                let meta = MappingsMeta {
-                    last_fetch_time: unified.mappings_last_fetch_time,
-                };
-                save_meta(&meta);
-                return meta;
-            }
-        }
-    }
-
     MappingsMeta::default()
 }
 
@@ -76,6 +50,13 @@ fn save_meta(meta: &MappingsMeta) {
             log_warn!("无法序列化缓存信息: {}", "Cannot serialize cache metadata: {}", e);
         }
     }
+}
+
+/// Delete cached files and re-download immediately.
+pub fn force_refresh() -> Result<()> {
+    let _ = fs::remove_file(MAPPINGS_META_PATH);
+    let _ = fs::remove_file(MAPPINGS_CACHE_PATH);
+    fetch_if_needed()
 }
 
 fn is_fresh(last_fetch_time: u64, ttl_secs: u64) -> bool {
@@ -168,79 +149,79 @@ impl Default for NameOverrides {
     }
 }
 
+/// Check cache freshness and fetch from remote if needed.
+fn fetch_if_needed() -> Result<()> {
+    let meta = load_meta();
+    let cache_exists = Path::new(MAPPINGS_CACHE_PATH).exists();
+
+    // Skip fetch if cache is fresh
+    if cache_exists && is_fresh(meta.last_fetch_time, MAPPINGS_TTL_SECS) {
+        return Ok(());
+    }
+
+    log_info!("正在获取游戏数据映射...", "Fetching game data mappings...");
+
+    // Ensure data directory exists
+    if let Some(parent) = Path::new(MAPPINGS_CACHE_PATH).parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    match reqwest::blocking::get(MAPPINGS_URL) {
+        Ok(response) => {
+            if response.status().is_success() {
+                let body = response.text()?;
+                // Validate JSON
+                let _: serde_json::Value = serde_json::from_str(&body)?;
+                std::fs::write(MAPPINGS_CACHE_PATH, &body)?;
+                save_meta(&MappingsMeta {
+                    last_fetch_time: now_secs(),
+                });
+                log_debug!("游戏数据映射已更新", "Game data mappings updated");
+            } else {
+                if cache_exists {
+                    log_warn!(
+                        "获取数据失败 (HTTP {})，使用本地缓存",
+                        "Fetch failed (HTTP {}), using local cache",
+                        response.status()
+                    );
+                } else {
+                    bail!(
+                        "获取游戏数据失败 (HTTP {})，且无本地缓存。请检查网络连接。\n\
+                         / Failed to fetch game data (HTTP {}), no local cache. Check your network connection.",
+                        response.status(), response.status()
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            if cache_exists {
+                log_warn!(
+                    "获取数据失败 ({})，使用本地缓存",
+                    "Fetch failed ({}), using local cache",
+                    e
+                );
+            } else {
+                bail!(
+                    "获取游戏数据失败且无本地缓存。请检查网络连接，或手动下载 {} 到 data/ 目录。\n\
+                     / Failed to fetch game data (no local cache). Check your network connection, \
+                     or manually download {} to the data/ folder.\n\
+                     错误 / Error: {}",
+                    MAPPINGS_URL, MAPPINGS_URL, e
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
 impl MappingManager {
     /// Fetch mappings if needed (cache expired or missing), then load and initialize.
     ///
     /// Port of `fetchMappingsIfNeeded()` + `initMappings()` from GOODScanner
     pub fn new(overrides: &NameOverrides) -> Result<Self> {
-        Self::fetch_if_needed()?;
+        fetch_if_needed()?;
         Self::load_from_cache(overrides)
-    }
-
-    /// Check cache freshness and fetch from remote if needed.
-    fn fetch_if_needed() -> Result<()> {
-        let meta = load_meta();
-        let cache_exists = Path::new(MAPPINGS_CACHE_PATH).exists();
-
-        // Skip fetch if cache is fresh
-        if cache_exists && is_fresh(meta.last_fetch_time, MAPPINGS_TTL_SECS) {
-            return Ok(());
-        }
-
-        log_info!("正在获取游戏数据映射...", "Fetching game data mappings...");
-
-        // Ensure data directory exists
-        if let Some(parent) = Path::new(MAPPINGS_CACHE_PATH).parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        match reqwest::blocking::get(MAPPINGS_URL) {
-            Ok(response) => {
-                if response.status().is_success() {
-                    let body = response.text()?;
-                    // Validate JSON
-                    let _: serde_json::Value = serde_json::from_str(&body)?;
-                    std::fs::write(MAPPINGS_CACHE_PATH, &body)?;
-                    save_meta(&MappingsMeta {
-                        last_fetch_time: now_secs(),
-                    });
-                    log_debug!("游戏数据映射已更新", "Game data mappings updated");
-                } else {
-                    if cache_exists {
-                        log_warn!(
-                            "获取数据失败 (HTTP {})，使用本地缓存",
-                            "Fetch failed (HTTP {}), using local cache",
-                            response.status()
-                        );
-                    } else {
-                        bail!(
-                            "获取游戏数据失败 (HTTP {})，且无本地缓存。请检查网络连接。\n\
-                             / Failed to fetch game data (HTTP {}), no local cache. Check your network connection.",
-                            response.status(), response.status()
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                if cache_exists {
-                    log_warn!(
-                        "获取数据失败 ({})，使用本地缓存",
-                        "Fetch failed ({}), using local cache",
-                        e
-                    );
-                } else {
-                    bail!(
-                        "获取游戏数据失败且无本地缓存。请检查网络连接，或手动下载 {} 到 data/ 目录。\n\
-                         / Failed to fetch game data (no local cache). Check your network connection, \
-                         or manually download {} to the data/ folder.\n\
-                         错误 / Error: {}",
-                        MAPPINGS_URL, MAPPINGS_URL, e
-                    );
-                }
-            }
-        }
-
-        Ok(())
     }
 
     /// Load mappings from the local cache file.
