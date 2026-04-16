@@ -1369,13 +1369,35 @@ pub fn run_scan_core(
     let pools = SharedOcrPools::new(pool_config, ocr_backend, substat_backend)?;
     log_info!("OCR模型加载完成", "OCR models loaded");
 
+    // A scanner returning Err while the cancel token is set means the user
+    // stopped mid-run. Swallow that error so we still export whatever data
+    // was collected before the stop (and let the next phase skip via the
+    // token check).
+    fn unwrap_or_cancelled<T: Default>(
+        token: &yas::cancel::CancelToken,
+        result: Result<T>,
+    ) -> Result<T> {
+        match result {
+            Ok(v) => Ok(v),
+            Err(e) if token.is_cancelled() => {
+                log_info!(
+                    "阶段被用户中断: {}",
+                    "Phase aborted by user: {}",
+                    e
+                );
+                Ok(T::default())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     // Scan characters
     if config.scan_characters {
         report("扫描角色 / Scanning characters...");
         log_info!("扫描角色...", "Scanning characters...");
         let char_config = GoodScannerApplication::make_char_config(&scanner_config, user_config);
         let scanner = GoodCharacterScanner::new(char_config, mappings.clone())?;
-        let result = scanner.scan(&mut ctrl, 0, &pools)?;
+        let result = unwrap_or_cancelled(&token, scanner.scan(&mut ctrl, 0, &pools))?;
         log_info!("已扫描 {} 个角色", "Scanned {} characters", result.len());
         characters = Some(result);
 
@@ -1390,7 +1412,7 @@ pub fn run_scan_core(
         log_info!("扫描武器...", "Scanning weapons...");
         let weapon_config = GoodScannerApplication::make_weapon_config(&scanner_config, user_config);
         let scanner = GoodWeaponScanner::new(weapon_config, mappings.clone())?;
-        let result = scanner.scan(&mut ctrl, false, 0, &pools)?;
+        let result = unwrap_or_cancelled(&token, scanner.scan(&mut ctrl, false, 0, &pools))?;
         log_info!("已扫描 {} 个武器", "Scanned {} weapons", result.len());
         weapons = Some(result);
     }
@@ -1402,13 +1424,13 @@ pub fn run_scan_core(
         let artifact_config = GoodScannerApplication::make_artifact_config(&scanner_config, user_config);
         let skip_open = config.scan_weapons;
         let scanner = GoodArtifactScanner::new(artifact_config, mappings.clone())?;
-        let result = scanner.scan(&mut ctrl, skip_open, 0, &pools)?;
+        let result = unwrap_or_cancelled(&token, scanner.scan(&mut ctrl, skip_open, 0, &pools))?;
         log_info!("已扫描 {} 个圣遗物", "Scanned {} artifacts", result.len());
         artifacts = Some(result);
     }
 
     if token.is_cancelled() {
-        log_info!("扫描被用户中断", "Scan aborted by user (right-click)");
+        log_info!("扫描被用户中断", "Scan stopped by user");
     }
 
     // Export as GOOD v3

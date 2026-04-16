@@ -1214,6 +1214,11 @@ impl GoodArtifactScanner {
         log_debug!("[artifact] 开始扫描...", "[artifact] starting scan...");
         let now = SystemTime::now();
 
+        // Grab a clone of the cancel token up-front, before any mutable
+        // borrows of `ctrl` start (the BackpackScanner below holds one for
+        // the duration of the scan).
+        let worker_cancel = ctrl.cancel_token();
+
         // Borrow a model from the v5 pool for reading item count
         let count_ocr_guard = pools.v5().get();
 
@@ -1278,6 +1283,10 @@ impl GoodArtifactScanner {
         let (item_tx, worker_handle) = scan_worker::start_worker::<Option<GridIconResult>, GoodArtifact, _>(
             total_count as usize,
             move |work_item: WorkItem<Option<GridIconResult>>| {
+                // Skip queued work if the run was cancelled mid-scan.
+                if worker_cancel.is_cancelled() {
+                    return Ok(None);
+                }
                 // Quick rarity check — stop below min_rarity.
                 if pixel_utils::artifact_below_min_rarity(&work_item.image, &worker_scaler, worker_config.min_rarity) {
                     return Ok(None);

@@ -20,7 +20,7 @@ Yas (Yet Another Scanner) is a Rust application that scans Genshin Impact in-gam
 
 - **`yas`** (`yas_core`) — Platform-agnostic core library: screen capture, OCR (PaddlePaddle ONNX models), system control (mouse/keyboard), game window detection, positioning/scaling utilities.
 - **`genshin`** (`yas_scanner_genshin`) — Genshin-specific scanner logic: GOOD v3 scanners for characters, weapons, and artifacts. Handles in-game navigation, panel OCR, and name matching via remote mappings.
-- **`application`** — Binary crate. Single target: `GOODScanner.exe`.
+- **`application`** — Binary crate. Two targets: `GOODScanner.exe` (OCR scanner, default) and `GOODCapture.exe` (packet capture scanner, behind `capture` feature flag).
 
 ### Key Modules (genshin)
 
@@ -61,15 +61,31 @@ src/
 
 ```
 src/
-├── main.rs                    # Entry point: CLI mode or GUI mode
+├── main.rs                    # Entry point: CLI mode or GUI mode (GOODScanner.exe)
+├── bin/
+│   └── capture.rs             # Entry point: GOODCapture.exe (packet capture GUI)
 └── gui/
     ├── mod.rs                 # eframe App impl, tab routing
     ├── state.rs               # AppState: all GUI state fields
     ├── worker.rs              # spawn_scan(), spawn_server() — background thread launchers
     ├── manager_tab.rs         # Manager tab UI: server start/stop, update_inventory checkbox
     ├── scan_tab.rs            # Scan tab UI: scan target checkboxes, options
+    ├── capture_tab.rs         # Capture tab UI: start/stop packet capture, export
     ├── settings_tab.rs        # Settings tab: config editing
     └── log_tab.rs             # Log viewer tab
+```
+
+### Key Modules (genshin/capture — behind `capture` feature flag)
+
+```
+src/capture/
+├── mod.rs
+├── packet_capture.rs          # UDP capture via pktmon on ports 22101–22102
+├── monitor.rs                 # CaptureMonitor: orchestrates capture, decryption, data accumulation
+├── data_cache.rs              # Downloads/caches data_cache.json from ggartifact.com
+├── data_types.rs              # DataCache types (irminsul/anime-game-data format)
+├── player_data.rs             # PlayerData: converts captured packets → GOOD v3 export
+└── testdata/                  # Binary test fixtures (items.bin, avatars.bin, noise.bin)
 ```
 
 ### How Scanning Works
@@ -281,6 +297,37 @@ Elixir artifacts display a purple banner ("祝圣之霜定义") that shifts all 
 - `OcrPool`: Channel-based pool of N OCR model instances
 - `scan_worker`: Generic parallel worker for backpack grid items
 - **ALWAYS create separate pools** for main and substat OCR (sharing causes deadlock: N tasks each hold 1 instance, all waiting for a 2nd)
+
+## GOODCapture (Packet Capture Scanner)
+
+GOODCapture is a **separate binary** (`GOODCapture.exe`) that exports GOOD v3 data by sniffing game network packets instead of OCR. It is separated from GOODScanner.exe to avoid antivirus false positives (mixing packet capture with input simulation triggers heuristics).
+
+### Build
+
+```bash
+cargo build --release --features capture --bin GOODCapture
+```
+
+### How It Works
+
+1. Uses `pktmon` (Windows packet monitor) to capture UDP traffic on ports 22101–22102
+2. `GameSniffer` (from `auto-artifactarium` crate) decrypts packets using dispatch keys from `keys/gi.json`
+3. `CaptureMonitor` uses **heuristic field-number-agnostic matching** — parses outer protobuf as generic `Unk`, tries every repeated length-delimited field as `Item` or `AvatarInfo`, picks the best match. This survives both command ID rotation AND outer field number changes across game versions.
+4. Auto-stops when both character and item packets are received
+5. `PlayerData` converts captured data → GOOD v3 JSON
+
+### Dispatch Keys (`keys/gi.json`)
+
+- `HashMap<u16, String>` mapping game version → base64-encoded key
+- External key file (`keys/gi.json` next to exe) overrides embedded keys, allowing updates without recompiling
+- Keys are per game version, NOT per server channel — same keys work for official (官服) and Bilibili (B服) servers
+
+### Dependencies (capture-only)
+
+- `auto-artifactarium` — packet decryption + protobuf types (from konkers/auto-artifactarium)
+- `pktmon` — Windows packet monitor driver interface
+- `protobuf` — protobuf parsing
+- `tokio` — async runtime for capture loop
 
 ## Testing & Validation
 

@@ -223,6 +223,12 @@ pub struct TaskHandle {
     shutdown: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Optional cancel token for scan operations.
     cancel_token: Option<yas::cancel::CancelToken>,
+    /// Shared status — used to surface immediate "Stopping..." feedback
+    /// when `stop()` is called, without waiting for the worker thread to
+    /// notice the cancel token.
+    status: Arc<Mutex<TaskStatus>>,
+    /// Message shown immediately on stop, in the active UI language.
+    stopping_msg: String,
 }
 
 impl TaskHandle {
@@ -230,13 +236,30 @@ impl TaskHandle {
         self._handle.is_finished()
     }
 
+    /// Whether the underlying cancel token has been tripped (by `stop()`
+    /// or by RMB). Lets the UI distinguish "running" from "stopping".
+    pub fn is_stopping(&self) -> bool {
+        self.cancel_token
+            .as_ref()
+            .map_or(false, |t| t.is_cancelled())
+    }
+
     /// Signal the task to shut down gracefully.
+    ///
+    /// Sets the cancel token (the same one RMB uses) and immediately
+    /// overwrites the status with a "stopping" message so the user gets
+    /// feedback before the worker thread notices.
     pub fn stop(&self) {
         if let Some(ref flag) = self.shutdown {
             flag.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         if let Some(ref token) = self.cancel_token {
             token.cancel(yas::cancel::StopReason::UserAbort);
+        }
+        if let Ok(mut st) = self.status.lock() {
+            if matches!(*st, TaskStatus::Running(_)) {
+                *st = TaskStatus::Running(self.stopping_msg.clone());
+            }
         }
     }
 }
@@ -266,6 +289,7 @@ pub fn spawn_scan(state: &AppState) -> TaskHandle {
 
     let token = yas::cancel::CancelToken::new();
     let stop_token = token.clone();
+    let cancel_for_result = token.clone();
     *status.lock().unwrap() = TaskStatus::Running(
         lang.t("正在初始化...", "Initializing...").into(),
     );
@@ -285,6 +309,7 @@ pub fn spawn_scan(state: &AppState) -> TaskHandle {
     }
 
     let abort_hint = lang.t("鼠标右键终止", "Right-click to abort");
+    let stopping_msg = lang.t("正在停止扫描...", "Stopping scan...").to_string();
 
     let handle = spawn_with_safety_net("Scanner", LogSource::Scanner, status.clone(), move |status| {
         // Ensure ONNX runtime on the worker thread
@@ -299,27 +324,65 @@ pub fn spawn_scan(state: &AppState) -> TaskHandle {
         }
 
         let status_for_cb = status.clone();
+        // Once the cancel token is tripped, don't let deeper phases
+        // overwrite the "Stopping..." message with their own progress.
+        let cancel_for_cb = cancel_for_result.clone();
+        let stopping_msg_cb = lang.t("正在停止扫描...", "Stopping scan...").to_string();
         let status_fn = move |msg: &str| {
+            if cancel_for_cb.is_cancelled() {
+                *status_for_cb.lock().unwrap() =
+                    TaskStatus::Running(stopping_msg_cb.clone());
+                return;
+            }
             let localized = localize(msg);
             let display = format!("{}  ({})", localized, abort_hint);
             *status_for_cb.lock().unwrap() = TaskStatus::Running(display);
         };
 
-        match yas_genshin::cli::run_scan_core(&user_config, &scan_config, Some(&status_fn), Some(token)) {
+        let result = yas_genshin::cli::run_scan_core(
+            &user_config,
+            &scan_config,
+            Some(&status_fn),
+            Some(token),
+        );
+        match result {
             Ok(path) => {
-                let msg = match lang {
-                    Lang::Zh => format!("已导出至 {}", path),
-                    Lang::En => format!("Exported to {}", path),
+                let msg = if cancel_for_result.is_cancelled() {
+                    match lang {
+                        Lang::Zh => format!("已停止，部分数据已导出至 {}", path),
+                        Lang::En => format!("Stopped; partial data exported to {}", path),
+                    }
+                } else {
+                    match lang {
+                        Lang::Zh => format!("已导出至 {}", path),
+                        Lang::En => format!("Exported to {}", path),
+                    }
                 };
                 *status.lock().unwrap() = TaskStatus::Completed(msg);
             }
             Err(e) => {
-                *status.lock().unwrap() = TaskStatus::Failed(localize(&format!("{}", e)));
+                if cancel_for_result.is_cancelled() {
+                    // Pre-scan setup (admin check, mappings load, etc.) may
+                    // fail immediately after a cancel before any data is
+                    // gathered — still surface as a clean stop, not an error.
+                    *status.lock().unwrap() = TaskStatus::Completed(
+                        lang.t("已停止", "Stopped").into(),
+                    );
+                } else {
+                    *status.lock().unwrap() =
+                        TaskStatus::Failed(localize(&format!("{}", e)));
+                }
             }
         }
     });
 
-    TaskHandle { _handle: handle, shutdown: None, cancel_token: Some(stop_token) }
+    TaskHandle {
+        _handle: handle,
+        shutdown: None,
+        cancel_token: Some(stop_token),
+        status,
+        stopping_msg,
+    }
 }
 
 /// Spawn the HTTP server on a background thread.
@@ -364,5 +427,12 @@ pub fn spawn_server(state: &AppState) -> TaskHandle {
         }
     });
 
-    TaskHandle { _handle: handle, shutdown: Some(shutdown), cancel_token: None }
+    let stopping_msg = lang.t("正在停止服务器...", "Stopping server...").to_string();
+    TaskHandle {
+        _handle: handle,
+        shutdown: Some(shutdown),
+        cancel_token: None,
+        status,
+        stopping_msg,
+    }
 }

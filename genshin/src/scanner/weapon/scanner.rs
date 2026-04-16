@@ -470,10 +470,15 @@ impl GoodWeaponScanner {
         let worker_ocr_pool = ocr_pool.clone();
         let worker_equip_pool = equip_fallback_pool.clone();
         let worker_ocr_regions = WeaponOcrRegions::new();
+        let worker_cancel = cancel.clone();
 
         let (item_tx, worker_handle) = scan_worker::start_worker::<Option<GridIconResult>, GoodWeapon, _>(
             total_count as usize,
             move |work_item: WorkItem<Option<GridIconResult>>| {
+                // Skip queued work if the run was cancelled mid-scan.
+                if worker_cancel.is_cancelled() {
+                    return Ok(None);
+                }
                 let ocr_guard = worker_ocr_pool.get();
                 let equip_guard = worker_equip_pool.get();
 

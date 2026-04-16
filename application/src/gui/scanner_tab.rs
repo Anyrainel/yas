@@ -152,7 +152,18 @@ fn action_bar(
 
     ui.horizontal(|ui| {
         if is_scanning {
-            if ui.button(l.t("⏹ 停止扫描", "⏹ Stop Scan")).clicked() {
+            let is_stopping = scan_handle
+                .as_ref()
+                .map_or(false, |h| h.is_stopping());
+            let label = if is_stopping {
+                l.t("⏳ 正在停止...", "⏳ Stopping...")
+            } else {
+                l.t("⏹ 停止扫描", "⏹ Stop Scan")
+            };
+            let clicked = ui
+                .add_enabled(!is_stopping, egui::Button::new(label))
+                .clicked();
+            if clicked {
                 if let Some(ref handle) = scan_handle {
                     handle.stop();
                 }
