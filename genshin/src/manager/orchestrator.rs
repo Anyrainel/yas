@@ -103,7 +103,6 @@ impl ArtifactManager {
         let lock_mgr = LockManager::new(
             self.mappings.clone(),
             self.pools.clone(),
-            self.dump_images,
         );
         let (lock_results, scanned_artifacts, matched_indices, scan_complete) = lock_mgr.execute(
             ctrl,

@@ -37,8 +37,6 @@ use super::ui_actions;
 pub struct LockManager {
     mappings: Arc<MappingManager>,
     pools: Arc<SharedOcrPools>,
-    #[allow(dead_code)]
-    dump_images: bool,
 }
 
 /// An artifact identified on the current page that needs a lock toggle.
@@ -61,9 +59,8 @@ impl LockManager {
     pub fn new(
         mappings: Arc<MappingManager>,
         pools: Arc<SharedOcrPools>,
-        dump_images: bool,
     ) -> Self {
-        Self { mappings, pools, dump_images }
+        Self { mappings, pools }
     }
 
     /// Execute lock change targets by scanning the artifact backpack.
