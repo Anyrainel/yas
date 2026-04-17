@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 
 use eframe::egui;
 
-use super::state::{AppState, TaskStatus};
+use super::state::{AppState, RefreshState, TaskStatus};
 use super::widgets;
 use super::worker::{self, TaskHandle};
 
@@ -53,10 +53,6 @@ pub fn show(
                                 "Update inventory after scan",
                             ),
                         );
-                        ui.checkbox(
-                            &mut state.manager_dump_images,
-                            l.t("保存OCR截图", "Dump OCR images"),
-                        );
                     });
                 });
 
@@ -76,6 +72,46 @@ pub fn show(
                                 (l.t("格子点击", "Grid cell click"), &mut state.user_config.mgr_cell_delay),
                                 (l.t("滚动等待", "Scroll settle"), &mut state.user_config.mgr_scroll_delay),
                             ]);
+                        });
+                    });
+                });
+
+            // === Advanced Options (shared with scanner tab) ===
+            egui::CollapsingHeader::new(l.t("高级选项", "Advanced Options"))
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.add_enabled_ui(!is_server_running, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.checkbox(&mut state.verbose, l.t("详细信息", "Verbose"));
+                            ui.checkbox(&mut state.dump_images, l.t("保存OCR截图", "Dump OCR images"));
+                        });
+
+                        ui.add_space(4.0);
+                        state.mappings_refresh.poll();
+                        ui.horizontal(|ui| {
+                            let busy = state.mappings_refresh.is_running();
+                            if ui.add_enabled(!busy, egui::Button::new(
+                                l.t("刷新游戏数据映射", "Refresh game data"),
+                            )).clicked() {
+                                state.mappings_refresh = RefreshState::Running(
+                                    std::thread::spawn(|| {
+                                        yas_genshin::scanner::common::mappings::force_refresh()
+                                            .map_err(|e| format!("{}", e))
+                                    }),
+                                );
+                            }
+                            match &state.mappings_refresh {
+                                RefreshState::Ok => {
+                                    ui.colored_label(egui::Color32::GREEN, "OK");
+                                }
+                                RefreshState::Failed(msg) => {
+                                    ui.colored_label(egui::Color32::RED, msg.as_str());
+                                }
+                                RefreshState::Running(_) => {
+                                    ui.spinner();
+                                }
+                                RefreshState::Idle => {}
+                            }
                         });
                     });
                 });

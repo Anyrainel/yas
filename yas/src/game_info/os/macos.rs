@@ -10,7 +10,6 @@ pub fn get_game_info() -> GameInfo {
 
     GameInfo {
         window: rect,
-        resolution_family: Resolution::new(rect.size),
         is_cloud: false,
         ui,
         platform: Platform::MacOS

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use clap::{command, ArgMatches, Args, FromArgMatches};
@@ -11,13 +11,10 @@ use yas::game_info::{GameInfo, GameInfoBuilder};
 
 use crate::scanner::artifact::{GoodArtifactScanner, GoodArtifactScannerConfig};
 use crate::scanner::character::{GoodCharacterScanner, GoodCharacterScannerConfig};
-use crate::scanner::common::backpack_scanner::BackpackScanner;
 use crate::scanner::common::constants::*;
-use crate::scanner::common::diff;
 use crate::scanner::common::game_controller::GenshinGameController;
 use crate::scanner::common::mappings::{MappingManager, NameOverrides};
-use crate::scanner::common::models::{DebugScanResult, GoodExport};
-use crate::scanner::common::ocr_factory;
+use crate::scanner::common::models::GoodExport;
 use crate::scanner::common::ocr_pool::{OcrPoolConfig, SharedOcrPools};
 use crate::scanner::weapon::{GoodWeaponScanner, GoodWeaponScannerConfig};
 
@@ -600,60 +597,6 @@ pub struct GoodScannerConfig {
     #[arg(long = "artifact-substat-ocr", help = "圣遗物副词条OCR后端\nArtifact substat/general OCR backend",
           default_value = "ppocrv4", help_heading = "扫描器配置 / Scanner Config")]
     pub artifact_substat_ocr: String,
-
-    // === Server mode ===
-
-    /// 启动管理服务器 / Start artifact manager server
-    #[arg(long = "server", help = "启动圣遗物管理HTTP服务器（而非扫描模式）\nStart artifact manager HTTP server instead of scanning",
-          help_heading = "服务器模式 / Server Mode")]
-    pub server_mode: bool,
-
-    /// 服务器端口 / Server port
-    #[arg(long = "port", help = "管理服务器监听端口\nArtifact manager server listen port",
-          default_value_t = 8765, help_heading = "服务器模式 / Server Mode")]
-    pub server_port: u16,
-
-    // === Debug ===
-
-    /// 真值对比 / Groundtruth comparison
-    #[arg(long = "debug-compare", help = "与真值JSON文件比较\nGroundtruth GOODv3 JSON path for comparison",
-          help_heading = "调试选项 / Debug")]
-    pub debug_compare: Option<String>,
-
-    /// 扫描结果JSON / Actual scan JSON
-    #[arg(long = "debug-actual", help = "实际扫描JSON路径（离线对比模式）\nActual scan JSON path (for offline diff without scanning)",
-          help_heading = "调试选项 / Debug")]
-    pub debug_actual: Option<String>,
-
-    /// 从第N项开始 / Start at index
-    #[arg(long = "debug-start-at", help = "从第N项开始扫描（0起始）\nSkip to item index N (0-based)",
-          default_value_t = 0, help_heading = "调试选项 / Debug")]
-    pub debug_start_at: usize,
-
-    /// 跳转角色 / Jump to character index
-    #[arg(long = "debug-char-index", help = "跳转到第N个角色（0起始）\nJump to character index N (0-based)",
-          default_value_t = 0, help_heading = "调试选项 / Debug")]
-    pub debug_char_index: usize,
-
-    /// OCR计时 / Show OCR timing
-    #[arg(long = "debug-timing", help = "显示每个字段的OCR耗时\nShow per-field OCR timing",
-          help_heading = "调试选项 / Debug")]
-    pub debug_timing: bool,
-
-    /// 重复扫描位置 / Re-scan position
-    #[arg(long = "debug-rescan-pos", help = "重复扫描指定格子位置 'row,col'（0起始）\nRe-scan grid position 'row,col' (0-indexed)",
-          help_heading = "调试选项 / Debug")]
-    pub debug_rescan_pos: Option<String>,
-
-    /// 重复扫描类型 / Re-scan type
-    #[arg(long = "debug-rescan-type", help = "重复扫描类型: weapon, artifact, character\nScanner type for re-scan",
-          default_value = "weapon", help_heading = "调试选项 / Debug")]
-    pub debug_rescan_type: String,
-
-    /// 重复扫描次数 / Re-scan count
-    #[arg(long = "debug-rescan-count", help = "重复扫描次数（0=无限直到右键）\nNumber of re-scan iterations (0 = infinite until RMB)",
-          default_value_t = 1, help_heading = "调试选项 / Debug")]
-    pub debug_rescan_count: usize,
 }
 
 // ================================================================
@@ -745,430 +688,35 @@ impl GoodScannerApplication {
         let arg_matches = &self.arg_matches;
         let config = GoodScannerConfig::from_arg_matches(arg_matches)?;
 
-        // === Standalone diff mode ===
-        if let (Some(ref compare_path), Some(ref actual_path)) =
-            (&config.debug_compare, &config.debug_actual)
-        {
-            return Self::run_standalone_diff(compare_path, actual_path);
-        }
-
         // === Load user config (good_config.json) ===
         let user_config = load_or_create_config()?;
 
-        // === Server mode (artifact manager) ===
-        if config.server_mode {
-            return self.run_server_mode(&config, &user_config);
-        }
-
-        // === Re-scan mode ===
-        if config.debug_rescan_pos.is_some() {
-            return self.run_rescan_mode(&config, &user_config);
-        }
-
-        // === Normal scan mode ===
-
-        #[cfg(target_os = "windows")]
-        {
-            if !yas::utils::is_admin() {
-                return Err(anyhow!("需要管理员权限，请右键点击程序选择「以管理员身份运行」/ Administrator privileges required. Right-click the program and select 'Run as administrator'."));
-            }
-        }
-
         // Determine what to scan (default: all if no flags specified)
         let no_flags = !config.scan_characters && !config.scan_weapons && !config.scan_artifacts && !config.scan_all;
-        let scan_characters = config.scan_characters || config.scan_all || no_flags;
-        let scan_weapons = config.scan_weapons || config.scan_all || no_flags;
-        let scan_artifacts = config.scan_artifacts || config.scan_all || no_flags;
 
-        // Fetch and load mappings (before game interaction — no focus steal)
-        log_debug!("加载映射数据...", "Loading mappings...");
-        let overrides = user_config.to_overrides();
-        if let Some(ref n) = overrides.traveler_name { log_debug!("旅行者: {}", "Traveler: {}", n); }
-        if let Some(ref n) = overrides.wanderer_name { log_debug!("流浪者: {}", "Wanderer: {}", n); }
-        if let Some(ref n) = overrides.manekin_name { log_debug!("奇偶·男性: {}", "Manekin: {}", n); }
-        if let Some(ref n) = overrides.manekina_name { log_debug!("奇偶·女性: {}", "Manekina: {}", n); }
-        let mappings = Arc::new(MappingManager::new(&overrides)?);
-        log_debug!(
-            "已加载: {} 角色, {} 武器, {} 圣遗物套装",
-            "Loaded: {} characters, {} weapons, {} artifact sets", mappings.character_name_map.len(), mappings.weapon_name_map.len(), mappings.artifact_set_map.len());
-
-        // Find and focus the game window
-        let game_info = Self::get_game_info()
-            .context("请确认原神已启动、未最小化、且使用16:9分辨率（如1920×1080）\
-                     / Ensure Genshin Impact is running, not minimized, and using a 16:9 resolution (e.g. 1920×1080)")?;
-        log_debug!("窗口: {:?}", "window: {:?}", game_info.window);
-        log_debug!("界面: {:?}", "ui: {:?}", game_info.ui);
-        log_debug!("云游戏: {}", "cloud: {}", game_info.is_cloud);
-
-        let mut ctrl = GenshinGameController::new(game_info)
-            .context("屏幕截图初始化失败 / Screen capture initialization failed")?;
-        let token = yas::cancel::CancelToken::new();
-        ctrl.set_cancel_token(token.clone());
-        ctrl.focus_game_window();
-
-        let mut characters = None;
-        let mut weapons = None;
-        let mut artifacts = None;
-
-        // Log OCR backend selection
-        if let Some(ref backend) = config.ocr_backend {
-            log_debug!("OCR后端覆盖: {}", "OCR backend override: {}", backend);
-        }
-
-        // Create shared OCR pools for all scanners
-
-        let pool_config = OcrPoolConfig::detect();
-        let ocr_backend = config.ocr_backend.as_deref().unwrap_or("ppocrv5");
-        let substat_backend = config.artifact_substat_ocr.as_str();
-        let pools = SharedOcrPools::new(pool_config, ocr_backend, substat_backend)?;
-
-        // Scan characters
-        if scan_characters {
-            log_info!("扫描角色...", "Scanning characters...");
-            let char_config = Self::make_char_config(&config, &user_config);
-            let scanner = GoodCharacterScanner::new(
-                char_config, mappings.clone(),
-            )?;
-            let t = Instant::now();
-            let result = scanner.scan(&mut ctrl, config.debug_char_index, &pools)?;
-            if config.debug_timing {
-                let elapsed = t.elapsed();
-                let avg = if result.is_empty() { 0 } else { elapsed.as_millis() as usize / result.len() };
-                log_debug!(
-                    "[timing] 角色: {}项 耗时{:?}（平均{}ms/项）",
-                    "[timing] characters: {} items in {:?} (avg {}ms/item)", result.len(), elapsed, avg);
-            }
-            log_info!("已扫描 {} 个角色", "Scanned {} characters", result.len());
-            characters = Some(result);
-
-            if !token.is_cancelled() {
-                ctrl.return_to_main_ui(4);
-            }
-        }
-
-        // Scan weapons
-        if scan_weapons && !token.is_cancelled() {
-            log_info!("扫描武器...", "Scanning weapons...");
-            let weapon_config = Self::make_weapon_config(&config, &user_config);
-            let scanner = GoodWeaponScanner::new(
-                weapon_config, mappings.clone(),
-            )?;
-            let t = Instant::now();
-            let result = scanner.scan(&mut ctrl, false, config.debug_start_at, &pools)?;
-            if config.debug_timing {
-                let elapsed = t.elapsed();
-                let avg = if result.is_empty() { 0 } else { elapsed.as_millis() as usize / result.len() };
-                log_debug!(
-                    "[timing] 武器: {}项 耗时{:?}（平均{}ms/项）",
-                    "[timing] weapons: {} items in {:?} (avg {}ms/item)", result.len(), elapsed, avg);
-            }
-            log_info!("已扫描 {} 个武器", "Scanned {} weapons", result.len());
-            weapons = Some(result);
-        }
-
-        // Scan artifacts
-        if scan_artifacts && !token.is_cancelled() {
-            log_info!("扫描圣遗物...", "Scanning artifacts...");
-            let artifact_config = Self::make_artifact_config(&config, &user_config);
-            let skip_open = scan_weapons;
-            let scanner = GoodArtifactScanner::new(
-                artifact_config, mappings.clone(),
-            )?;
-            let t = Instant::now();
-            let result = scanner.scan(&mut ctrl, skip_open, config.debug_start_at, &pools)?;
-            if config.debug_timing {
-                let elapsed = t.elapsed();
-                let avg = if result.is_empty() { 0 } else { elapsed.as_millis() as usize / result.len() };
-                log_debug!(
-                    "[timing] 圣遗物: {}项 耗时{:?}（平均{}ms/项）",
-                    "[timing] artifacts: {} items in {:?} (avg {}ms/item)", result.len(), elapsed, avg);
-            }
-            log_info!("已扫描 {} 个圣遗物", "Scanned {} artifacts", result.len());
-            artifacts = Some(result);
-        }
-
-        if token.is_cancelled() {
-            log_info!("扫描被用户中断", "Scan aborted by user (right-click)");
-        }
-
-        // Export as GOOD v3
-        let export = GoodExport::new(characters, weapons, artifacts);
-        let json = serde_json::to_string_pretty(&export)?;
-
-        let timestamp = chrono_timestamp();
-        let output_dir = PathBuf::from(&config.output_dir);
-        std::fs::create_dir_all(&output_dir)?;
-        let filename = format!("good_export_{}.json", timestamp);
-        let path = output_dir.join(&filename);
-
-        std::fs::write(&path, &json)?;
-        log_info!("已导出: {}", "Exported to {}", path.display());
-
-        // Post-scan groundtruth comparison
-        if let Some(ref compare_path) = config.debug_compare {
-            log_debug!("真值对比...", "Comparing against groundtruth...");
-            let gt_json = std::fs::read_to_string(compare_path)?;
-            let groundtruth: GoodExport = serde_json::from_str(&gt_json)?;
-            let result = diff::diff_exports(&export, &groundtruth);
-            diff::print_diff(&result);
-
-            if result.summary.total_errors() > 0 {
-                return Err(anyhow!(
-                    "真值对比失败 / Groundtruth comparison failed: {} errors",
-                    result.summary.total_errors()
-                ));
-            }
-            log_debug!("真值对比通过", "Groundtruth comparison passed!");
-        }
-
-        Ok(())
-    }
-
-    /// Re-scan mode: click a specific grid position and scan it repeatedly.
-    fn run_rescan_mode(
-        &self,
-        config: &GoodScannerConfig,
-        user_config: &GoodUserConfig,
-    ) -> Result<()> {
-        let pos_str = config.debug_rescan_pos.as_deref().unwrap();
-        let parts: Vec<&str> = pos_str.split(',').collect();
-        if parts.len() != 2 {
-            return Err(anyhow!("--debug-rescan-pos 格式应为 'row,col'（例如 '2,3'）\n--debug-rescan-pos must be 'row,col' (e.g., '2,3')"));
-        }
-        let row: usize = parts[0].trim().parse()
-            .map_err(|_| anyhow!("无效的行号 / Invalid row in rescan pos"))?;
-        let col: usize = parts[1].trim().parse()
-            .map_err(|_| anyhow!("无效的列号 / Invalid col in rescan pos"))?;
-
-        log_debug!(
-            "重扫模式: type={} pos=({},{}) count={}",
-            "Re-scan mode: type={} pos=({},{}) count={}", config.debug_rescan_type, row, col, config.debug_rescan_count);
-
-        let game_info = Self::get_game_info()
-            .context("请确认原神已启动、未最小化、且使用16:9分辨率（如1920×1080）\
-                     / Ensure Genshin Impact is running, not minimized, and using a 16:9 resolution (e.g. 1920×1080)")?;
-
-        #[cfg(target_os = "windows")]
-        {
-            if !yas::utils::is_admin() {
-                return Err(anyhow!("需要管理员权限，请右键点击程序选择「以管理员身份运行」/ Administrator privileges required. Right-click the program and select 'Run as administrator'."));
-            }
-        }
-
-        let overrides = user_config.to_overrides();
-        let mappings = Arc::new(MappingManager::new(&overrides)?);
-        let mut ctrl = GenshinGameController::new(game_info)
-            .context("屏幕截图初始化失败 / Screen capture initialization failed")?;
-        let token = yas::cancel::CancelToken::new();
-        ctrl.set_cancel_token(token.clone());
-        ctrl.focus_game_window();
-
-        let ocr_backend = config.ocr_backend.as_deref().unwrap_or("ppocrv4");
-
-        match config.debug_rescan_type.as_str() {
-            "character" => {
-                let mut char_config = Self::make_char_config(config, user_config);
-                char_config.ocr_backend = ocr_backend.to_string();
-                let debug_ocr = ocr_factory::create_ocr_model(&char_config.ocr_backend)?;
-                let scanner = GoodCharacterScanner::new(char_config, mappings.clone())?;
-
-                ctrl.key_press(enigo::Key::Layout('c'));
-                yas::utils::sleep(1500);
-
-                if config.debug_char_index > 0 {
-                    for _ in 0..config.debug_char_index {
-                        ctrl.click_at(CHAR_NEXT_POS.0, CHAR_NEXT_POS.1);
-                        yas::utils::sleep(200);
-                    }
-                    yas::utils::sleep(500);
-                }
-
-                let max_iter = if config.debug_rescan_count == 0 { usize::MAX } else { config.debug_rescan_count };
-                for i in 0..max_iter {
-                    if token.check_rmb() {
-                        log_debug!("[rescan] 用户中断", "interrupted by user");
-                        break;
-                    }
-                    println!("\n--- Re-scan iteration {} ---", i + 1);
-                    let result = scanner.debug_scan_current(debug_ocr.as_ref(), &mut ctrl);
-                    print_debug_result(&result);
-                }
-
-                ctrl.key_press(enigo::Key::Escape);
-            }
-            scan_type => {
-                let tab = match scan_type {
-                    "weapon" => "weapon",
-                    "artifact" => "artifact",
-                    _ => return Err(anyhow!("未知扫描类型 / Unknown rescan type: {}", scan_type)),
-                };
-
-                let scaler = {
-                    let mut bp = BackpackScanner::new(&mut ctrl);
-                    bp.open_backpack(1000);
-                    bp.select_tab(tab, 500);
-                    bp.scaler().clone()
-                };
-
-                if config.debug_start_at > 0 {
-                    let items_per_page = GRID_COLS * GRID_ROWS;
-                    let pages_to_skip = config.debug_start_at / items_per_page;
-                    if pages_to_skip > 0 {
-                        log_debug!(
-                            "[rescan] 滚动{}页（{}行）...",
-                            "[rescan] scrolling {} pages ({} rows)...", pages_to_skip, pages_to_skip * GRID_ROWS);
-                        let estimated_ticks = pages_to_skip * GRID_ROWS * 5;
-                        for _ in 0..estimated_ticks {
-                            ctrl.mouse_scroll(-1);
-                        }
-                        yas::utils::sleep(500);
-                    }
-                }
-
-                let x = GRID_FIRST_X + col as f64 * GRID_OFFSET_X;
-                let y = GRID_FIRST_Y + row as f64 * GRID_OFFSET_Y;
-
-                let max_iter = if config.debug_rescan_count == 0 { usize::MAX } else { config.debug_rescan_count };
-
-                match tab {
-                    "weapon" => {
-                        let mut weapon_config = Self::make_weapon_config(config, user_config);
-                        weapon_config.ocr_backend = ocr_backend.to_string();
-                        let debug_ocr = ocr_factory::create_ocr_model(&weapon_config.ocr_backend)?;
-                        let scanner = GoodWeaponScanner::new(weapon_config, mappings.clone())?;
-
-                        for i in 0..max_iter {
-                            if token.check_rmb() {
-                                log_debug!("[rescan] 用户中断", "interrupted by user");
-                                break;
-                            }
-                            println!("\n--- Re-scan iteration {} ---", i + 1);
-                            ctrl.move_to(x, y);
-                            yas::utils::sleep(50);
-                            ctrl.click_at(x, y);
-                            yas::utils::sleep(500);
-                            let image = ctrl.capture_game()?;
-                            let result = scanner.debug_scan_single(debug_ocr.as_ref(), &image, &scaler);
-                            print_debug_result(&result);
-                        }
-                    }
-                    "artifact" => {
-                        let mut artifact_config = Self::make_artifact_config(config, user_config);
-                        artifact_config.ocr_backend = ocr_backend.to_string();
-                        let debug_ocr = ocr_factory::create_ocr_model(&artifact_config.ocr_backend)?;
-                        let scanner = GoodArtifactScanner::new(artifact_config, mappings.clone())?;
-
-                        for i in 0..max_iter {
-                            if token.check_rmb() {
-                                log_debug!("[rescan] 用户中断", "interrupted by user");
-                                break;
-                            }
-                            println!("\n--- Re-scan iteration {} ---", i + 1);
-                            ctrl.move_to(x, y);
-                            yas::utils::sleep(50);
-                            ctrl.click_at(x, y);
-                            yas::utils::sleep(500);
-                            let image = ctrl.capture_game()?;
-                            let result = scanner.debug_scan_single(debug_ocr.as_ref(), &image, &scaler);
-                            print_debug_result(&result);
-                        }
-                    }
-                    _ => unreachable!(),
-                }
-            }
-        }
-
-        log_debug!("重扫完成", "Re-scan complete");
-        Ok(())
-    }
-
-    /// Server mode: start the artifact manager HTTP server.
-    fn run_server_mode(
-        &self,
-        config: &GoodScannerConfig,
-        user_config: &GoodUserConfig,
-    ) -> Result<()> {
-        #[cfg(target_os = "windows")]
-        {
-            if !yas::utils::is_admin() {
-                return Err(anyhow!("需要管理员权限，请右键点击程序选择「以管理员身份运行」/ Administrator privileges required. Right-click the program and select 'Run as administrator'."));
-            }
-        }
-
-        // Load mappings
-        log_debug!("加载映射数据...", "Loading mappings...");
-        let overrides = user_config.to_overrides();
-        let mappings = Arc::new(MappingManager::new(&overrides)?);
-        log_debug!(
-            "已加载: {}角色, {}武器, {}套装",
-            "Loaded: {} characters, {} weapons, {} artifact sets", mappings.character_name_map.len(), mappings.weapon_name_map.len(), mappings.artifact_set_map.len());
-
-        // Create artifact manager
-        let ocr_backend = config.ocr_backend.clone().unwrap_or_else(|| "ppocrv5".to_string());
-        let substat_ocr_backend = config.artifact_substat_ocr.clone();
-        let scroll_delay = user_config.inv_scroll_delay;
-        let capture_delay = user_config.capture_delay;
-        let dump_images = config.dump_images;
-
-        let init_executor = move || -> anyhow::Result<Box<dyn crate::server::ManageExecutor>> {
-
-            let pool_config = OcrPoolConfig::detect();
-            let pools = Arc::new(SharedOcrPools::new(pool_config, &ocr_backend, &substat_ocr_backend)?);
-            let game_info = Self::get_game_info()?;
-            let ctrl = GenshinGameController::new(game_info)?;
-            let manager = crate::manager::orchestrator::ArtifactManager::new(
-                mappings,
-                pools,
-                capture_delay,
-                scroll_delay,
-                false,
-                dump_images,
-            );
-            Ok(Box::new(crate::server::GameExecutor { ctrl, manager }))
+        let scan_config = ScanCoreConfig {
+            scan_characters: config.scan_characters || config.scan_all || no_flags,
+            scan_weapons: config.scan_weapons || config.scan_all || no_flags,
+            scan_artifacts: config.scan_artifacts || config.scan_all || no_flags,
+            weapon_min_rarity: config.weapon_min_rarity,
+            artifact_min_rarity: config.artifact_min_rarity,
+            verbose: config.verbose,
+            continue_on_failure: config.continue_on_failure,
+            log_progress: config.log_progress,
+            dump_images: config.dump_images,
+            output_dir: config.output_dir.clone(),
+            ocr_backend: config.ocr_backend.clone(),
+            artifact_substat_ocr: config.artifact_substat_ocr.clone(),
+            char_max_count: config.char_max_count,
+            weapon_max_count: config.weapon_max_count,
+            artifact_max_count: config.artifact_max_count,
+            save_on_cancel: false,
         };
 
-        // Start HTTP server (blocks forever, always enabled in CLI mode, no shutdown)
-        let enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        crate::server::run_server(config.server_port, init_executor, enabled, shutdown)
-    }
-
-    /// Standalone diff mode: compare two existing JSON files without game.
-    fn run_standalone_diff(compare_path: &str, actual_path: &str) -> Result<()> {
-        log_debug!("离线对比模式", "Standalone diff mode");
-        log_debug!("真值文件: {}", "Groundtruth: {}", compare_path);
-        log_debug!("实际文件: {}", "Actual: {}", actual_path);
-
-        let gt_json = std::fs::read_to_string(compare_path)?;
-        let groundtruth: GoodExport = serde_json::from_str(&gt_json)?;
-
-        let act_json = std::fs::read_to_string(actual_path)?;
-        let actual: GoodExport = serde_json::from_str(&act_json)?;
-
-        let result = diff::diff_exports(&actual, &groundtruth);
-        diff::print_diff(&result);
-
-        if result.summary.total_errors() > 0 {
-            return Err(anyhow!(
-                "对比发现 {} 个错误 / Diff found {} errors",
-                result.summary.total_errors(), result.summary.total_errors()
-            ));
-        }
-        log_info!("文件匹配", "Files match!");
+        run_scan_core(&user_config, &scan_config, None, None)?;
         Ok(())
     }
-}
 
-/// Print a DebugScanResult to stdout.
-fn print_debug_result(result: &DebugScanResult) {
-    for field in &result.fields {
-        println!(
-            "  {:>14}: raw={:?} → {} ({}ms)",
-            field.field_name, field.raw_text, field.parsed_value, field.duration_ms
-        );
-    }
-    println!("  Total: {}ms", result.total_duration_ms);
-    println!("{}", result.parsed_json);
 }
 
 /// Generate a local-time timestamp string like "2024-01-15_12-30-45".
@@ -1247,6 +795,8 @@ pub struct ScanCoreConfig {
     pub char_max_count: usize,
     pub weapon_max_count: usize,
     pub artifact_max_count: usize,
+    /// If true, export partial results when the user cancels mid-scan.
+    pub save_on_cancel: bool,
 }
 
 impl Default for ScanCoreConfig {
@@ -1267,6 +817,7 @@ impl Default for ScanCoreConfig {
             char_max_count: 0,
             weapon_max_count: 0,
             artifact_max_count: 0,
+            save_on_cancel: false,
         }
     }
 }
@@ -1291,16 +842,6 @@ impl ScanCoreConfig {
             weapon_max_count: self.weapon_max_count,
             artifact_max_count: self.artifact_max_count,
             artifact_substat_ocr: self.artifact_substat_ocr.clone(),
-            server_mode: false,
-            server_port: 8765,
-            debug_compare: None,
-            debug_actual: None,
-            debug_start_at: 0,
-            debug_char_index: 0,
-            debug_timing: false,
-            debug_rescan_pos: None,
-            debug_rescan_type: "weapon".to_string(),
-            debug_rescan_count: 1,
         }
     }
 }
@@ -1341,9 +882,7 @@ pub fn run_scan_core(
 
     // Find and focus the game window
     report("查找游戏窗口 / Finding game window...");
-    let game_info = GoodScannerApplication::get_game_info()
-        .context("请确认原神已启动、未最小化、且使用16:9分辨率（如1920×1080）\
-                 / Ensure Genshin Impact is running, not minimized, and using a 16:9 resolution (e.g. 1920×1080)")?;
+    let game_info = GoodScannerApplication::get_game_info()?;
     log_info!(
         "游戏窗口: {}x{}, 云游戏={}",
         "Game window: {}x{}, cloud={}",
@@ -1369,23 +908,24 @@ pub fn run_scan_core(
     let pools = SharedOcrPools::new(pool_config, ocr_backend, substat_backend)?;
     log_info!("OCR模型加载完成", "OCR models loaded");
 
-    // A scanner returning Err while the cancel token is set means the user
-    // stopped mid-run. Swallow that error so we still export whatever data
-    // was collected before the stop (and let the next phase skip via the
-    // token check).
-    fn unwrap_or_cancelled<T: Default>(
+    let save_on_cancel = config.save_on_cancel;
+
+    // When save_on_cancel is true, swallow cancel errors so partial data
+    // can still be exported. Otherwise let the error propagate normally.
+    fn try_scan<T>(
         token: &yas::cancel::CancelToken,
-        result: Result<T>,
-    ) -> Result<T> {
+        save_on_cancel: bool,
+        result: Result<Vec<T>>,
+    ) -> Result<Vec<T>> {
         match result {
             Ok(v) => Ok(v),
-            Err(e) if token.is_cancelled() => {
+            Err(e) if save_on_cancel && token.is_cancelled() => {
                 log_info!(
                     "阶段被用户中断: {}",
                     "Phase aborted by user: {}",
                     e
                 );
-                Ok(T::default())
+                Ok(Vec::new())
             }
             Err(e) => Err(e),
         }
@@ -1397,8 +937,7 @@ pub fn run_scan_core(
         log_info!("扫描角色...", "Scanning characters...");
         let char_config = GoodScannerApplication::make_char_config(&scanner_config, user_config);
         let scanner = GoodCharacterScanner::new(char_config, mappings.clone())?;
-        let result = unwrap_or_cancelled(&token, scanner.scan(&mut ctrl, 0, &pools))?;
-        log_info!("已扫描 {} 个角色", "Scanned {} characters", result.len());
+        let result = try_scan(&token, save_on_cancel, scanner.scan(&mut ctrl, 0, &pools))?;
         characters = Some(result);
 
         if !token.is_cancelled() {
@@ -1412,8 +951,7 @@ pub fn run_scan_core(
         log_info!("扫描武器...", "Scanning weapons...");
         let weapon_config = GoodScannerApplication::make_weapon_config(&scanner_config, user_config);
         let scanner = GoodWeaponScanner::new(weapon_config, mappings.clone())?;
-        let result = unwrap_or_cancelled(&token, scanner.scan(&mut ctrl, false, 0, &pools))?;
-        log_info!("已扫描 {} 个武器", "Scanned {} weapons", result.len());
+        let result = try_scan(&token, save_on_cancel, scanner.scan(&mut ctrl, false, 0, &pools))?;
         weapons = Some(result);
     }
 
@@ -1424,13 +962,15 @@ pub fn run_scan_core(
         let artifact_config = GoodScannerApplication::make_artifact_config(&scanner_config, user_config);
         let skip_open = config.scan_weapons;
         let scanner = GoodArtifactScanner::new(artifact_config, mappings.clone())?;
-        let result = unwrap_or_cancelled(&token, scanner.scan(&mut ctrl, skip_open, 0, &pools))?;
-        log_info!("已扫描 {} 个圣遗物", "Scanned {} artifacts", result.len());
+        let result = try_scan(&token, save_on_cancel, scanner.scan(&mut ctrl, skip_open, 0, &pools))?;
         artifacts = Some(result);
     }
 
     if token.is_cancelled() {
         log_info!("扫描被用户中断", "Scan stopped by user");
+        if !save_on_cancel {
+            return Err(anyhow!("扫描被用户中断 / Scan stopped by user"));
+        }
     }
 
     // Export as GOOD v3
@@ -1497,18 +1037,15 @@ pub fn run_server_core(
     let init_executor = move || -> anyhow::Result<Box<dyn crate::server::ManageExecutor>> {
 
         crate::manager::ui_actions::set_manager_delays(mgr_delays.clone());
+        log_info!("查找游戏窗口...", "Finding game window...");
+        let game_info = GoodScannerApplication::get_game_info()?;
+        log_info!("初始化屏幕截图...", "Initializing screen capture...");
+        let ctrl = GenshinGameController::new(game_info)?;
         log_info!("加载OCR模型...", "Loading OCR models...");
         let pool_config = OcrPoolConfig::detect();
         let pools = Arc::new(SharedOcrPools::new(pool_config, &ocr_be, &substat_ocr)
             .context("OCR模型加载失败，请确认内存充足（建议8GB以上）\
                      / OCR model load failed — ensure sufficient memory (8 GB+ recommended)")?);
-        log_info!("查找游戏窗口...", "Finding game window...");
-        let game_info = GoodScannerApplication::get_game_info()
-            .context("请确认原神已启动、未最小化、且使用16:9分辨率（如1920×1080）\
-                     / Ensure Genshin Impact is running, not minimized, and using a 16:9 resolution (e.g. 1920×1080)")?;
-        log_info!("初始化屏幕截图...", "Initializing screen capture...");
-        let ctrl = GenshinGameController::new(game_info)
-            .context("屏幕截图初始化失败 / Screen capture initialization failed")?;
         let manager = crate::manager::orchestrator::ArtifactManager::new(
             mappings_clone,
             pools,
@@ -1557,11 +1094,8 @@ pub fn run_manage_json(
     let overrides = user_config.to_overrides();
     let mappings = Arc::new(MappingManager::new(&overrides)?);
 
-    let game_info = GoodScannerApplication::get_game_info()
-        .context("请确认原神已启动、未最小化、且使用16:9分辨率（如1920×1080）\
-                 / Ensure Genshin Impact is running, not minimized, and using a 16:9 resolution (e.g. 1920×1080)")?;
-    let mut ctrl = GenshinGameController::new(game_info)
-        .context("屏幕截图初始化失败 / Screen capture initialization failed")?;
+    let game_info = GoodScannerApplication::get_game_info()?;
+    let mut ctrl = GenshinGameController::new(game_info)?;
     let token = cancel_token.unwrap_or_else(yas::cancel::CancelToken::new);
 
     let ocr_be = ocr_backend.unwrap_or("ppocrv5");

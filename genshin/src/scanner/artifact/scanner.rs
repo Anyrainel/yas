@@ -1154,7 +1154,12 @@ impl GoodArtifactScanner {
         scaler: &CoordScaler,
     ) -> i32 {
         let regions = ArtifactOcrRegions::new();
-        let text = Self::ocr_image_region_shifted(ocr, image, regions.level, 0.0, scaler)
+        let y_shift = if Self::detect_elixir_crafted(image, scaler) {
+            ELIXIR_SHIFT
+        } else {
+            0.0
+        };
+        let text = Self::ocr_image_region_shifted(ocr, image, regions.level, y_shift, scaler)
             .unwrap_or_default();
         LEVEL_REGEX.captures(&text)
             .and_then(|c| c[1].parse::<i32>().ok())
@@ -1413,13 +1418,23 @@ impl GoodArtifactScanner {
         // but this removed valid data (e.g., AubadeOfMorningstarAndMoon, ADayCarvedFromRisingWinds).
         // All scanned artifacts are now kept regardless.
 
-        log_info!(
-            "[artifact] 完成，扫描了{}个圣遗物（≥{}星），耗时{:?}",
-            "[artifact] complete, {} artifacts scanned (>={}*) in {:?}",
-            artifacts.len(),
-            self.config.min_rarity,
-            now.elapsed().unwrap_or_default()
-        );
+        if ctrl.cancel_token().is_cancelled() {
+            log_info!(
+                "[artifact] 已中断，扫描了{}个圣遗物（≥{}星），耗时{:?}",
+                "[artifact] interrupted, {} artifacts scanned (>={}*) in {:?}",
+                artifacts.len(),
+                self.config.min_rarity,
+                now.elapsed().unwrap_or_default()
+            );
+        } else {
+            log_info!(
+                "[artifact] 完成，扫描了{}个圣遗物（≥{}星），耗时{:?}",
+                "[artifact] complete, {} artifacts scanned (>={}*) in {:?}",
+                artifacts.len(),
+                self.config.min_rarity,
+                now.elapsed().unwrap_or_default()
+            );
+        }
 
         Ok(artifacts)
     }

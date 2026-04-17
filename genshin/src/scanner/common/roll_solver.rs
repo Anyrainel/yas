@@ -347,7 +347,74 @@ pub fn solve(input: &SolverInput) -> Option<SolverResult> {
         }
     }
 
+    // If still unsolved, try flat-stat truncated-digit fallback — OCR drops a
+    // trailing digit on flat stats (e.g., "61" → "6"). For each flat-stat
+    // candidate whose value isn't in the roll table, generate synthetic
+    // candidates by appending digits 0–9 (value*10+d).
+    if result.is_none() {
+        let augmented = generate_truncated_digit_candidates(input);
+        if let Some(ref aug) = augmented {
+            let aug_line_options: Vec<Vec<Option<&OcrCandidate>>> = aug
+                .iter()
+                .map(|cands| cands.iter().map(|c| Some(c)).collect())
+                .collect();
+
+            // Try with all level variants (original + level+10)
+            let mut all_levels = levels.clone();
+            for &l in &levels {
+                if l >= 0 && l < 10 {
+                    let l10 = l + 10;
+                    if l10 <= max_level && !all_levels.contains(&l10) {
+                        all_levels.push(l10);
+                    }
+                }
+            }
+
+            if let Some(fb) = solve_with_levels(&all_levels, input.rarity, max_level, max_init, &aug_line_options) {
+                return Some(fb);
+            }
+        }
+    }
+
     result
+}
+
+/// Generate augmented substat candidates for the dropped-trailing-`1` OCR
+/// error on **integer stats only** (hp, atk, def, eleMas).
+///
+/// Percent stats are not augmented — the decimal point anchors OCR digits
+/// well enough that misreads are rare.
+///
+/// The `1` glyph is thin and commonly dropped by OCR. e.g., "61" → "6".
+/// For each invalid integer-stat value, tries value×10+1.
+///
+/// Returns `None` if no augmentation was needed.
+fn generate_truncated_digit_candidates(input: &SolverInput) -> Option<Vec<Vec<OcrCandidate>>> {
+    let mut any_augmented = false;
+    let augmented: Vec<Vec<OcrCandidate>> = input.substat_candidates.iter().map(|cands| {
+        let mut new_cands: Vec<OcrCandidate> = cands.clone();
+        for orig in cands {
+            if is_percent_stat(&orig.key) {
+                continue;
+            }
+            if roll_table_lookup(&orig.key, input.rarity, orig.value).is_some() {
+                continue;
+            }
+            // Dropped trailing "1": e.g., 6 → 61
+            let augmented_value = orig.value * 10.0 + 1.0;
+            if roll_table_lookup(&orig.key, input.rarity, augmented_value).is_some() {
+                new_cands.push(OcrCandidate {
+                    key: orig.key.clone(),
+                    value: augmented_value,
+                    inactive: orig.inactive,
+                });
+                any_augmented = true;
+            }
+        }
+        new_cands
+    }).collect();
+
+    if any_augmented { Some(augmented) } else { None }
 }
 
 /// Inner solving loop: try each level candidate and find a valid substat assignment.
@@ -726,6 +793,191 @@ mod tests {
         assert_eq!(r.total_rolls, 2);
     }
 
+    // -----------------------------------------------------------------------
+    // Regression tests: user-reported solver failures (eleMas=6 OCR misread)
+    // All four artifacts had valid substats EXCEPT eleMas=6, which is not a
+    // valid 5★ eleMas value. Minimum single roll is 16. The OCR likely
+    // dropped the leading "1" from "16".
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_elemas_6_not_in_roll_table() {
+        // 5★ eleMas valid single rolls: 16, 19, 21, 23
+        // 6 is not a valid value at any roll count
+        assert!(roll_table_lookup("eleMas", 5, 6.0).is_none());
+    }
+
+    #[test]
+    fn test_user_reported_goblet_elemas6_solved_as_61() {
+        // 5★ lv20 goblet: atk_=10.5, enerRech_=4.5, atk=37, eleMas=6
+        // OCR truncated "61" → "6". Digit-append fallback should solve as eleMas=61.
+        let input = SolverInput {
+            rarity: 5,
+            level_candidates: vec![20],
+            substat_candidates: vec![
+                vec![OcrCandidate { key: "atk_".into(), value: 10.5, inactive: false }],
+                vec![OcrCandidate { key: "enerRech_".into(), value: 4.5, inactive: false }],
+                vec![OcrCandidate { key: "atk".into(), value: 37.0, inactive: false }],
+                vec![OcrCandidate { key: "eleMas".into(), value: 6.0, inactive: false }],
+            ],
+        };
+        let result = solve(&input);
+        assert!(result.is_some(), "should solve with digit-append fallback");
+        let r = result.unwrap();
+        let em = r.substats.iter().find(|s| s.key == "eleMas").unwrap();
+        assert!((em.value - 61.0).abs() < 0.01, "eleMas should be corrected to 61, got {}", em.value);
+    }
+
+    #[test]
+    fn test_user_reported_plume_elemas6_solved_as_61() {
+        // 5★ lv20 plume: hp_=9.3, def_=13.1, enerRech_=5.8, eleMas=6
+        let input = SolverInput {
+            rarity: 5,
+            level_candidates: vec![20],
+            substat_candidates: vec![
+                vec![OcrCandidate { key: "hp_".into(), value: 9.3, inactive: false }],
+                vec![OcrCandidate { key: "def_".into(), value: 13.1, inactive: false }],
+                vec![OcrCandidate { key: "enerRech_".into(), value: 5.8, inactive: false }],
+                vec![OcrCandidate { key: "eleMas".into(), value: 6.0, inactive: false }],
+            ],
+        };
+        let result = solve(&input);
+        assert!(result.is_some(), "should solve with digit-append fallback");
+        let em = result.unwrap().substats.iter().find(|s| s.key == "eleMas").unwrap().clone();
+        assert!((em.value - 61.0).abs() < 0.01, "eleMas should be corrected to 61, got {}", em.value);
+    }
+
+    #[test]
+    fn test_user_reported_sands_elemas6_solved_as_61() {
+        // 5★ lv20 sands: hp_=8.7, critRate_=7.0, def_=5.8, eleMas=6
+        let input = SolverInput {
+            rarity: 5,
+            level_candidates: vec![20],
+            substat_candidates: vec![
+                vec![OcrCandidate { key: "hp_".into(), value: 8.7, inactive: false }],
+                vec![OcrCandidate { key: "critRate_".into(), value: 7.0, inactive: false }],
+                vec![OcrCandidate { key: "def_".into(), value: 5.8, inactive: false }],
+                vec![OcrCandidate { key: "eleMas".into(), value: 6.0, inactive: false }],
+            ],
+        };
+        let result = solve(&input);
+        assert!(result.is_some(), "should solve with digit-append fallback");
+        let em = result.unwrap().substats.iter().find(|s| s.key == "eleMas").unwrap().clone();
+        assert!((em.value - 61.0).abs() < 0.01, "eleMas should be corrected to 61, got {}", em.value);
+    }
+
+    #[test]
+    fn test_user_reported_flower_elemas6_solved_as_61() {
+        // 5★ lv20 flower: enerRech_=16.8, def_=6.6, critRate_=3.1, eleMas=6
+        let input = SolverInput {
+            rarity: 5,
+            level_candidates: vec![20],
+            substat_candidates: vec![
+                vec![OcrCandidate { key: "enerRech_".into(), value: 16.8, inactive: false }],
+                vec![OcrCandidate { key: "def_".into(), value: 6.6, inactive: false }],
+                vec![OcrCandidate { key: "critRate_".into(), value: 3.1, inactive: false }],
+                vec![OcrCandidate { key: "eleMas".into(), value: 6.0, inactive: false }],
+            ],
+        };
+        let result = solve(&input);
+        assert!(result.is_some(), "should solve with digit-append fallback");
+        let em = result.unwrap().substats.iter().find(|s| s.key == "eleMas").unwrap().clone();
+        assert!((em.value - 61.0).abs() < 0.01, "eleMas should be corrected to 61, got {}", em.value);
+    }
+
+    #[test]
+    fn test_user_reported_other_substats_are_valid_rolls() {
+        // Verify that the non-eleMas substats from all four artifacts are
+        // individually valid roll table entries (the OCR got those right).
+        // This isolates eleMas=6 as the specific OCR failure.
+        let valid_values: &[(&str, f64)] = &[
+            // Goblet
+            ("atk_", 10.5),   // 2 rolls
+            ("enerRech_", 4.5), // 1 roll
+            ("atk", 37.0),    // 2 rolls
+            // Plume
+            ("hp_", 9.3),     // 2 rolls
+            ("def_", 13.1),   // 2 rolls
+            ("enerRech_", 5.8), // 1 roll
+            // Sands
+            ("hp_", 8.7),     // 2 rolls
+            ("critRate_", 7.0), // 2 rolls
+            ("def_", 5.8),    // 1 roll
+            // Flower
+            ("enerRech_", 16.8), // 3 rolls
+            ("def_", 6.6),    // 1 roll
+            ("critRate_", 3.1), // 1 roll
+        ];
+        for &(key, val) in valid_values {
+            assert!(
+                roll_table_lookup(key, 5, val).is_some(),
+                "{key}={val} should be a valid 5★ roll table entry"
+            );
+        }
+    }
+
+    #[test]
+    fn test_elemas_valid_and_invalid_values() {
+        // 5★ eleMas valid single-roll values: 16, 19, 21, 23
+        for &valid in &[16.0, 19.0, 21.0, 23.0] {
+            assert!(
+                roll_table_lookup("eleMas", 5, valid).is_some(),
+                "eleMas={valid} should be valid (single roll)"
+            );
+        }
+        // 61 is a valid 3-roll value (the likely correct reading for OCR "6")
+        assert!(
+            roll_table_lookup("eleMas", 5, 61.0).is_some(),
+            "eleMas=61 should be valid (3 rolls)"
+        );
+        // Values that don't appear at any roll count
+        for &invalid in &[6.0, 10.0, 12.0, 15.0] {
+            assert!(
+                roll_table_lookup("eleMas", 5, invalid).is_none(),
+                "eleMas={invalid} should be invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn test_user_reported_artifacts_pass_with_elemas_61() {
+        // The OCR read "61" as "6" (dropped trailing digit). With eleMas=61
+        // (a valid 3-roll value), all four artifacts solve as lv20 init=3
+        // (total rolls = 3 + 5 = 8).
+
+        // Goblet: atk_(2) + enerRech_(1) + atk(2) + eleMas(3) = 8
+        assert!(validate_substats(5, 20, &[
+            ("atk_", 10.5),
+            ("enerRech_", 4.5),
+            ("atk", 37.0),
+            ("eleMas", 61.0),
+        ]));
+
+        // Plume: hp_(2) + def_(2) + enerRech_(1) + eleMas(3) = 8
+        assert!(validate_substats(5, 20, &[
+            ("hp_", 9.3),
+            ("def_", 13.1),
+            ("enerRech_", 5.8),
+            ("eleMas", 61.0),
+        ]));
+
+        // Sands: hp_(2) + critRate_(2) + def_(1) + eleMas(3) = 8
+        assert!(validate_substats(5, 20, &[
+            ("hp_", 8.7),
+            ("critRate_", 7.0),
+            ("def_", 5.8),
+            ("eleMas", 61.0),
+        ]));
+
+        // Flower: enerRech_(3) + def_(1) + critRate_(1) + eleMas(3) = 8
+        assert!(validate_substats(5, 20, &[
+            ("enerRech_", 16.8),
+            ("def_", 6.6),
+            ("critRate_", 3.1),
+            ("eleMas", 61.0),
+        ]));
+    }
+
     #[test]
     fn test_level_plus10_fallback_more_substats() {
         // Real case: artifact #0825, 5★ lv11.
@@ -748,5 +1000,33 @@ mod tests {
         let r = result.unwrap();
         assert_eq!(r.level, 11, "should prefer lv11 (4 substats) over lv1 (3 substats)");
         assert_eq!(r.substats.len(), 4);
+    }
+
+    // -----------------------------------------------------------------------
+    // Truncated-digit fallback: percent stat tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_fallback_does_not_alter_valid_artifacts() {
+        // An artifact where all substats are valid should NOT be modified
+        // by the fallback — the original solve should succeed.
+        let input = SolverInput {
+            rarity: 5,
+            level_candidates: vec![20],
+            substat_candidates: vec![
+                vec![OcrCandidate { key: "critRate_".into(), value: 17.5, inactive: false }],
+                vec![OcrCandidate { key: "critDMG_".into(), value: 14.0, inactive: false }],
+                vec![OcrCandidate { key: "hp_".into(), value: 5.3, inactive: false }],
+                vec![OcrCandidate { key: "enerRech_".into(), value: 4.5, inactive: false }],
+            ],
+        };
+        let result = solve(&input);
+        assert!(result.is_some());
+        let r = result.unwrap();
+        // Values should be exactly as input — no fallback modification
+        assert!((r.substats[0].value - 17.5).abs() < 0.01);
+        assert!((r.substats[1].value - 14.0).abs() < 0.01);
+        assert!((r.substats[2].value - 5.3).abs() < 0.01);
+        assert!((r.substats[3].value - 4.5).abs() < 0.01);
     }
 }

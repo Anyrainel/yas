@@ -82,6 +82,7 @@ pub fn show(
                         ui.checkbox(&mut state.verbose, l.t("详细信息", "Verbose"));
                         ui.checkbox(&mut state.continue_on_failure, l.t("失败继续", "Continue on failure"));
                         ui.checkbox(&mut state.dump_images, l.t("保存OCR截图", "Dump OCR images"));
+                        ui.checkbox(&mut state.save_on_cancel, l.t("手动终止后依然保存文件", "Save partial results on cancel"));
                     });
 
                     ui.add_space(4.0);

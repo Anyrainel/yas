@@ -1,5 +1,5 @@
 use std::io::stdin;
-use crate::game_info::{GameInfo, ResolutionFamily, UI, Platform};
+use crate::game_info::{GameInfo, is_16x9, UI, Platform};
 use crate::utils;
 use anyhow::{Result, anyhow};
 use windows_sys::Win32::Foundation::HWND;
@@ -130,18 +130,25 @@ pub fn get_game_info(window_names: &[&str]) -> Result<GameInfo> {
     }
 
     let rect = utils::get_client_rect(hwnd)?;
-    let resolution_family = ResolutionFamily::new(rect.to_rect_usize().size());
-    if resolution_family.is_none() {
+
+    if !is_16x9(rect.to_rect_usize().size()) {
+        log_error!(
+            "游戏窗口内部区域为 {}x{}，不是16:9比例。本工具仅支持16:9分辨率（如1920×1080、2560×1440、3840×2160）。\n\
+             请在游戏设置中切换到16:9分辨率后重试。",
+            "Game window client area is {}x{}, which is not 16:9. This tool only supports 16:9 aspect ratio \
+             (e.g. 1920×1080, 2560×1440, 3840×2160).\n\
+             Please switch to a 16:9 resolution in game settings and try again.",
+            rect.width, rect.height,
+        );
         return Err(anyhow!(
-            "不支持的分辨率: {}x{}。请使用16:9分辨率（如1920×1080��2560×1440、3840×2160）。\n\
-             / Unsupported resolution: {}x{}. Use a 16:9 resolution (e.g. 1920×1080, 2560×1440, 3840×2160).",
+            "不支持的分辨率: {}x{}（内部区域）。请使用16:9分辨率（如1920×1080、2560×1440、3840×2160）。\n\
+             / Unsupported resolution: {}x{} (client area). Only 16:9 is supported (e.g. 1920×1080, 2560×1440, 3840×2160).",
             rect.width, rect.height, rect.width, rect.height
         ));
     }
 
     Ok(GameInfo {
         window: rect,
-        resolution_family: resolution_family.unwrap(),
         is_cloud,
         ui: UI::Desktop,
         platform: Platform::Windows

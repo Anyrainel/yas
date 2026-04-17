@@ -1086,12 +1086,21 @@ impl GoodCharacterScanner {
             log_info!("[tip] 如果扫描器切换过快，请在设置中增大「面板切换」或「切换角色」延迟", "[tip] If the scanner moves too fast, try increasing the \"Panel switch\" or \"Next character\" delay in settings");
         }
 
-        log_info!(
-            "[character] 完成，共扫描{}个角色，耗时{:?}",
-            "[character] complete, {} characters scanned in {:?}",
-            characters.len(),
-            now.elapsed().unwrap_or_default()
-        );
+        if ctrl.is_cancelled() {
+            log_info!(
+                "[character] 已中断，扫描了{}个角色，耗时{:?}",
+                "[character] interrupted, {} characters scanned in {:?}",
+                characters.len(),
+                now.elapsed().unwrap_or_default()
+            );
+        } else {
+            log_info!(
+                "[character] 完成，扫描了{}个角色，耗时{:?}",
+                "[character] complete, {} characters scanned in {:?}",
+                characters.len(),
+                now.elapsed().unwrap_or_default()
+            );
+        }
 
         Ok(characters)
     }

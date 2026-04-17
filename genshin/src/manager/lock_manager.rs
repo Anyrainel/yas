@@ -171,6 +171,10 @@ impl LockManager {
         let mut rarity_stopped = false;
         let mut stop_requested = false;
         let mut toggle_counter: usize = 0;
+        // Once the last-cell probe shows a level within range (or OCR succeeds
+        // with level <= max_target_level), we stop probing and scan every item.
+        // OCR failure (-1) does NOT count as "in range" — keep probing.
+        let mut level_in_range = false;
 
         // Build a scan_grid config that enables the per-page level probe
         // when a max target level has been computed (fast mode).
@@ -191,7 +195,7 @@ impl LockManager {
             match event {
                 // ---------------- Page probe: level-based skip ----------------
                 GridEvent::PageStarted { page_start_idx, last_cell_image } => {
-                    if max_target_level < 0 {
+                    if max_target_level < 0 || level_in_range {
                         return ScanAction::Continue;
                     }
                     let ocr_guard = ocr_pool_cb.get();
@@ -207,7 +211,22 @@ impl LockManager {
                             level, max_target_level, page_start_idx
                         );
                         ScanAction::SkipPage
+                    } else if level >= 0 {
+                        // Level is in range — stop probing on future pages.
+                        level_in_range = true;
+                        log_debug!(
+                            "[lock_manager] 末尾等级={} 在范围内，后续页面不再探测 (page_start={})",
+                            "[lock_manager] Last level={} in range, disabling probe for future pages (page_start={})",
+                            level, page_start_idx
+                        );
+                        ScanAction::Continue
                     } else {
+                        // OCR failed (-1) — scan this page but keep probing.
+                        log_debug!(
+                            "[lock_manager] 末尾等级OCR失败，扫描此页但继续探测 (page_start={})",
+                            "[lock_manager] Last level OCR failed, scanning page but keeping probe (page_start={})",
+                            page_start_idx
+                        );
                         ScanAction::Continue
                     }
                 }

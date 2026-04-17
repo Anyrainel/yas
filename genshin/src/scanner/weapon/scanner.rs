@@ -561,12 +561,21 @@ impl GoodWeaponScanner {
         drop(item_tx);
         let weapons = worker_handle.join();
 
-        log_info!(
-            "[weapon] 完成，扫描了{}把武器，耗时{:?}",
-            "[weapon] complete, {} weapons scanned in {:?}",
-            weapons.len(),
-            now.elapsed().unwrap_or_default()
-        );
+        if cancel.is_cancelled() {
+            log_info!(
+                "[weapon] 已中断，扫描了{}把武器，耗时{:?}",
+                "[weapon] interrupted, {} weapons scanned in {:?}",
+                weapons.len(),
+                now.elapsed().unwrap_or_default()
+            );
+        } else {
+            log_info!(
+                "[weapon] 完成，扫描了{}把武器，耗时{:?}",
+                "[weapon] complete, {} weapons scanned in {:?}",
+                weapons.len(),
+                now.elapsed().unwrap_or_default()
+            );
+        }
 
         Ok(weapons)
     }
