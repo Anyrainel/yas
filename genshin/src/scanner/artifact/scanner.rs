@@ -482,14 +482,41 @@ impl GoodArtifactScanner {
         item_index: usize,
         grid_icons: Option<GridIconResult>,
     ) -> Result<ArtifactScanResult> {
-        use crate::scanner::common::debug_dump::DumpCtx;
+        use crate::scanner::common::debug_dump::DumpCollector;
+        use super::super::common::constants::{ARTIFACT_LOCK_POS1, ARTIFACT_ASTRAL_POS1, STAR_Y};
+
+        // Create dump collector at top (before any detection)
+        let mut dump = if config.dump_images {
+            let mut dc = DumpCollector::new("debug_images", "artifacts", item_index, scaler);
+            dc.add_image("panel", image);
+            Some(dc)
+        } else {
+            None
+        };
+
+        // Helper: read pixel RGB from image at base coords
+        let read_px = |pos: (f64, f64)| -> [u8; 3] {
+            let px = scaler.x(pos.0) as u32;
+            let py = scaler.y(pos.1) as u32;
+            if px < image.width() && py < image.height() {
+                let p = image.get_pixel(px, py);
+                [p[0], p[1], p[2]]
+            } else {
+                [0, 0, 0]
+            }
+        };
 
         // 0. Detect rarity — stop below min_rarity only if level is 0.
-        // Inventory is sorted by level descending, so a low-rarity artifact
-        // at lv0 means all subsequent items are also lv0 low-rarity.
-        // But a leveled low-rarity artifact (e.g. 3* lv20) can appear before
-        // higher-rarity lv0 items, so we must not stop on those.
         let rarity = pixel_utils::detect_artifact_rarity(image, scaler);
+        if let Some(ref mut d) = dump {
+            let star_pos = match rarity {
+                5 => (1485.0, STAR_Y),
+                4 => (1450.0, STAR_Y),
+                _ => (1416.0, STAR_Y),
+            };
+            d.record_pixel(0, "rarity", star_pos, read_px(star_pos), &format!("{}*", rarity));
+        }
+
         if rarity < config.min_rarity {
             // Quick level OCR to check if this is lv0 (no elixir shift — rough check is fine)
             let level_text = Self::ocr_image_region_shifted(ocr, image, ocr_regions.level, 0.0, scaler)
@@ -499,53 +526,68 @@ impl GoodArtifactScanner {
                 .unwrap_or(0);
             if quick_level == 0 {
                 log_debug!("[artifact] {}星 lv0 < 最低{}星，停止", "[artifact] {}* lv0 < min {}*, stopping", rarity, config.min_rarity);
+                if let Some(d) = dump { d.finalize_skip(&format!("{}* lv0 below min {}*", rarity, config.min_rarity)); }
                 return Ok(ArtifactScanResult::Stop);
             }
             log_debug!("[artifact] {}星 lv{} < 最低{}星，跳过（非lv0）", "[artifact] {}* lv{} < min {}*, skipping (not lv0)", rarity, quick_level, config.min_rarity);
+            if let Some(d) = dump { d.finalize_skip(&format!("{}* lv{} below min {}*", rarity, quick_level, config.min_rarity)); }
             return Ok(ArtifactScanResult::Skip);
         }
 
         // 1. Part name → slot key
         let part_text = Self::ocr_image_region(substat_ocr, image, ocr_regions.part_name, scaler)?;
+        if let Some(ref mut d) = dump {
+            d.record_ocr(0, "slot", ocr_regions.part_name, &part_text);
+        }
         let slot_key = stat_parser::match_slot_key(&part_text);
 
         let slot_key = match slot_key {
-            Some(k) => k.to_string(),
+            Some(k) => {
+                if let Some(ref mut d) = dump { d.set_final_result("slot", k); }
+                k.to_string()
+            }
             None => {
-                // 4-star with unrecognizable slot = possibly elixir essence, skip
                 if rarity == 4 {
                     log_debug!("[artifact] 4星无法识别部位（可能是圣遗物经验素材），跳过", "[artifact] 4* unrecognizable slot (possibly artifact EXP material), skipping");
+                    if let Some(d) = dump { d.finalize_skip("4* unrecognizable slot"); }
                     return Ok(ArtifactScanResult::Skip);
                 }
                 if config.continue_on_failure {
                     log_warn!("[artifact] 无法识别部位: 「{}」，跳过", "[artifact] cannot identify slot: 「{}」, skipping", part_text);
+                    if let Some(d) = dump { d.finalize_error(None, &format!("cannot identify slot: {}", part_text)); }
                     return Ok(ArtifactScanResult::Skip);
                 }
+                if let Some(d) = dump { d.finalize_error(None, &format!("cannot identify slot: {}", part_text)); }
                 bail!("无法识别圣遗物部位 / Cannot identify artifact slot: \u{300C}{}\u{300D}", part_text);
             }
         };
 
         // 2. Main stat
         let main_stat_text = Self::ocr_image_region(substat_ocr, image, ocr_regions.main_stat, scaler)?;
+        if let Some(ref mut d) = dump {
+            d.record_ocr(0, "main_stat", ocr_regions.main_stat, &main_stat_text);
+        }
         let main_stat_key = if slot_key == "flower" {
             Some("hp".to_string())
         } else if slot_key == "plume" {
             Some("atk".to_string())
         } else {
-            // For sands/goblet/circlet, HP/ATK/DEF are always percent.
-            // The main stat OCR region only captures the name (not the value with "%"),
-            // so we need to fix up flat→percent.
             stat_parser::parse_stat_from_text(&main_stat_text)
                 .map(|s| stat_parser::main_stat_key_fixup(&s.key))
         };
 
         let main_stat_key = match main_stat_key {
-            Some(k) => k,
+            Some(k) => {
+                if let Some(ref mut d) = dump { d.set_final_result("main_stat", &k); }
+                k
+            }
             None => {
                 if config.continue_on_failure {
                     log_warn!("[artifact] 无法识别主词条: 「{}」，跳过", "[artifact] cannot identify main stat: 「{}」, skipping", main_stat_text);
+                    if let Some(d) = dump { d.finalize_error(None, &format!("cannot identify main stat: {}", main_stat_text)); }
                     return Ok(ArtifactScanResult::Skip);
                 }
+                if let Some(d) = dump { d.finalize_error(None, &format!("cannot identify main stat: {}", main_stat_text)); }
                 bail!("无法识别主词条 / Cannot identify main stat: \u{300C}{}\u{300D}", main_stat_text);
             }
         };
@@ -553,38 +595,11 @@ impl GoodArtifactScanner {
         // 3. Detect elixir crafted — panel pixel detection only (grid detection is unreliable)
         let elixir_crafted = Self::detect_elixir_crafted(image, scaler);
         let y_shift = if elixir_crafted { ELIXIR_SHIFT } else { 0.0 };
-
-        // Create dump context now that we know slot and y_shift.
-        let dump = if config.dump_images {
-            use super::super::common::constants::{ARTIFACT_LOCK_POS1, ARTIFACT_ASTRAL_POS1, STAR_Y};
-            let ctx = DumpCtx::new("debug_images", "artifacts", item_index, &slot_key);
-            ctx.dump_full(image);
-            // OCR regions (match actual OCR coordinates)
-            ctx.dump_region("name", image, ocr_regions.part_name, scaler);
-            ctx.dump_region("main_stat", image, ocr_regions.main_stat, scaler);
-            ctx.dump_region_shifted("level", image, ocr_regions.level, y_shift, scaler);
-            for i in 0..4 {
-                ctx.dump_region_shifted(
-                    &format!("sub{}", i), image, ocr_regions.substat_lines[i], y_shift, scaler,
-                );
-            }
-            let set_rect = (ocr_regions.set_name_x, ocr_regions.set_name_base_y + y_shift,
-                            ocr_regions.set_name_w, ocr_regions.set_name_h);
-            ctx.dump_region("set_name", image, set_rect, scaler);
-            ctx.dump_region("equip", image, ocr_regions.equip, scaler);
-            // Pixel check regions
-            ctx.dump_pixel("elixir_px", image, (1520.0, 423.0), 10, scaler);
-            ctx.dump_pixel("star5_px", image, (1485.0, STAR_Y), 10, scaler);
-            ctx.dump_pixel("star4_px", image, (1450.0, STAR_Y), 10, scaler);
-            ctx.dump_pixel("lock_px", image,
-                (ARTIFACT_LOCK_POS1.0, ARTIFACT_LOCK_POS1.1 + y_shift), 10, scaler);
-            ctx.dump_pixel("astral_px", image,
-                (ARTIFACT_ASTRAL_POS1.0, ARTIFACT_ASTRAL_POS1.1 + y_shift), 10, scaler);
-            Some(ctx)
-        } else {
-            None
-        };
-        let _dump = dump;
+        if let Some(ref mut d) = dump {
+            let elixir_pos = (1520.0, 423.0);
+            d.record_pixel(0, "elixir", elixir_pos, read_px(elixir_pos),
+                if elixir_crafted { "crafted" } else { "not crafted" });
+        }
 
         // 4. Level — dual-engine OCR, collect both for solver
         let parse_level = |text: &str| -> i32 {
@@ -615,6 +630,12 @@ impl GoodArtifactScanner {
                 "[artifact] level dual-OCR: engine1=「{}」→{} engine2=「{}」→{} → {}",
                 level_text1.trim(), lv1, level_text2.trim(), lv2, level);
         }
+        if let Some(ref mut d) = dump {
+            let level_rect = (ocr_regions.level.0, ocr_regions.level.1 + y_shift, ocr_regions.level.2, ocr_regions.level.3);
+            d.record_ocr(0, "level", level_rect,
+                &format!("engine1={} engine2={}", level_text1.trim(), level_text2.trim()));
+            d.set_final_result("level", &format!("{}", level));
+        }
 
         // 5. Lock and astral mark
         let (mut lock, astral_mark) = if let Some(ref gi) = grid_icons {
@@ -632,6 +653,14 @@ impl GoodArtifactScanner {
         if astral_mark && !lock {
             log_debug!("[artifact] 星标=true 但锁定=false — 强制锁定=true（游戏规则）", "[artifact] astral=true but lock=false — forcing lock=true (game invariant)");
             lock = true;
+        }
+        if let Some(ref mut d) = dump {
+            let lock_pos = (ARTIFACT_LOCK_POS1.0, ARTIFACT_LOCK_POS1.1 + y_shift);
+            d.record_pixel(0, "lock", lock_pos, read_px(lock_pos),
+                if lock { "locked" } else { "unlocked" });
+            let astral_pos = (ARTIFACT_ASTRAL_POS1.0, ARTIFACT_ASTRAL_POS1.1 + y_shift);
+            d.record_pixel(0, "astral", astral_pos, read_px(astral_pos),
+                if astral_mark { "marked" } else { "unmarked" });
         }
 
         // 6. Substats — dual-engine OCR, collect candidates, solve with roll validator.
@@ -653,12 +682,24 @@ impl GoodArtifactScanner {
         let max_init = if rarity == 5 { 4 } else { 3 };
         let max_scan_lines = ((max_init + level / 4) as usize).min(4);
 
+        // Track which physical line index each solver_candidates entry came from,
+        // so we can map solver outputs back to the correct OCR region for dump.
+        let mut candidate_line_indices: Vec<usize> = Vec::new();
+
         // Phase 1: OCR at original width
         for i in 0..max_scan_lines {
             let sub_rect = ocr_regions.substat_lines[i];
             let (cands, stop, raw_texts) = Self::ocr_substat_line_candidates(
                 ocr, substat_ocr, image, sub_rect, y_shift, scaler,
             );
+
+            // Record raw OCR text for this line immediately
+            if let Some(ref mut d) = dump {
+                let shifted_rect = (sub_rect.0, sub_rect.1 + y_shift, sub_rect.2, sub_rect.3);
+                let raw = if raw_texts[0].trim().is_empty() { &raw_texts[1] } else { &raw_texts[0] };
+                d.record_ocr(0, &format!("sub[{}]", i), shifted_rect, raw.trim());
+            }
+
             if stop { break; }
 
             // If this line's OCR text matches a set name, we've run past the
@@ -734,6 +775,9 @@ impl GoodArtifactScanner {
                 }
                 solver_candidates.push(cands);
             }
+
+            // Track physical line index for this candidate entry
+            candidate_line_indices.push(i);
 
             if config.verbose {
                 let cand_str: Vec<String> = solver_candidates.last().unwrap()
@@ -961,6 +1005,41 @@ impl GoodArtifactScanner {
         // The OCR candidates include inactive=true when "(待激活)" is detected,
         // and the solver propagates this flag through to SolvedSubstat.inactive.
 
+        // Update substat dump entries with solver results.
+        // The non_empty_candidates (input to solver) map 1:1 to solver output substats.
+        // We use candidate_line_indices to find which physical line each corresponds to,
+        // then update the `sub[line]` entry that was recorded during the OCR loop.
+        if let Some(ref mut d) = dump {
+            // Build mapping: non-empty candidate index → physical line index
+            let non_empty_line_indices: Vec<usize> = candidate_line_indices.iter()
+                .enumerate()
+                .filter(|(ci, _)| !solver_candidates[*ci].is_empty())
+                .map(|(_, &line)| line)
+                .collect();
+
+            // Update final results for each solved substat
+            let all_subs: Vec<(&GoodSubStat, bool)> = substats.iter().map(|s| (s, false))
+                .chain(unactivated_substats.iter().map(|s| (s, true)))
+                .collect();
+            for (si, (sub, inactive)) in all_subs.iter().enumerate() {
+                let line_idx = non_empty_line_indices.get(si).copied().unwrap_or(si);
+                let field = format!("sub[{}]", line_idx);
+                let info = if *inactive {
+                    format!("{}={} (inactive)", sub.key, sub.value)
+                } else if let Some(iv) = sub.initial_value {
+                    format!("{}={} (init={})", sub.key, sub.value, iv)
+                } else {
+                    format!("{}={}", sub.key, sub.value)
+                };
+                d.set_final_result(&field, &info);
+            }
+            if let Some(tr) = total_rolls {
+                d.add_warning(&format!("solver: total_rolls={}", tr));
+            } else {
+                d.add_warning("solver FAILED — heuristic fallback used");
+            }
+        }
+
         // 6. Set name — the set name label always appears on the row immediately
         //    after the last substat. With N substats, the set name is at row N+1
         //    (using substat line Y positions). The set name starts slightly left
@@ -1064,8 +1143,17 @@ impl GoodArtifactScanner {
             }
         }
 
+        // Record set name OCR in dump
+        if let Some(ref mut d) = dump {
+            let set_rect = (ocr_regions.set_name_x, tried_y, ocr_regions.set_name_w, ocr_regions.set_name_h);
+            d.record_ocr(0, "set_name", set_rect, &set_name_text);
+        }
+
         let set_key = match set_key {
-            Some(k) => k,
+            Some(k) => {
+                if let Some(ref mut d) = dump { d.set_final_result("set_name", &k); }
+                k
+            }
             None => {
                 let stat_keys: Vec<String> = substats
                     .iter()
@@ -1080,8 +1168,10 @@ impl GoodArtifactScanner {
                     set_name_text
                 );
                 if config.continue_on_failure {
+                    if let Some(d) = dump { d.finalize_error(None, &format!("cannot identify set: {}", set_name_text)); }
                     return Ok(ArtifactScanResult::Skip);
                 }
+                if let Some(d) = dump { d.finalize_error(None, &format!("cannot identify set: {}", set_name_text)); }
                 bail!(
                     "无法识别圣遗物套装 / Cannot identify artifact set (substats={}): \u{300C}{}\u{300D}",
                     stat_count,
@@ -1096,6 +1186,7 @@ impl GoodArtifactScanner {
         // set's canonical (max) rarity.
         if rarity == 3 {
             log_debug!("[artifact] 忽略3星圣遗物", "[artifact] ignoring 3* artifact");
+            if let Some(d) = dump { d.finalize_skip("3* artifact"); }
             return Ok(ArtifactScanResult::Skip);
         }
         if let Some(&set_max_rarity) = mappings.artifact_set_max_rarity.get(&set_key) {
@@ -1105,6 +1196,7 @@ impl GoodArtifactScanner {
                     "[artifact] ignoring {}* {} variant (set max {}*)",
                     rarity, set_key, set_max_rarity
                 );
+                if let Some(d) = dump { d.finalize_skip(&format!("{}* variant of {}* set", rarity, set_max_rarity)); }
                 return Ok(ArtifactScanResult::Skip);
             }
         }
@@ -1120,8 +1212,12 @@ impl GoodArtifactScanner {
                 log_debug!("[artifact] 装备: v4「{}」失败, v5「{}」→ {}", "[artifact] equip: v4「{}」failed, v5「{}」→ {}", equip_text.trim(), equip_text_v5.trim(), location);
             }
         }
+        if let Some(ref mut d) = dump {
+            d.record_ocr(0, "equip", ocr_regions.equip, &equip_text);
+            d.set_final_result("equip", if location.is_empty() { "(none)" } else { &location });
+        }
 
-        Ok(ArtifactScanResult::Artifact(GoodArtifact {
+        let artifact = GoodArtifact {
             set_key,
             slot_key,
             level,
@@ -1134,7 +1230,14 @@ impl GoodArtifactScanner {
             elixir_crafted,
             unactivated_substats,
             total_rolls,
-        }))
+        };
+
+        if let Some(d) = dump {
+            let json = serde_json::to_string_pretty(&artifact).unwrap_or_default();
+            d.finalize_success(&json);
+        }
+
+        Ok(ArtifactScanResult::Artifact(artifact))
     }
 
     /// Identify a single artifact from a captured game screenshot (synchronous).

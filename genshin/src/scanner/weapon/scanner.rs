@@ -155,12 +155,24 @@ impl GoodWeaponScanner {
         item_index: usize,
         grid_icons: Option<GridIconResult>,
     ) -> Result<WeaponScanResult> {
-        use crate::scanner::common::debug_dump::DumpCtx;
+        use crate::scanner::common::debug_dump::DumpCollector;
         use super::super::common::constants::{WEAPON_LOCK_POS1, STAR_Y};
+
+        // Create dump collector at top (before any detection)
+        let mut dump = if config.dump_images {
+            let mut dc = DumpCollector::new("debug_images", "weapons", item_index, scaler);
+            dc.add_image("panel", image);
+            Some(dc)
+        } else {
+            None
+        };
 
         // OCR weapon name
         let name_text = Self::ocr_image_region(ocr, image, ocr_regions.name, scaler)?;
         let weapon_key = fuzzy_match_map(&name_text, &mappings.weapon_name_map);
+        if let Some(ref mut d) = dump {
+            d.record_ocr(0, "name", ocr_regions.name, &name_text);
+        }
         if config.verbose {
             log_debug!("[weapon] 名称OCR: {:?} -> {:?}", "[weapon] name OCR: {:?} -> {:?}", name_text, weapon_key);
         }
@@ -170,30 +182,45 @@ impl GoodWeaponScanner {
             for &stop_name in WEAPON_STOP_NAMES.iter().chain(WEAPON_FORGING_STOP_NAMES.iter()) {
                 if name_text.contains(stop_name) {
                     log_info!("[weapon] 检测到「{}」，停止扫描", "[weapon] detected 「{}」, stopping", stop_name);
+                    if let Some(d) = dump { d.finalize_skip(&format!("stop signal: {}", stop_name)); }
                     return Ok(WeaponScanResult::Stop);
                 }
             }
 
             if pixel_utils::weapon_below_min_rarity(image, scaler, config.min_rarity) {
+                if let Some(d) = dump { d.finalize_skip("below min rarity"); }
                 return Ok(WeaponScanResult::Stop);
             }
 
             if config.continue_on_failure {
                 log_warn!("[weapon] 无法匹配「{}」，跳过", "[weapon] cannot match: 「{}」, skipping", name_text);
+                if let Some(d) = dump { d.finalize_error(None, &format!("cannot match weapon name: {}", name_text)); }
                 return Ok(WeaponScanResult::Skip);
             }
+            if let Some(d) = dump { d.finalize_error(None, &format!("cannot match weapon name: {}", name_text)); }
             bail!("无法匹配武器 / Cannot match weapon: \u{300C}{}\u{300D}", name_text);
         }
 
         let weapon_key = weapon_key.unwrap();
+        if let Some(ref mut d) = dump {
+            d.set_final_result("name", &weapon_key);
+        }
 
         // OCR level
         let level_text = Self::ocr_image_region(ocr, image, ocr_regions.level, scaler)?;
         let (level, ascended) = Self::parse_weapon_level(&level_text);
+        if let Some(ref mut d) = dump {
+            d.record_ocr(0, "level", ocr_regions.level, &level_text);
+            d.set_final_result("level", &format!("lv={} asc={}", level, ascended));
+        }
 
         // OCR refinement
         let ref_text = Self::ocr_image_region(ocr, image, ocr_regions.refinement, scaler)?;
         let refinement = Self::parse_refinement(&ref_text);
+        if let Some(ref mut d) = dump {
+            d.record_ocr(0, "refinement", ocr_regions.refinement, &ref_text);
+            d.set_final_result("refinement", &format!("R{}", refinement));
+        }
 
         // OCR equip status
         // Try primary engine first, fall back to v5 if no match (v4 dict lacks rare chars like 魈)
@@ -211,6 +238,10 @@ impl GoodWeaponScanner {
         if !equip_text.is_empty() {
             log_debug!("[weapon] {} 装备OCR: {:?} -> {:?}", "[weapon] {} equip OCR: {:?} -> {:?}", weapon_key, equip_text, location);
         }
+        if let Some(ref mut d) = dump {
+            d.record_ocr(0, "equip", ocr_regions.equip, &equip_text);
+            d.set_final_result("equip", if location.is_empty() { "(none)" } else { &location });
+        }
 
         // Pixel-based detections
         let rarity = pixel_utils::detect_weapon_rarity(image, scaler);
@@ -222,21 +253,38 @@ impl GoodWeaponScanner {
         };
         let ascension = level_to_ascension(level, ascended);
 
-        // Dump OCR regions and pixel check regions
-        if config.dump_images {
-            let ctx = DumpCtx::new("debug_images", "weapons", item_index, &weapon_key);
-            ctx.dump_full(image);
-            ctx.dump_region("name", image, ocr_regions.name, scaler);
-            ctx.dump_region("level", image, ocr_regions.level, scaler);
-            ctx.dump_region("refinement", image, ocr_regions.refinement, scaler);
-            ctx.dump_region("equip", image, ocr_regions.equip, scaler);
-            ctx.dump_pixel("star5_px", image, (1485.0, STAR_Y), 10, scaler);
-            ctx.dump_pixel("star4_px", image, (1450.0, STAR_Y), 10, scaler);
-            ctx.dump_pixel("star3_px", image, (1416.0, STAR_Y), 10, scaler);
-            ctx.dump_pixel("lock_px", image, (WEAPON_LOCK_POS1.0, WEAPON_LOCK_POS1.1), 10, scaler);
+        // Record pixel detections
+        if let Some(ref mut d) = dump {
+            // Rarity — use the star band center position for the detected rarity
+            let star_pos = match rarity {
+                5 => (1485.0, STAR_Y),
+                4 => (1450.0, STAR_Y),
+                _ => (1416.0, STAR_Y),
+            };
+            let px = scaler.x(star_pos.0) as u32;
+            let py = scaler.y(star_pos.1) as u32;
+            let rgb = if px < image.width() && py < image.height() {
+                let p = image.get_pixel(px, py);
+                [p[0], p[1], p[2]]
+            } else {
+                [0, 0, 0]
+            };
+            d.record_pixel(0, "rarity", star_pos, rgb, &format!("{}*", rarity));
+
+            // Lock
+            let lock_px = scaler.x(WEAPON_LOCK_POS1.0) as u32;
+            let lock_py = scaler.y(WEAPON_LOCK_POS1.1) as u32;
+            let lock_rgb = if lock_px < image.width() && lock_py < image.height() {
+                let p = image.get_pixel(lock_px, lock_py);
+                [p[0], p[1], p[2]]
+            } else {
+                [0, 0, 0]
+            };
+            d.record_pixel(0, "lock", WEAPON_LOCK_POS1, lock_rgb,
+                if lock { "locked" } else { "unlocked" });
         }
 
-        Ok(WeaponScanResult::Weapon(GoodWeapon {
+        let weapon = GoodWeapon {
             key: weapon_key,
             level,
             ascension,
@@ -244,7 +292,14 @@ impl GoodWeaponScanner {
             rarity,
             location,
             lock,
-        }))
+        };
+
+        if let Some(d) = dump {
+            let json = serde_json::to_string_pretty(&weapon).unwrap_or_default();
+            d.finalize_success(&json);
+        }
+
+        Ok(WeaponScanResult::Weapon(weapon))
     }
 
     /// Valid level caps for weapons.

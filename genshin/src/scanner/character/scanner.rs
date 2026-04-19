@@ -13,7 +13,7 @@ use yas::utils;
 use super::GoodCharacterScannerConfig;
 use crate::scanner::common::constants::*;
 use crate::scanner::common::coord_scaler::CoordScaler;
-use crate::scanner::common::debug_dump::DumpCtx;
+use crate::scanner::common::debug_dump::DumpCollector;
 use crate::scanner::common::fuzzy_match::fuzzy_match_map;
 use crate::scanner::common::game_controller::GenshinGameController;
 use crate::scanner::common::mappings::MappingManager;
@@ -397,7 +397,7 @@ impl GoodCharacterScanner {
         c_index: usize,
         is_first_click: bool,
         tab_delay: u64,
-        dump: &Option<DumpCtx>,
+        dump: &mut Option<DumpCollector>,
     ) -> Result<bool> {
         let click_y = CHAR_CONSTELLATION_Y_BASE + c_index as f64 * CHAR_CONSTELLATION_Y_STEP;
         ctrl.click_at(CHAR_CONSTELLATION_X, click_y);
@@ -405,18 +405,16 @@ impl GoodCharacterScanner {
         let delay = if is_first_click { tab_delay * 3 / 4 } else { tab_delay / 2 };
         utils::sleep(delay as u32);
 
-        if let Some(ref ctx) = dump {
-            if let Ok(img) = ctrl.capture_game() {
-                ctx.dump_region(
-                    &format!("constellation_c{}", c_index + 1),
-                    &img, CHAR_CONSTELLATION_ACTIVATE_RECT, &ctrl.scaler,
-                );
-            }
+        let text = Self::ocr_rect(ocr, ctrl, CHAR_CONSTELLATION_ACTIVATE_RECT)?;
+        let activated = text.contains("\u{5DF2}\u{6FC0}\u{6D3B}");
+
+        if let Some(ref mut d) = dump {
+            let field = format!("constellation_c{}", c_index + 1);
+            d.record_ocr(0, &field, CHAR_CONSTELLATION_ACTIVATE_RECT, &text);
+            d.set_final_result(&field, if activated { "activated" } else { "locked" });
         }
 
-        let text = Self::ocr_rect(ocr, ctrl, CHAR_CONSTELLATION_ACTIVATE_RECT)?;
-        // "已激活" means "Activated"
-        Ok(text.contains("\u{5DF2}\u{6FC0}\u{6D3B}"))
+        Ok(activated)
     }
 
     /// OCR binary-search constellation count (max 3 clicks). Used as fallback.
@@ -424,7 +422,7 @@ impl GoodCharacterScanner {
         &self,
         ocr: &dyn ImageToText<RgbImage>,
         ctrl: &mut GenshinGameController,
-        dump: &Option<DumpCtx>,
+        dump: &mut Option<DumpCollector>,
     ) -> Result<i32> {
         let td = self.config.tab_delay;
 
@@ -470,7 +468,7 @@ impl GoodCharacterScanner {
         ctrl: &mut GenshinGameController,
         character_name: &str,
         _element: &Option<String>,
-        dump: &Option<DumpCtx>,
+        dump: &mut Option<DumpCollector>,
     ) -> Result<i32> {
         if NO_CONSTELLATION_CHARACTERS.contains(&character_name) {
             return Ok(0);
@@ -481,8 +479,8 @@ impl GoodCharacterScanner {
 
         let image = ctrl.capture_game()?;
 
-        if let Some(ref ctx) = dump {
-            ctx.dump_region("constellation_screen", &image, (0.0, 0.0, 1920.0, 1080.0), &ctrl.scaler);
+        if let Some(ref mut d) = dump {
+            d.add_image("constellation", &image);
         }
 
         let (constellation, monotonic) = crate::scanner::common::pixel_utils::detect_constellation_pixel(
@@ -490,6 +488,13 @@ impl GoodCharacterScanner {
         );
 
         if monotonic {
+            if let Some(ref mut d) = dump {
+                // Record the pixel-based constellation result
+                // Use image index from the constellation image we just added
+                let img_idx = d.images_len() - 1;
+                d.record_pixel(img_idx, "constellation_pixel", (960.0, 540.0), [0, 0, 0],
+                    &format!("C{} (monotonic)", constellation));
+            }
             Ok(constellation)
         } else {
             log_debug!(
@@ -780,9 +785,9 @@ impl GoodCharacterScanner {
             }
         }
 
-        // Set up dump context if image dumping is enabled
-        let dump = if self.config.dump_images {
-            Some(DumpCtx::new("debug_images", "characters", char_index, &name))
+        // Set up dump collector if image dumping is enabled
+        let mut dump = if self.config.dump_images {
+            Some(DumpCollector::new("debug_images", "characters", char_index, &ctrl.scaler))
         } else {
             None
         };
@@ -794,31 +799,39 @@ impl GoodCharacterScanner {
         if !reverse {
             // Forward: attributes → constellation → talents (already on attributes tab)
 
-            // Dump the attributes screen (name + level visible)
-            if let Some(ref ctx) = dump {
+            // Capture and record the attributes screen (name + level visible)
+            if let Some(ref mut d) = dump {
                 if let Ok(img) = ctrl.capture_game() {
-                    ctx.dump_full(&img);
-                    ctx.dump_region("name", &img, CHAR_NAME_RECT, &ctrl.scaler);
-                    ctx.dump_region("level", &img, CHAR_LEVEL_RECT, &ctrl.scaler);
+                    let idx = d.add_image("attributes", &img);
+                    d.record_ocr(idx, "name", CHAR_NAME_RECT, &raw_text);
+                    d.set_final_result("name", &name);
                 }
             }
 
             level_info = Self::read_level(&ocr, ctrl)?;
-            constellation = self.read_constellation_count(&ocr, ctrl, &name, &element, &dump)?;
+            if let Some(ref mut d) = dump {
+                d.record_ocr(0, "level", CHAR_LEVEL_RECT, "");
+                d.set_final_result("level", &format!("lv={} asc={}", level_info.0, level_info.1));
+            }
+
+            constellation = self.read_constellation_count(&ocr, ctrl, &name, &element, &mut dump)?;
 
             // Drop the single OCR guard before talent reading (which uses pool internally)
             drop(ocr);
             talents = self.read_talent_levels(ocr_pool, ctrl, &name, false)?;
 
-            // Dump the talent overview screen
-            if let Some(ref ctx) = dump {
+            // Capture and record the talent overview screen
+            if let Some(ref mut d) = dump {
                 if let Ok(img) = ctrl.capture_game() {
+                    let idx = d.add_image("talents", &img);
                     let has_special = SPECIAL_BURST_CHARACTERS.contains(&name.as_str());
                     let burst_rect = if has_special { CHAR_TALENT_OVERVIEW_BURST_SPECIAL } else { CHAR_TALENT_OVERVIEW_BURST };
-                    ctx.dump_region("talent_screen", &img, (0.0, 0.0, 1920.0, 1080.0), &ctrl.scaler);
-                    ctx.dump_region("talent_auto", &img, CHAR_TALENT_OVERVIEW_AUTO, &ctrl.scaler);
-                    ctx.dump_region("talent_skill", &img, CHAR_TALENT_OVERVIEW_SKILL, &ctrl.scaler);
-                    ctx.dump_region("talent_burst", &img, burst_rect, &ctrl.scaler);
+                    d.record_ocr(idx, "talent_auto", CHAR_TALENT_OVERVIEW_AUTO, "");
+                    d.set_final_result("talent_auto", &format!("{}", talents.0));
+                    d.record_ocr(idx, "talent_skill", CHAR_TALENT_OVERVIEW_SKILL, "");
+                    d.set_final_result("talent_skill", &format!("{}", talents.1));
+                    d.record_ocr(idx, "talent_burst", burst_rect, "");
+                    d.set_final_result("talent_burst", &format!("{}", talents.2));
                 }
             }
         } else {
@@ -827,31 +840,36 @@ impl GoodCharacterScanner {
             drop(ocr);
             talents = self.read_talent_levels(ocr_pool, ctrl, &name, true)?;
 
-            // Dump the talent overview screen
-            if let Some(ref ctx) = dump {
+            // Capture and record the talent overview screen
+            if let Some(ref mut d) = dump {
                 if let Ok(img) = ctrl.capture_game() {
+                    let idx = d.add_image("talents", &img);
                     let has_special = SPECIAL_BURST_CHARACTERS.contains(&name.as_str());
                     let burst_rect = if has_special { CHAR_TALENT_OVERVIEW_BURST_SPECIAL } else { CHAR_TALENT_OVERVIEW_BURST };
-                    ctx.dump_region("talent_screen", &img, (0.0, 0.0, 1920.0, 1080.0), &ctrl.scaler);
-                    ctx.dump_region("talent_auto", &img, CHAR_TALENT_OVERVIEW_AUTO, &ctrl.scaler);
-                    ctx.dump_region("talent_skill", &img, CHAR_TALENT_OVERVIEW_SKILL, &ctrl.scaler);
-                    ctx.dump_region("talent_burst", &img, burst_rect, &ctrl.scaler);
+                    d.record_ocr(idx, "talent_auto", CHAR_TALENT_OVERVIEW_AUTO, "");
+                    d.set_final_result("talent_auto", &format!("{}", talents.0));
+                    d.record_ocr(idx, "talent_skill", CHAR_TALENT_OVERVIEW_SKILL, "");
+                    d.set_final_result("talent_skill", &format!("{}", talents.1));
+                    d.record_ocr(idx, "talent_burst", burst_rect, "");
+                    d.set_final_result("talent_burst", &format!("{}", talents.2));
                 }
             }
 
             let ocr = ocr_pool.get();
-            constellation = self.read_constellation_count(&ocr, ctrl, &name, &element, &dump)?;
+            constellation = self.read_constellation_count(&ocr, ctrl, &name, &element, &mut dump)?;
 
             ctrl.click_at(CHAR_TAB_ATTRIBUTES.0, CHAR_TAB_ATTRIBUTES.1);
             utils::sleep(self.config.tab_delay as u32);
             level_info = Self::read_level(&ocr, ctrl)?;
 
-            // Dump the attributes screen (name + level visible)
-            if let Some(ref ctx) = dump {
+            // Capture and record the attributes screen
+            if let Some(ref mut d) = dump {
                 if let Ok(img) = ctrl.capture_game() {
-                    ctx.dump_region("attributes_screen", &img, (0.0, 0.0, 1920.0, 1080.0), &ctrl.scaler);
-                    ctx.dump_region("name", &img, CHAR_NAME_RECT, &ctrl.scaler);
-                    ctx.dump_region("level", &img, CHAR_LEVEL_RECT, &ctrl.scaler);
+                    let idx = d.add_image("attributes", &img);
+                    d.record_ocr(idx, "name", CHAR_NAME_RECT, &raw_text);
+                    d.set_final_result("name", &name);
+                    d.record_ocr(idx, "level", CHAR_LEVEL_RECT, "");
+                    d.set_final_result("level", &format!("lv={} asc={}", level_info.0, level_info.1));
                 }
             }
         }
@@ -869,7 +887,7 @@ impl GoodCharacterScanner {
             None
         };
 
-        Ok((Some(GoodCharacter {
+        let character = GoodCharacter {
             key: name,
             level,
             constellation,
@@ -880,7 +898,23 @@ impl GoodCharacterScanner {
                 burst,
             },
             element: good_element,
-        }), ScanMeta {
+        };
+
+        // Record constellation and adjusted talents in dump
+        if let Some(ref mut d) = dump {
+            d.record_ocr(0, "constellation_final", (0.0, 0.0, 0.0, 0.0), "");
+            d.set_final_result("constellation_final", &format!("C{}", constellation));
+            d.record_ocr(0, "talents_adjusted", (0.0, 0.0, 0.0, 0.0), "");
+            d.set_final_result("talents_adjusted",
+                &format!("auto={} skill={} burst={}", auto, skill, burst));
+        }
+
+        if let Some(d) = dump {
+            let json = serde_json::to_string_pretty(&character).unwrap_or_default();
+            d.finalize_success(&json);
+        }
+
+        Ok((Some(character), ScanMeta {
             talent_suspicious,
             raw_skill: talents.1,
             raw_burst: talents.2,
@@ -1252,7 +1286,7 @@ impl GoodCharacterScanner {
             let new_ascension = level_to_ascension(new_level, new_ascended);
 
             // Re-read constellation (navigates to constellation tab, dismisses popup)
-            let new_constellation = self.read_constellation_count(&ocr, ctrl, &old.key, &None, &None)
+            let new_constellation = self.read_constellation_count(&ocr, ctrl, &old.key, &None, &mut None)
                 .unwrap_or(old.constellation);
 
             // Re-read talents (navigates to talents tab)
@@ -1367,7 +1401,7 @@ impl GoodCharacterScanner {
 
         // Constellation
         let t = Instant::now();
-        let constellation = self.read_constellation_count(ocr, ctrl, &name_key, &element, &None)
+        let constellation = self.read_constellation_count(ocr, ctrl, &name_key, &element, &mut None)
             .unwrap_or(0);
         fields.push(DebugOcrField {
             field_name: "constellation".into(),

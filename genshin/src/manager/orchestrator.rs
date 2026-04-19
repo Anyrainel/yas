@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use yas::{log_debug, log_info};
+use yas::{log_debug, log_info, log_warn};
 
 use yas::cancel::CancelToken;
 
@@ -104,7 +104,7 @@ impl ArtifactManager {
             self.mappings.clone(),
             self.pools.clone(),
         );
-        let (lock_results, scanned_artifacts, matched_indices, scan_complete) = lock_mgr.execute(
+        let (lock_results, scanned_artifacts, matched_indices, scan_complete, ocr_failures) = lock_mgr.execute(
             ctrl,
             &targets,
             self.capture_delay,
@@ -138,7 +138,22 @@ impl ArtifactManager {
             summary.success, summary.already_correct, summary.not_found, summary.errors, summary.aborted,
         );
 
-        let artifact_snapshot = if scan_complete && !scanned_artifacts.is_empty() {
+        // Only produce a snapshot if the scan was complete AND had no data quality issues.
+        // Solver failures (total_rolls == None on leveled artifacts) indicate bad substat data.
+        // OCR failures mean artifacts were lost entirely.
+        let solver_failures = scanned_artifacts.iter()
+            .filter(|(_, a)| a.level > 0 && a.total_rolls.is_none())
+            .count();
+        let has_data_errors = ocr_failures > 0 || solver_failures > 0;
+        if has_data_errors && scan_complete {
+            log_warn!(
+                "[manager] 扫描数据存在质量问题（OCR失败: {}, 求解失败: {}），不生成快照",
+                "[manager] Scan has data quality issues (OCR failures: {}, solver failures: {}), skipping snapshot",
+                ocr_failures, solver_failures,
+            );
+        }
+
+        let artifact_snapshot = if scan_complete && !scanned_artifacts.is_empty() && !has_data_errors {
             Some(build_artifact_snapshot(&scanned_artifacts, &targets, &matched_indices, &all_results))
         } else {
             None

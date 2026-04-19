@@ -746,12 +746,8 @@ fn click_filter_set_and_confirm(
     click_x: f64,
     y: f64,
 ) -> Result<()> {
-    ctrl.move_to(click_x, y);
-    yas::utils::sleep(d_cell() * 2);
     ctrl.click_at(click_x, y);
     yas::utils::sleep(d_action());
-    ctrl.move_to(FILTER_CONFIRM_X, FILTER_CONFIRM_Y);
-    yas::utils::sleep(d_cell() * 2);
     ctrl.click_at(FILTER_CONFIRM_X, FILTER_CONFIRM_Y);
     yas::utils::sleep(d_transition() * 4 / 5);
     Ok(())

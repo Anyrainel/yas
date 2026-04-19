@@ -85,9 +85,10 @@ impl LockManager {
         stop_on_all_matched: bool,
         max_target_level: i32,
         dump_images: bool,
-    ) -> (Vec<InstructionResult>, Vec<(usize, GoodArtifact)>, HashMap<usize, usize>, bool) {
+    ) -> (Vec<InstructionResult>, Vec<(usize, GoodArtifact)>, HashMap<usize, usize>, bool, usize) {
         let mut results: HashMap<String, InstructionResult> = HashMap::new();
         let mut scanned_artifacts: Vec<(usize, GoodArtifact)> = Vec::new();
+        let mut ocr_failures: usize = 0;
 
         let make_error_results = |targets: &[LockTarget], status: InstructionStatus| -> Vec<InstructionResult> {
             targets.iter().map(|t| InstructionResult {
@@ -97,7 +98,7 @@ impl LockManager {
         };
 
         if targets.is_empty() {
-            return (Vec::new(), scanned_artifacts, HashMap::new(), false);
+            return (Vec::new(), scanned_artifacts, HashMap::new(), false, 0);
         }
 
         // Use shared OCR pools (v5 for level, v4 for everything else).
@@ -124,6 +125,7 @@ impl LockManager {
                     scanned_artifacts,
                     HashMap::new(),
                     false,
+                    0,
                 );
             }
         };
@@ -138,6 +140,7 @@ impl LockManager {
                 scanned_artifacts,
                 HashMap::new(),
                 true, // empty backpack is a "complete" scan
+                0,
             );
         }
 
@@ -367,6 +370,8 @@ impl LockManager {
                                     });
                                 }
                             }
+                        } else {
+                            ocr_failures += 1;
                         }
                     }
 
@@ -499,6 +504,6 @@ impl LockManager {
             .filter_map(|t| results.remove(&t.result_id))
             .collect();
 
-        (ordered_results, scanned_artifacts, matched, scan_complete)
+        (ordered_results, scanned_artifacts, matched, scan_complete, ocr_failures)
     }
 }
