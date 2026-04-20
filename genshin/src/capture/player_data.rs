@@ -20,6 +20,11 @@ const PROP_ASCENSION: u32 = 1002;
 const AVATAR_TYPE_FORMAL: u32 = 1;
 
 /// Settings for filtering exported data.
+///
+/// Rarity rules are hardcoded (not user-configurable):
+/// - Weapons: 3★ and above
+/// - Artifacts: 4★ and above, only at their set's max rarity
+///   (e.g. 4★ drops of a 5★ set are excluded)
 #[derive(Clone, Debug)]
 pub struct CaptureExportSettings {
     pub include_characters: bool,
@@ -31,12 +36,10 @@ pub struct CaptureExportSettings {
     pub min_character_constellation: u32,
 
     pub min_artifact_level: u32,
-    pub min_artifact_rarity: u32,
 
     pub min_weapon_level: u32,
     pub min_weapon_refinement: u32,
     pub min_weapon_ascension: u32,
-    pub min_weapon_rarity: u32,
 }
 
 impl Default for CaptureExportSettings {
@@ -49,14 +52,17 @@ impl Default for CaptureExportSettings {
             min_character_ascension: 0,
             min_character_constellation: 0,
             min_artifact_level: 0,
-            min_artifact_rarity: 4,
             min_weapon_level: 0,
             min_weapon_refinement: 0,
             min_weapon_ascension: 0,
-            min_weapon_rarity: 3,
         }
     }
 }
+
+/// Minimum weapon rarity to export (3★+).
+const MIN_WEAPON_RARITY: u32 = 3;
+/// Minimum artifact rarity to export (4★+).
+const MIN_ARTIFACT_RARITY: u32 = 4;
 
 /// Accumulates packet data and exports to GOOD format.
 pub struct PlayerData {
@@ -264,9 +270,16 @@ impl PlayerData {
                     .to_string();
 
                 if (level as u32) < settings.min_artifact_level
-                    || (rarity as u32) < settings.min_artifact_rarity
+                    || (rarity as u32) < MIN_ARTIFACT_RARITY
                 {
                     return None;
+                }
+
+                // Skip artifacts below their set's max rarity (e.g. 4★ of a 5★ set)
+                if let Some(max_rarity) = self.data_cache.artifact_set_max_rarity(&artifact_data.set) {
+                    if (rarity as u32) < max_rarity {
+                        return None;
+                    }
                 }
 
                 Some(GoodArtifact {
@@ -311,7 +324,7 @@ impl PlayerData {
                 if level < settings.min_weapon_level
                     || refinement < settings.min_weapon_refinement
                     || ascension < settings.min_weapon_ascension
-                    || weapon_data.rarity < settings.min_weapon_rarity
+                    || weapon_data.rarity < MIN_WEAPON_RARITY
                 {
                     return None;
                 }
@@ -330,13 +343,18 @@ impl PlayerData {
     }
 }
 
-/// Round a stat value the same way the game does.
+/// Round a stat value the same way the game does (half-up rounding).
+///
+/// Rust's `f64::round()` uses banker's rounding (round-to-even), which disagrees
+/// with the game at exact .5 boundaries. For example, DEF rolls 16.20+23.15+23.15
+/// = 62.50 → game displays 63, but banker's rounds to 62.
+///
 /// Percentages round to 1 decimal; flat stats round to integers.
 fn round_stat(property: Property, value: f64) -> f64 {
     if property.is_percentage() {
-        (value * 10.0).round() / 10.0
+        (value * 10.0 + 0.5 + 1e-9).floor() / 10.0
     } else {
-        value.round()
+        (value + 0.5 + 1e-9).floor()
     }
 }
 
@@ -358,6 +376,15 @@ mod tests {
         assert_eq!(round_stat(Property::Attack, 19.4), 19.0);
         assert_eq!(round_stat(Property::Defense, 23.5), 24.0);
         assert_eq!(round_stat(Property::ElementalMastery, 16.3), 16.0);
+    }
+
+    #[test]
+    fn round_stat_half_up_not_bankers() {
+        // 62.5 must round to 63 (half-up), not 62 (banker's round-to-even)
+        // Real case: DEF rolls 16.20 + 23.15 + 23.15 = 62.50
+        assert_eq!(round_stat(Property::Defense, 62.5), 63.0);
+        // Percentage: 5.25 must round to 5.3 (half-up), not 5.2 (banker's)
+        assert_eq!(round_stat(Property::HpPercent, 5.25), 5.3);
     }
 
     #[test]

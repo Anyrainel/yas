@@ -60,12 +60,13 @@ pub fn show(
             .show(ui, |ui| {
                 ui.add_enabled_ui(!is_scanning, |ui| {
                     // Two delay groups side by side: Character and Inventory
+                    let defaults = yas_genshin::cli::GoodUserConfig::default();
                     ui.columns(2, |cols| {
-                        widgets::delay_group(&mut cols[0], "char_delays", l.t("角色", "Character"), &mut [
-                            (l.t("面板切换", "Panel switch"), &mut state.user_config.char_tab_delay),
-                            (l.t("切换角色", "Next character"), &mut state.user_config.char_next_delay),
-                            (l.t("打开界面", "Open screen"), &mut state.user_config.char_open_delay),
-                            (l.t("关闭界面", "Close screen"), &mut state.user_config.char_close_delay),
+                        widgets::delay_group(&mut cols[0], "char_delays", l.t("角色", "Character"), l, &mut [
+                            (l.t("面板切换", "Panel switch"), &mut state.user_config.char_tab_delay, defaults.char_tab_delay),
+                            (l.t("切换角色", "Next character"), &mut state.user_config.char_next_delay, defaults.char_next_delay),
+                            (l.t("打开界面", "Open screen"), &mut state.user_config.char_open_delay, defaults.char_open_delay),
+                            (l.t("关闭界面", "Close screen"), &mut state.user_config.char_close_delay, defaults.char_close_delay),
                         ]);
                         widgets::inventory_delays(&mut cols[1], state, l);
                     });

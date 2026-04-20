@@ -57,8 +57,6 @@ pub struct CaptureTabState {
     pub include_characters: bool,
     pub include_weapons: bool,
     pub include_artifacts: bool,
-    pub min_artifact_rarity: u32,
-    pub min_weapon_rarity: u32,
     pub output_dir: String,
 
     // Advanced
@@ -76,8 +74,6 @@ impl CaptureTabState {
             include_characters: true,
             include_weapons: true,
             include_artifacts: true,
-            min_artifact_rarity: 4,
-            min_weapon_rarity: 3,
             output_dir,
             dump_packets: false,
             data_cache_refresh: state::RefreshState::Idle,
@@ -207,15 +203,6 @@ pub fn show(
                             ui.checkbox(&mut tab.include_weapons, l.t("武器", "Weapons"));
                             ui.add_space(12.0);
                             ui.checkbox(&mut tab.include_artifacts, l.t("圣遗物", "Artifacts"));
-                        });
-
-                        ui.add_space(4.0);
-                        ui.horizontal(|ui| {
-                            ui.label(l.t("最低武器稀有度:", "Min weapon rarity:"));
-                            ui.add(egui::Slider::new(&mut tab.min_weapon_rarity, 1..=5));
-                            ui.add_space(16.0);
-                            ui.label(l.t("最低圣遗物稀有度:", "Min artifact rarity:"));
-                            ui.add(egui::Slider::new(&mut tab.min_artifact_rarity, 1..=5));
                         });
                     });
                 });
@@ -598,8 +585,6 @@ fn update_phase(tab: &mut CaptureTabState, l: Lang) {
                 include_characters: tab.include_characters,
                 include_weapons: tab.include_weapons,
                 include_artifacts: tab.include_artifacts,
-                min_artifact_rarity: tab.min_artifact_rarity,
-                min_weapon_rarity: tab.min_weapon_rarity,
                 ..Default::default()
             };
             let (tx, rx) = tokio::sync::oneshot::channel();

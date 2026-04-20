@@ -14,18 +14,34 @@ pub fn num_input_u64(ui: &mut egui::Ui, value: &mut u64, _width: f32) {
 }
 
 /// A labeled group of delay fields rendered in a 2-column grid.
-pub fn delay_group(ui: &mut egui::Ui, id: &str, category: &str, fields: &mut [(&str, &mut u64)]) {
+/// Each field is `(label, value, default)`. Values below their default get a
+/// warning asterisk, and a footnote is shown underneath when any field is below default.
+pub fn delay_group(ui: &mut egui::Ui, id: &str, category: &str, l: Lang, fields: &mut [(&str, &mut u64, u64)]) {
     ui.strong(category);
+    let mut any_below = false;
+    let warn_color = egui::Color32::from_rgb(255, 200, 50);
     egui::Grid::new(id)
         .num_columns(2)
         .spacing([8.0, 2.0])
         .show(ui, |ui| {
-            for (label, value) in fields.iter_mut() {
-                ui.label(format!("  {} (ms):", label));
+            for (label, value, default) in fields.iter_mut() {
+                let below = **value < *default;
+                if below {
+                    any_below = true;
+                    ui.colored_label(warn_color, format!("  {}* (ms):", label));
+                } else {
+                    ui.label(format!("  {} (ms):", label));
+                }
                 num_input_u64(ui, value, 60.0);
                 ui.end_row();
             }
         });
+    if any_below {
+        ui.colored_label(
+            warn_color,
+            l.t("* 低于默认值，可能导致扫描不稳定", "* Below default — may cause unreliable scans"),
+        );
+    }
 }
 
 /// Character names section — shared between scanner and manager tabs.
@@ -104,10 +120,11 @@ pub fn character_names_section(ui: &mut egui::Ui, state: &mut AppState, enabled:
 /// Inventory delay fields — shared between scanner and manager tabs.
 /// Renders as a delay_group with the 4 inventory timing fields.
 pub fn inventory_delays(ui: &mut egui::Ui, state: &mut AppState, l: Lang) {
-    delay_group(ui, "inv_delays", l.t("背包", "Inventory"), &mut [
-        (l.t("翻页等待", "Page scroll"), &mut state.user_config.inv_scroll_delay),
-        (l.t("标签切换", "Tab switch"), &mut state.user_config.inv_tab_delay),
-        (l.t("打开背包", "Open backpack"), &mut state.user_config.inv_open_delay),
-        (l.t("截图前等待", "Pre-capture"), &mut state.user_config.capture_delay),
+    let defaults = yas_genshin::cli::GoodUserConfig::default();
+    delay_group(ui, "inv_delays", l.t("背包", "Inventory"), l, &mut [
+        (l.t("翻页等待", "Page scroll"), &mut state.user_config.inv_scroll_delay, defaults.inv_scroll_delay),
+        (l.t("标签切换", "Tab switch"), &mut state.user_config.inv_tab_delay, defaults.inv_tab_delay),
+        (l.t("打开背包", "Open backpack"), &mut state.user_config.inv_open_delay, defaults.inv_open_delay),
+        (l.t("截图前等待", "Pre-capture"), &mut state.user_config.capture_delay, defaults.capture_delay),
     ]);
 }

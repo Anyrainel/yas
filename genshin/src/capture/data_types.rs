@@ -29,6 +29,18 @@ pub struct DataCache {
 }
 
 impl DataCache {
+    /// Returns the maximum rarity available for the given artifact set name.
+    ///
+    /// Computed from the artifact_map by finding the highest rarity among all
+    /// artifact IDs that share the same set name.
+    pub fn artifact_set_max_rarity(&self, set_name: &str) -> Option<u32> {
+        self.artifact_map
+            .values()
+            .filter(|a| a.set == set_name)
+            .map(|a| a.rarity)
+            .max()
+    }
+
     pub fn get_affix(&self, id: u32) -> Option<&Affix> {
         self.affix_map.get(&id)
     }

@@ -61,16 +61,17 @@ pub fn show(
                 .default_open(false)
                 .show(ui, |ui| {
                     ui.add_enabled_ui(!is_server_running, |ui| {
+                        let defaults = yas_genshin::cli::GoodUserConfig::default();
                         ui.columns(2, |cols| {
                             // Shared inventory delays (same fields as scanner tab)
                             widgets::inventory_delays(&mut cols[0], state, l);
 
                             // Manager-specific delays
-                            widgets::delay_group(&mut cols[1], "mgr_delays", l.t("管理器", "Manager"), &mut [
-                                (l.t("画面切换", "Screen transition"), &mut state.user_config.mgr_transition_delay),
-                                (l.t("操作按钮", "Action button"), &mut state.user_config.mgr_action_delay),
-                                (l.t("格子点击", "Grid cell click"), &mut state.user_config.mgr_cell_delay),
-                                (l.t("滚动等待", "Scroll settle"), &mut state.user_config.mgr_scroll_delay),
+                            widgets::delay_group(&mut cols[1], "mgr_delays", l.t("管理器", "Manager"), l, &mut [
+                                (l.t("画面切换", "Screen transition"), &mut state.user_config.mgr_transition_delay, defaults.mgr_transition_delay),
+                                (l.t("操作按钮", "Action button"), &mut state.user_config.mgr_action_delay, defaults.mgr_action_delay),
+                                (l.t("格子点击", "Grid cell click"), &mut state.user_config.mgr_cell_delay, defaults.mgr_cell_delay),
+                                (l.t("滚动等待", "Scroll settle"), &mut state.user_config.mgr_scroll_delay, defaults.mgr_scroll_delay),
                             ]);
                         });
                     });

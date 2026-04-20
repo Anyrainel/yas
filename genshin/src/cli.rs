@@ -260,13 +260,13 @@ where
     deserializer.deserialize_any(U64LenientVisitor)
 }
 
-fn is_default_char_tab_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_CHAR_TAB_SWITCH }
-fn is_default_char_next_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_CHAR_NEXT }
-fn is_default_open_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_OPEN_SCREEN }
-fn is_default_close_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_CLOSE_SCREEN }
-fn is_default_scroll_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_SCROLL }
-fn is_default_tab_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_INV_TAB_SWITCH }
-fn is_default_capture_delay(v: &u64) -> bool { *v <= DEFAULT_DELAY_CAPTURE }
+fn is_default_char_tab_delay(v: &u64) -> bool { *v == DEFAULT_DELAY_CHAR_TAB_SWITCH }
+fn is_default_char_next_delay(v: &u64) -> bool { *v == DEFAULT_DELAY_CHAR_NEXT }
+fn is_default_open_delay(v: &u64) -> bool { *v == DEFAULT_DELAY_OPEN_SCREEN }
+fn is_default_close_delay(v: &u64) -> bool { *v == DEFAULT_DELAY_CLOSE_SCREEN }
+fn is_default_scroll_delay(v: &u64) -> bool { *v == DEFAULT_DELAY_SCROLL }
+fn is_default_tab_delay(v: &u64) -> bool { *v == DEFAULT_DELAY_INV_TAB_SWITCH }
+fn is_default_capture_delay(v: &u64) -> bool { *v == DEFAULT_DELAY_CAPTURE }
 
 /// Fields in GoodUserConfig that must be unsigned integers.
 /// If the JSON has an invalid value (e.g. empty string from old config versions),
@@ -320,8 +320,7 @@ pub struct GoodUserConfig {
     pub manekina_name: String,
 
     // --- Timing / delay settings ---
-    // Only serialized when user set a value higher than default.
-    // On load, values at or below default are clamped up to default.
+    // Only serialized when user set a value different from default.
 
     #[serde(default = "default_char_tab_delay", skip_serializing_if = "is_default_char_tab_delay", deserialize_with = "deserialize_u64_lenient")]
     pub char_tab_delay: u64,
@@ -376,18 +375,20 @@ impl GoodUserConfig {
         }
     }
 
-    /// Clamp all delay values up to their defaults.
-    /// Values at or below the default are reset to the default — only user
-    /// overrides that are *higher* than the default are preserved.
-    fn normalize_delays(&mut self) {
-        self.char_tab_delay = self.char_tab_delay.max(default_char_tab_delay());
-        self.char_next_delay = self.char_next_delay.max(default_char_next_delay());
-        self.char_open_delay = self.char_open_delay.max(default_open_delay());
-        self.char_close_delay = self.char_close_delay.max(default_close_delay());
-        self.inv_scroll_delay = self.inv_scroll_delay.max(default_scroll_delay());
-        self.inv_tab_delay = self.inv_tab_delay.max(default_tab_delay());
-        self.inv_open_delay = self.inv_open_delay.max(default_open_delay());
-        self.capture_delay = self.capture_delay.max(default_capture_delay());
+    /// Returns `true` if any delay field is set below its default value.
+    pub fn has_below_default_delays(&self) -> bool {
+        self.char_tab_delay < default_char_tab_delay()
+            || self.char_next_delay < default_char_next_delay()
+            || self.char_open_delay < default_open_delay()
+            || self.char_close_delay < default_close_delay()
+            || self.inv_scroll_delay < default_scroll_delay()
+            || self.inv_tab_delay < default_tab_delay()
+            || self.inv_open_delay < default_open_delay()
+            || self.capture_delay < default_capture_delay()
+            || self.mgr_transition_delay < default_mgr_transition()
+            || self.mgr_action_delay < default_mgr_action()
+            || self.mgr_cell_delay < default_mgr_cell()
+            || self.mgr_scroll_delay < default_mgr_scroll()
     }
 }
 
@@ -435,12 +436,7 @@ pub fn load_config_or_default() -> GoodUserConfig {
                 Err(e) => Err(e),
             };
             match config_result {
-                Ok(mut config) => {
-                    config.normalize_delays();
-                    // Re-save to strip delay entries that are at/below defaults
-                    if let Err(e) = save_config(&config) {
-                        log_warn!("配置重新保存失败: {}", "Config re-save failed: {}", e);
-                    }
+                Ok(config) => {
                     config
                 }
                 Err(e) => {
@@ -490,9 +486,8 @@ fn load_or_create_config() -> Result<GoodUserConfig> {
     let mut val: serde_json::Value = serde_json::from_str(&contents)
         .map_err(|e| anyhow!("配置解析失败 / Failed to parse {}: {}", path.display(), e))?;
     sanitize_config_json(&mut val);
-    let mut config: GoodUserConfig = serde_json::from_value(val)
+    let config: GoodUserConfig = serde_json::from_value(val)
         .map_err(|e| anyhow!("配置解析失败 / Failed to parse {}: {}", path.display(), e))?;
-    config.normalize_delays();
     log_debug!("已加载配置: {}", "Loaded config from {}", path.display());
 
     // Re-save to strip invalid/default entries and add any new default fields
