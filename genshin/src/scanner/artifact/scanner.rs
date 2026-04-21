@@ -1441,7 +1441,7 @@ impl GoodArtifactScanner {
         // Main thread: navigate grid and send captured images to worker
         let scan_config = BackpackScanConfig {
             delay_scroll: self.config.delay_scroll,
-            panel_wait: PanelWaitMode::Fingerprint { timeout_ms: self.config.panel_timeout },
+            panel_wait: PanelWaitMode::Fingerprint { timeout_ms: self.config.panel_timeout, initial_wait_ms: self.config.initial_wait },
             extra_delay: self.config.extra_delay,
             probe_last_cell_per_page: false,
             detect_grid_duplicates: false,

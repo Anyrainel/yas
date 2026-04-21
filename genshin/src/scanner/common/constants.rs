@@ -32,11 +32,13 @@ pub const DEFAULT_DELAY_CLOSE_SCREEN: u64 = 500;
 pub const DEFAULT_DELAY_CHAR_TAB_SWITCH: u64 = 500;
 pub const DEFAULT_DELAY_CHAR_NEXT: u64 = 300;
 pub const DEFAULT_DELAY_INV_TAB_SWITCH: u64 = 400;
-pub const DEFAULT_DELAY_SCROLL: u64 = 200;
+pub const DEFAULT_DELAY_SCROLL: u64 = 100;
 pub const DEFAULT_DELAY_GRID_ITEM: u64 = 125;
 /// Weapon: fixed delay (ms) before stability check. Weapons use fixed-delay
 /// mode because identical weapons have identical panels (fingerprint won't change).
 pub const DEFAULT_WEAPON_PANEL_DELAY: u64 = 50;
+/// Artifact: initial wait (ms) after click before starting panel detection.
+pub const DEFAULT_ARTIFACT_INITIAL_WAIT: u64 = 20;
 /// Artifact: timeout (ms) for fingerprint-based panel load detection.
 pub const DEFAULT_ARTIFACT_PANEL_TIMEOUT: u64 = 200;
 /// Artifact: extra delay (ms) after panel load detection, before capture.

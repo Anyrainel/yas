@@ -68,10 +68,14 @@ pub fn show(
 
                             // Manager-specific delays
                             widgets::delay_group(&mut cols[1], "mgr_delays", l.t("管理器", "Manager"), l, &mut [
-                                (l.t("画面切换", "Screen transition"), &mut state.user_config.mgr_transition_delay, defaults.mgr_transition_delay),
-                                (l.t("操作按钮", "Action button"), &mut state.user_config.mgr_action_delay, defaults.mgr_action_delay),
-                                (l.t("格子点击", "Grid cell click"), &mut state.user_config.mgr_cell_delay, defaults.mgr_cell_delay),
-                                (l.t("滚动等待", "Scroll settle"), &mut state.user_config.mgr_scroll_delay, defaults.mgr_scroll_delay),
+                                (l.t("画面切换", "Screen transition"), &mut state.user_config.mgr_transition_delay, defaults.mgr_transition_delay,
+                                    l.t("打开/关闭角色面板等大画面切换后的等待", "Wait after major screen transitions like opening/closing character panel")),
+                                (l.t("操作按钮", "Action button"), &mut state.user_config.mgr_action_delay, defaults.mgr_action_delay,
+                                    l.t("点击锁定/装备等操作按钮后的等待", "Wait after clicking action buttons like lock/equip")),
+                                (l.t("格子点击", "Grid cell click"), &mut state.user_config.mgr_cell_delay, defaults.mgr_cell_delay,
+                                    l.t("锁定切换后点击下一个格子前的等待", "Wait before clicking the next grid cell after a lock toggle")),
+                                (l.t("滚动等待", "Scroll settle"), &mut state.user_config.mgr_scroll_delay, defaults.mgr_scroll_delay,
+                                    l.t("翻页后等待物品列表稳定的时间", "Wait after scrolling for item list to stabilize")),
                             ]);
                         });
                     });

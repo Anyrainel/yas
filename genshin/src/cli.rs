@@ -296,6 +296,7 @@ fn default_close_delay() -> u64 { DEFAULT_DELAY_CLOSE_SCREEN }
 fn default_scroll_delay() -> u64 { DEFAULT_DELAY_SCROLL }
 fn default_tab_delay() -> u64 { DEFAULT_DELAY_INV_TAB_SWITCH }
 fn default_weapon_panel_delay() -> u64 { DEFAULT_WEAPON_PANEL_DELAY }
+fn default_artifact_initial_wait() -> u64 { DEFAULT_ARTIFACT_INITIAL_WAIT }
 fn default_artifact_panel_timeout() -> u64 { DEFAULT_ARTIFACT_PANEL_TIMEOUT }
 fn default_artifact_extra_delay() -> u64 { DEFAULT_ARTIFACT_EXTRA_DELAY }
 
@@ -347,6 +348,7 @@ fn is_default_close_delay(v: &u64) -> bool { *v == DEFAULT_DELAY_CLOSE_SCREEN }
 fn is_default_scroll_delay(v: &u64) -> bool { *v == DEFAULT_DELAY_SCROLL }
 fn is_default_tab_delay(v: &u64) -> bool { *v == DEFAULT_DELAY_INV_TAB_SWITCH }
 fn is_default_weapon_panel_delay(v: &u64) -> bool { *v == DEFAULT_WEAPON_PANEL_DELAY }
+fn is_default_artifact_initial_wait(v: &u64) -> bool { *v == DEFAULT_ARTIFACT_INITIAL_WAIT }
 fn is_default_artifact_panel_timeout(v: &u64) -> bool { *v == DEFAULT_ARTIFACT_PANEL_TIMEOUT }
 fn is_default_artifact_extra_delay(v: &u64) -> bool { *v == DEFAULT_ARTIFACT_EXTRA_DELAY }
 
@@ -356,7 +358,7 @@ fn is_default_artifact_extra_delay(v: &u64) -> bool { *v == DEFAULT_ARTIFACT_EXT
 const U64_FIELDS: &[&str] = &[
     "char_tab_delay", "char_next_delay", "char_open_delay", "char_close_delay",
     "inv_scroll_delay", "inv_tab_delay", "inv_open_delay",
-    "weapon_panel_delay", "artifact_panel_timeout", "artifact_extra_delay",
+    "weapon_panel_delay", "artifact_initial_wait", "artifact_panel_timeout", "artifact_extra_delay",
     "mgr_transition_delay", "mgr_action_delay", "mgr_cell_delay", "mgr_scroll_delay",
     // Old aliases — also sanitize in case they appear
     "weapon_scroll_delay", "artifact_scroll_delay", "weapon_tab_delay", "artifact_tab_delay",
@@ -424,6 +426,10 @@ pub struct GoodUserConfig {
     /// Weapon: fixed delay (ms) before panel stability check.
     #[serde(default = "default_weapon_panel_delay", skip_serializing_if = "is_default_weapon_panel_delay", deserialize_with = "deserialize_u64_lenient")]
     pub weapon_panel_delay: u64,
+
+    /// Artifact: initial wait (ms) after click before starting panel detection.
+    #[serde(default = "default_artifact_initial_wait", skip_serializing_if = "is_default_artifact_initial_wait", deserialize_with = "deserialize_u64_lenient")]
+    pub artifact_initial_wait: u64,
 
     /// Artifact: timeout (ms) for fingerprint-based panel load detection.
     #[serde(default = "default_artifact_panel_timeout", skip_serializing_if = "is_default_artifact_panel_timeout", deserialize_with = "deserialize_u64_lenient")]
@@ -510,6 +516,7 @@ impl Default for GoodUserConfig {
             inv_tab_delay: default_tab_delay(),
             inv_open_delay: default_open_delay(),
             weapon_panel_delay: default_weapon_panel_delay(),
+            artifact_initial_wait: default_artifact_initial_wait(),
             artifact_panel_timeout: default_artifact_panel_timeout(),
             artifact_extra_delay: default_artifact_extra_delay(),
             mgr_transition_delay: default_mgr_transition(),
@@ -784,6 +791,7 @@ impl GoodScannerApplication {
             log_progress: config.log_progress,
             dump_images: config.dump_images,
             max_count: config.artifact_max_count,
+            initial_wait: user_config.artifact_initial_wait,
             panel_timeout: user_config.artifact_panel_timeout,
             extra_delay: user_config.artifact_extra_delay,
         }
@@ -1143,6 +1151,8 @@ pub fn run_server_core(
     let substat_ocr = artifact_substat_ocr.to_string();
     let scroll_delay = user_config.inv_scroll_delay;
     let capture_delay = user_config.artifact_extra_delay;
+    let panel_timeout = user_config.artifact_panel_timeout;
+    let initial_wait = user_config.artifact_initial_wait;
     let mappings_clone = mappings.clone();
 
     let mgr_delays = crate::manager::ui_actions::ManagerDelays {
@@ -1169,6 +1179,8 @@ pub fn run_server_core(
             pools,
             capture_delay,
             scroll_delay,
+            panel_timeout,
+            initial_wait,
             stop_on_all_matched,
             dump_images,
         );
@@ -1224,6 +1236,8 @@ pub fn run_manage_json(
         pools,
         user_config.artifact_extra_delay,
         user_config.inv_scroll_delay,
+        user_config.artifact_panel_timeout,
+        user_config.artifact_initial_wait,
         false,
         false, // dump_images: offline JSON mode doesn't support it
     );

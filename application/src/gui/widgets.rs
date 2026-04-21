@@ -9,14 +9,14 @@ pub fn num_input_u64(ui: &mut egui::Ui, value: &mut u64, _width: f32) {
     ui.add(
         egui::DragValue::new(value)
             .range(0..=5000)
-            .speed(0.0),
+            .speed(1.0),
     );
 }
 
 /// A labeled group of delay fields rendered in a 2-column grid.
-/// Each field is `(label, value, default)`. Values below their default get a
+/// Each field is `(label, value, default, tooltip)`. Values below their default get a
 /// warning asterisk, and a footnote is shown underneath when any field is below default.
-pub fn delay_group(ui: &mut egui::Ui, id: &str, category: &str, l: Lang, fields: &mut [(&str, &mut u64, u64)]) {
+pub fn delay_group(ui: &mut egui::Ui, id: &str, category: &str, l: Lang, fields: &mut [(&str, &mut u64, u64, &str)]) {
     ui.strong(category);
     let mut any_below = false;
     let warn_color = egui::Color32::from_rgb(255, 200, 50);
@@ -24,13 +24,24 @@ pub fn delay_group(ui: &mut egui::Ui, id: &str, category: &str, l: Lang, fields:
         .num_columns(2)
         .spacing([8.0, 2.0])
         .show(ui, |ui| {
-            for (label, value, default) in fields.iter_mut() {
+            for (label, value, default, tooltip) in fields.iter_mut() {
                 let below = **value < *default;
-                if below {
+                let label_text = if below {
                     any_below = true;
-                    ui.colored_label(warn_color, format!("  {}* (ms):", label));
+                    format!("  {}* (ms):", label)
                 } else {
-                    ui.label(format!("  {} (ms):", label));
+                    format!("  {} (ms):", label)
+                };
+                let rich = if below {
+                    egui::RichText::new(&label_text).color(warn_color)
+                } else {
+                    egui::RichText::new(&label_text)
+                };
+                let resp = ui.add(egui::Label::new(rich).sense(egui::Sense::hover()));
+                if !tooltip.is_empty() && resp.hovered() {
+                    egui::show_tooltip(ui.ctx(), ui.layer_id(), resp.id.with("tip"), |ui| {
+                        ui.label(*tooltip);
+                    });
                 }
                 num_input_u64(ui, value, 60.0);
                 ui.end_row();
@@ -118,15 +129,23 @@ pub fn character_names_section(ui: &mut egui::Ui, state: &mut AppState, enabled:
 }
 
 /// Inventory delay fields — shared between scanner and manager tabs.
-/// Renders as a delay_group with the 4 inventory timing fields.
+/// Renders as a delay_group with the 7 inventory timing fields.
 pub fn inventory_delays(ui: &mut egui::Ui, state: &mut AppState, l: Lang) {
     let defaults = yas_genshin::cli::GoodUserConfig::default();
     delay_group(ui, "inv_delays", l.t("背包", "Inventory"), l, &mut [
-        (l.t("翻页等待", "Page scroll"), &mut state.user_config.inv_scroll_delay, defaults.inv_scroll_delay),
-        (l.t("标签切换", "Tab switch"), &mut state.user_config.inv_tab_delay, defaults.inv_tab_delay),
-        (l.t("打开背包", "Open backpack"), &mut state.user_config.inv_open_delay, defaults.inv_open_delay),
-        (l.t("武器面板延迟", "Weapon panel delay"), &mut state.user_config.weapon_panel_delay, defaults.weapon_panel_delay),
-        (l.t("圣遗物面板超时", "Artifact panel timeout"), &mut state.user_config.artifact_panel_timeout, defaults.artifact_panel_timeout),
-        (l.t("圣遗物额外延迟", "Artifact extra delay"), &mut state.user_config.artifact_extra_delay, defaults.artifact_extra_delay),
+        (l.t("打开背包", "Open backpack"), &mut state.user_config.inv_open_delay, defaults.inv_open_delay,
+            l.t("按下快捷键后等待背包界面完全加载的时间", "Wait time after pressing hotkey for backpack to fully load")),
+        (l.t("标签切换", "Tab switch"), &mut state.user_config.inv_tab_delay, defaults.inv_tab_delay,
+            l.t("切换武器/圣遗物标签后等待内容加载的时间", "Wait time after switching weapon/artifact tab for content to load")),
+        (l.t("翻页等待", "Page scroll"), &mut state.user_config.inv_scroll_delay, defaults.inv_scroll_delay,
+            l.t("翻页后等待物品列表稳定的时间", "Wait time after scrolling for item list to stabilize")),
+        (l.t("武器面板延迟", "Weapon panel delay"), &mut state.user_config.weapon_panel_delay, defaults.weapon_panel_delay,
+            l.t("点击武器后固定等待时间，然后检查面板稳定", "Fixed wait after clicking a weapon, then verify panel is stable")),
+        (l.t("圣遗物初始等待", "Artifact initial wait"), &mut state.user_config.artifact_initial_wait, defaults.artifact_initial_wait,
+            l.t("点击圣遗物后、开始检测面板变化前的最小等待", "Minimum wait after clicking an artifact before starting panel change detection")),
+        (l.t("圣遗物面板超时", "Artifact panel timeout"), &mut state.user_config.artifact_panel_timeout, defaults.artifact_panel_timeout,
+            l.t("等待圣遗物面板内容变化的最大时间，超时则直接截图", "Max time to wait for artifact panel content to change; captures on timeout")),
+        (l.t("圣遗物额外延迟", "Artifact extra delay"), &mut state.user_config.artifact_extra_delay, defaults.artifact_extra_delay,
+            l.t("面板加载完成后、截图前的额外等待（通常为0）", "Extra wait after panel loaded before capturing (usually 0)")),
     ]);
 }

@@ -82,6 +82,8 @@ impl LockManager {
         targets: &[LockTarget],
         capture_delay: u64,
         delay_scroll: u64,
+        panel_timeout: u64,
+        initial_wait: u64,
         stop_on_all_matched: bool,
         max_target_level: i32,
         dump_images: bool,
@@ -180,7 +182,7 @@ impl LockManager {
         // when a max target level has been computed (fast mode).
         let scan_config = BackpackScanConfig {
             delay_scroll,
-            panel_wait: PanelWaitMode::Fingerprint { timeout_ms: 200 },
+            panel_wait: PanelWaitMode::Fingerprint { timeout_ms: panel_timeout, initial_wait_ms: initial_wait },
             extra_delay: capture_delay,
             probe_last_cell_per_page: max_target_level >= 0,
             detect_grid_duplicates: false,
@@ -391,7 +393,7 @@ impl LockManager {
                         let x = GRID_FIRST_X + toggle.col as f64 * GRID_OFFSET_X;
                         let y = GRID_FIRST_Y + toggle.row as f64 * GRID_OFFSET_Y;
                         ctrl_cb.click_at(x, y);
-                        let _ = ctrl_cb.wait_until_panel_loaded(PANEL_POOL_RECT, 400);
+                        let _ = ctrl_cb.wait_until_panel_loaded(PANEL_POOL_RECT, panel_timeout, initial_wait);
                         yas::utils::sleep(d_cell());
 
                         if let Err(e) = ui_actions::click_lock_button(ctrl_cb, toggle.y_shift) {

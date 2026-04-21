@@ -208,7 +208,7 @@ pub enum PanelWaitMode {
     /// Fixed delay then stability check (for weapons — identical items have identical panels).
     FixedDelay { delay_ms: u64 },
     /// Fingerprint-based detection: wait until panel content differs from previous AND is stable.
-    Fingerprint { timeout_ms: u64 },
+    Fingerprint { timeout_ms: u64, initial_wait_ms: u64 },
 }
 
 /// Configuration for backpack grid scanning.
@@ -443,9 +443,9 @@ impl<'a> BackpackScanner<'a> {
                         utils::sleep(*delay_ms as u32);
                         let _ = self.ctrl.ensure_panel_stable(PANEL_POOL_RECT, 100);
                     }
-                    PanelWaitMode::Fingerprint { timeout_ms } => {
+                    PanelWaitMode::Fingerprint { timeout_ms, initial_wait_ms } => {
                         let _ = self.ctrl.wait_until_panel_loaded(
-                            PANEL_POOL_RECT, *timeout_ms,
+                            PANEL_POOL_RECT, *timeout_ms, *initial_wait_ms,
                         );
                     }
                 }
@@ -551,14 +551,14 @@ impl<'a> BackpackScanner<'a> {
                                     );
                                 }
                             }
-                            PanelWaitMode::Fingerprint { timeout_ms } => {
+                            PanelWaitMode::Fingerprint { timeout_ms, initial_wait_ms } => {
                                 let timeout = if is_duplicate {
                                     PANEL_LOAD_FAST_TIMEOUT_MS
                                 } else {
                                     *timeout_ms
                                 };
                                 let _ = self.ctrl.wait_until_panel_loaded(
-                                    PANEL_POOL_RECT, timeout,
+                                    PANEL_POOL_RECT, timeout, *initial_wait_ms,
                                 );
                             }
                         }

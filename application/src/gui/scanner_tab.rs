@@ -63,10 +63,14 @@ pub fn show(
                     let defaults = yas_genshin::cli::GoodUserConfig::default();
                     ui.columns(2, |cols| {
                         widgets::delay_group(&mut cols[0], "char_delays", l.t("角色", "Character"), l, &mut [
-                            (l.t("面板切换", "Panel switch"), &mut state.user_config.char_tab_delay, defaults.char_tab_delay),
-                            (l.t("切换角色", "Next character"), &mut state.user_config.char_next_delay, defaults.char_next_delay),
-                            (l.t("打开界面", "Open screen"), &mut state.user_config.char_open_delay, defaults.char_open_delay),
-                            (l.t("关闭界面", "Close screen"), &mut state.user_config.char_close_delay, defaults.char_close_delay),
+                            (l.t("打开界面", "Open screen"), &mut state.user_config.char_open_delay, defaults.char_open_delay,
+                                l.t("打开角色界面后等待完全加载的时间", "Wait time for character screen to fully load after opening")),
+                            (l.t("关闭界面", "Close screen"), &mut state.user_config.char_close_delay, defaults.char_close_delay,
+                                l.t("关闭角色界面后等待返回主界面的时间", "Wait time after closing character screen to return to main view")),
+                            (l.t("面板切换", "Panel switch"), &mut state.user_config.char_tab_delay, defaults.char_tab_delay,
+                                l.t("切换角色详情标签页（天赋/命座等）后的等待", "Wait after switching character detail tabs (talents/constellations etc.)")),
+                            (l.t("切换角色", "Next character"), &mut state.user_config.char_next_delay, defaults.char_next_delay,
+                                l.t("切换到下一个角色后等待面板更新的时间", "Wait after switching to next character for panel to update")),
                         ]);
                         widgets::inventory_delays(&mut cols[1], state, l);
                     });

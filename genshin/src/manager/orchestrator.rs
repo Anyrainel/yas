@@ -31,6 +31,8 @@ pub struct ArtifactManager {
     pools: Arc<SharedOcrPools>,
     capture_delay: u64,
     delay_scroll: u64,
+    panel_timeout: u64,
+    initial_wait: u64,
     stop_on_all_matched: bool,
     dump_images: bool,
 }
@@ -41,10 +43,12 @@ impl ArtifactManager {
         pools: Arc<SharedOcrPools>,
         capture_delay: u64,
         delay_scroll: u64,
+        panel_timeout: u64,
+        initial_wait: u64,
         stop_on_all_matched: bool,
         dump_images: bool,
     ) -> Self {
-        Self { mappings, pools, capture_delay, delay_scroll, stop_on_all_matched, dump_images }
+        Self { mappings, pools, capture_delay, delay_scroll, panel_timeout, initial_wait, stop_on_all_matched, dump_images }
     }
 
     pub fn execute(
@@ -109,6 +113,8 @@ impl ArtifactManager {
             &targets,
             self.capture_delay,
             self.delay_scroll,
+            self.panel_timeout,
+            self.initial_wait,
             self.stop_on_all_matched,
             max_target_level,
             self.dump_images,

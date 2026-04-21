@@ -57,24 +57,25 @@ def find_latest_export():
 
 
 def compare_substats(expected_subs, actual_subs):
-    """Compare two substat lists, return list of (field, expected, actual) diffs."""
+    """Compare two substat lists by index, return list of (field, expected, actual) diffs."""
     diffs = []
-    exp_map = {s["key"]: s["value"] for s in (expected_subs or [])}
-    act_map = {s["key"]: s["value"] for s in (actual_subs or [])}
-    all_keys = sorted(set(list(exp_map.keys()) + list(act_map.keys())))
+    exp = expected_subs or []
+    act = actual_subs or []
 
-    if len(expected_subs or []) != len(actual_subs or []):
-        diffs.append(("substats.count", str(len(expected_subs or [])), str(len(actual_subs or []))))
+    if len(exp) != len(act):
+        diffs.append(("substats.count", str(len(exp)), str(len(act))))
 
-    for k in all_keys:
-        ev = exp_map.get(k)
-        av = act_map.get(k)
-        if ev is None:
-            diffs.append((f"substats.{k}", "missing", str(av)))
-        elif av is None:
-            diffs.append((f"substats.{k}", str(ev), "missing"))
-        elif abs(ev - av) > 0.1 + 1e-6:
-            diffs.append((f"substats.{k}", str(ev), str(av)))
+    for i in range(max(len(exp), len(act))):
+        e = exp[i] if i < len(exp) else None
+        a = act[i] if i < len(act) else None
+        if e is None:
+            diffs.append((f"substats[{i}]", "missing", f"{a['key']}={a['value']}"))
+        elif a is None:
+            diffs.append((f"substats[{i}]", f"{e['key']}={e['value']}", "missing"))
+        elif e["key"] != a["key"]:
+            diffs.append((f"substats[{i}].key", e["key"], a["key"]))
+        elif abs(e["value"] - a["value"]) > 0.1 + 1e-6:
+            diffs.append((f"substats[{i}].value({e['key']})", str(e["value"]), str(a["value"])))
     return diffs
 
 
@@ -150,6 +151,22 @@ def _match_within_group(exp_list, act_list):
     return matched, unmatched_exp, unmatched_act
 
 
+def _count_identity_diffs(diffs):
+    """Count substat key diffs + setKey diff. If >=3, artifacts are different."""
+    count = 0
+    for f, ev, av in diffs:
+        if f == "setKey":
+            count += 1
+        elif f.endswith(".key"):
+            # substats[i].key or unactivatedSubstats[i].key
+            count += 1
+        elif ev == "missing" or av == "missing":
+            # substats[i] missing/extra entirely
+            if "substats" in f or "unactivated" in f:
+                count += 1
+    return count
+
+
 def diff_artifacts(expected, actual):
     """Match and diff artifacts using two-phase approach.
 
@@ -181,14 +198,20 @@ def diff_artifacts(expected, actual):
         matched, um_exp, um_act = _match_within_group(exp_list, act_list)
 
         for ei, ai, exp, act, diffs in matched:
-            if diffs:
+            if _count_identity_diffs(diffs) >= 3:
+                # Too many substat key mismatches — treat as unmatched
+                cross_unmatched_exp.append((ei, exp))
+                cross_unmatched_act.append((ai, act))
+            elif diffs:
                 results.append((ai, exp.get("setKey", "?"), exp.get("slotKey", "?"), diffs, exp, act))
 
         cross_unmatched_exp.extend(um_exp)
         cross_unmatched_act.extend(um_act)
 
     # Phase 2: pair remaining cross-group items by fewest diffs
+    # Only accept matches with < 2 substat key diffs
     remaining_act = list(range(len(cross_unmatched_act)))
+    still_unmatched_exp = []
     for ei, exp in cross_unmatched_exp:
         best_pos = None
         best_diffs = None
@@ -196,6 +219,8 @@ def diff_artifacts(expected, actual):
         for pos_idx, pos in enumerate(remaining_act):
             ai, act = cross_unmatched_act[pos]
             diffs = diff_single_artifact(exp, act)
+            if _count_identity_diffs(diffs) >= 3:
+                continue
             score = _diff_score(diffs)
             if score < best_score:
                 best_score = score
@@ -207,8 +232,11 @@ def diff_artifacts(expected, actual):
             if best_diffs:
                 results.append((ai, exp.get("setKey", "?"), exp.get("slotKey", "?"), best_diffs, exp, act))
         else:
-            results.append((ei, exp.get("setKey", "?"), exp.get("slotKey", "?"),
-                          [("_status", "MISSING from actual", "")], exp, {}))
+            still_unmatched_exp.append((ei, exp))
+
+    for ei, exp in still_unmatched_exp:
+        results.append((ei, exp.get("setKey", "?"), exp.get("slotKey", "?"),
+                      [("_status", "MISSING from actual", "")], exp, {}))
 
     for pos in remaining_act:
         ai, act = cross_unmatched_act[pos]
@@ -243,24 +271,25 @@ def diff_single_artifact(exp, act):
 
 
 def compare_substats_named(prefix, expected_subs, actual_subs):
-    """Like compare_substats but with a custom prefix."""
+    """Like compare_substats but with a custom prefix, index-based."""
     diffs = []
-    exp_map = {s["key"]: s["value"] for s in (expected_subs or [])}
-    act_map = {s["key"]: s["value"] for s in (actual_subs or [])}
-    all_keys = sorted(set(list(exp_map.keys()) + list(act_map.keys())))
+    exp = expected_subs or []
+    act = actual_subs or []
 
-    if len(expected_subs or []) != len(actual_subs or []):
-        diffs.append((f"{prefix}.count", str(len(expected_subs or [])), str(len(actual_subs or []))))
+    if len(exp) != len(act):
+        diffs.append((f"{prefix}.count", str(len(exp)), str(len(act))))
 
-    for k in all_keys:
-        ev = exp_map.get(k)
-        av = act_map.get(k)
-        if ev is None:
-            diffs.append((f"{prefix}.{k}", "missing", str(av)))
-        elif av is None:
-            diffs.append((f"{prefix}.{k}", str(ev), "missing"))
-        elif abs(ev - av) > 0.1 + 1e-6:
-            diffs.append((f"{prefix}.{k}", str(ev), str(av)))
+    for i in range(max(len(exp), len(act))):
+        e = exp[i] if i < len(exp) else None
+        a = act[i] if i < len(act) else None
+        if e is None:
+            diffs.append((f"{prefix}[{i}]", "missing", f"{a['key']}={a['value']}"))
+        elif a is None:
+            diffs.append((f"{prefix}[{i}]", f"{e['key']}={e['value']}", "missing"))
+        elif e["key"] != a["key"]:
+            diffs.append((f"{prefix}[{i}].key", e["key"], a["key"]))
+        elif abs(e["value"] - a["value"]) > 0.1 + 1e-6:
+            diffs.append((f"{prefix}[{i}].value({e['key']})", str(e["value"]), str(a["value"])))
     return diffs
 
 
@@ -439,22 +468,24 @@ def images_for_field(folder, field, category="artifact", act_art=None):
             if ref:
                 refs.append(ref)
     elif "substats" in field or "unactivated" in field:
-        # Determine which substat line to show based on the stat key's position
-        # in the actual artifact's substat list
-        stat_key = field.split(".")[-1]  # e.g. "critRate_" from "substats.critRate_"
-        line_idx = None
-        if act_art and stat_key != "count":
-            all_subs = list(act_art.get("substats") or []) + list(act_art.get("unactivatedSubstats") or [])
-            for i, s in enumerate(all_subs):
-                if s.get("key") == stat_key:
-                    line_idx = i
-                    break
-        if line_idx is not None and line_idx < 4:
-            ref = image_ref(folder, f"sub[{line_idx}].png")
-            if ref:
-                refs.append(ref)
+        # Extract index from field name like "substats[2].key" or "unactivatedSubstats[0]"
+        import re
+        m = re.search(r'\[(\d+)\]', field)
+        if m:
+            line_idx = int(m.group(1))
+            # unactivatedSubstats indices continue after substats
+            if "unactivated" in field and act_art:
+                line_idx += len(act_art.get("substats") or [])
+            if line_idx < 4:
+                ref = image_ref(folder, f"sub[{line_idx}].png")
+                if ref:
+                    refs.append(ref)
+            else:
+                for img in SUBSTAT_IMAGES:
+                    ref = image_ref(folder, img)
+                    if ref:
+                        refs.append(ref)
         else:
-            # Fallback: show all substat images
             for img in SUBSTAT_IMAGES:
                 ref = image_ref(folder, img)
                 if ref:
@@ -526,12 +557,12 @@ def generate_report(actual_path, expected_path, images_dir="debug_images", no_im
     def artifact_fingerprint(a):
         """Fingerprint an artifact for duplicate detection.
 
-        Uses identity fields: set, slot, rarity, level, mainStat, substats (sorted by key+value).
+        Uses identity fields: set, slot, rarity, level, mainStat, substats (ordered).
         Excludes location/lock/astralMark which can differ for the same artifact.
         """
-        subs = tuple(sorted(
+        subs = tuple(
             (s["key"], s["value"]) for s in (a.get("substats") or [])
-        ))
+        )
         return (
             a.get("setKey", ""),
             a.get("slotKey", ""),
@@ -588,7 +619,7 @@ def generate_report(actual_path, expected_path, images_dir="debug_images", no_im
                 a_field_counts[field] += 1
 
     stat_fields = {f for f in a_field_counts
-                   if ("substats." in f or "unactivated" in f) and not f.endswith(".count")}
+                   if ("substats" in f or "unactivated" in f) and not f.endswith(".count")}
     non_stat_fields = {f for f in a_field_counts if f not in stat_fields}
 
     if non_stat_fields:
@@ -618,19 +649,28 @@ def generate_report(actual_path, expected_path, images_dir="debug_images", no_im
             lines.append(f"| *... {remaining} more stat fields* | *{total_stat_errors - top3_errors} total* |")
         lines.append("")
 
-    # Categorize diffs into 3 tiers:
-    # 1. Non-stat diffs: setKey/slotKey/mainStatKey/level/rarity/location/lock
-    # 2. Stat-key diffs: substat keys missing/extra (structural mismatch)
-    # 3. Stat-value only: only substat value errors
+    # Separate EXTRA/MISSING from real diffs, then categorize real diffs into tiers
     if artifact_diffs:
         non_stat_fields = {"setKey", "slotKey", "mainStatKey", "level", "rarity", "location", "lock",
                            "astralMark", "elixirCrafted"}
+        cat_extra = []     # EXTRA in actual (scanned but not in GT)
+        cat_missing = []   # MISSING from actual (in GT but not scanned)
         cat_nonstat = []   # has non-stat field diffs (incl. substats.count)
         cat_statkey = []   # has missing/extra substat keys but no non-stat
         cat_statval = []   # only substat value diffs
 
         for entry in sorted(artifact_diffs, key=lambda x: x[0]):
             idx, set_key, slot_key, diffs, exp_art, act_art = entry
+
+            is_extra = any(f == "_status" and "EXTRA" in av for f, ev, av in diffs)
+            is_missing = any(f == "_status" and "MISSING" in ev for f, ev, av in diffs)
+            if is_extra:
+                cat_extra.append(entry)
+                continue
+            if is_missing:
+                cat_missing.append(entry)
+                continue
+
             real_fields = [(f, ev, av) for f, ev, av in diffs if f != "_status"]
 
             has_non_stat = any(
@@ -638,8 +678,7 @@ def generate_report(actual_path, expected_path, images_dir="debug_images", no_im
                 for f, _, _ in real_fields
             )
             has_key_diff = any(
-                (ev in ("missing", "(missing)") or av in ("missing", "(missing)")
-                 or str(ev) == "present" or str(av) == "present")
+                f.endswith(".key") or ev == "missing" or av == "missing"
                 for f, ev, av in real_fields
                 if f not in non_stat_fields and not f.endswith(".count")
             )
@@ -688,6 +727,18 @@ def generate_report(actual_path, expected_path, images_dir="debug_images", no_im
                 if full_ref:
                     lines_out.append(f"\n<details><summary>Full screenshot</summary>\n\n{full_ref}\n\n</details>")
             lines_out.append("")
+
+        # Extra in actual (scanned but not in GT)
+        if cat_extra:
+            lines.append(f"### Extra in actual ({len(cat_extra)} items)\n")
+            for entry in cat_extra:
+                render_diff_entry(entry, lines)
+
+        # Missing from actual (in GT but not scanned)
+        if cat_missing:
+            lines.append(f"### Missing from actual ({len(cat_missing)} items)\n")
+            for entry in cat_missing:
+                render_diff_entry(entry, lines)
 
         # Tier 1: Non-stat diffs (ALL)
         if cat_nonstat:

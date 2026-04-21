@@ -392,6 +392,7 @@ impl GenshinGameController {
         &mut self,
         pool_rect: (f64, f64, f64, f64),
         timeout_ms: u64,
+        initial_wait_ms: u64,
     ) -> Result<()> {
         if self.game_info.is_cloud {
             utils::sleep(300);
@@ -408,7 +409,9 @@ impl GenshinGameController {
         };
 
         // Initial delay: let the game process the click and start rendering.
-        utils::sleep(30);
+        if initial_wait_ms > 0 {
+            utils::sleep(initial_wait_ms as u32);
+        }
 
         let mut last_capture: Vec<u8> = Vec::new();
         let mut capture_count: u32 = 0;
