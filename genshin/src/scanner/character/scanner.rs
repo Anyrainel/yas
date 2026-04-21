@@ -437,6 +437,7 @@ impl GoodCharacterScanner {
     }
 
     /// Returns (level, ascended, raw_ocr_text).
+    /// Annotates the level OCR region on the current annotator image.
     fn read_level_from_image(
         ocr: &dyn ImageToText<RgbImage>,
         image: &RgbImage,
@@ -444,10 +445,16 @@ impl GoodCharacterScanner {
     ) -> (i32, bool, String) {
         let text = match Self::ocr_image_region(ocr, image, CHAR_LEVEL_RECT, scaler) {
             Ok(t) => t,
-            Err(_) => return (1, false, String::new()),
+            Err(_) => {
+                annotator::record_ocr("level", CHAR_LEVEL_RECT, "(ocr error)");
+                annotator::set_final("level", "1");
+                return (1, false, String::new());
+            }
         };
 
         let (level, ascended) = Self::parse_level_text(&text);
+        annotator::record_ocr("level", CHAR_LEVEL_RECT, &text);
+        annotator::set_final("level", &level_cap_display(level, ascended));
         (level, ascended, text)
     }
 
@@ -580,36 +587,57 @@ impl GoodCharacterScanner {
 
     /// Check if a constellation node is activated from its detail-view capture.
     /// OCRs the activation status region and looks for "已激活".
+    /// Annotates the image with OCR region and result.
     fn check_activation_from_image(
         ocr: &dyn ImageToText<RgbImage>,
         image: &RgbImage,
         scaler: &CoordScaler,
+        label: &str,
     ) -> bool {
+        annotator::add_image(label, image);
         let text = Self::ocr_image_region(ocr, image, CHAR_CONSTELLATION_ACTIVATE_RECT, scaler)
             .unwrap_or_default();
-        text.contains("\u{5DF2}\u{6FC0}\u{6D3B}") // 已激活
+        let activated = text.contains("\u{5DF2}\u{6FC0}\u{6D3B}"); // 已激活
+        annotator::record_ocr(label, CHAR_CONSTELLATION_ACTIVATE_RECT, &text);
+        annotator::set_final(label, if activated { "activated" } else { "locked" });
+        activated
     }
 
     /// OCR talent level from a talent detail-view capture.
     /// Looks for "Lv.X" pattern in the detail header region.
+    /// Annotates the image with OCR region and result.
     fn read_talent_from_detail_image(
         ocr: &dyn ImageToText<RgbImage>,
         image: &RgbImage,
         scaler: &CoordScaler,
+        label: &str,
     ) -> i32 {
+        annotator::add_image(label, image);
         let text = match Self::ocr_image_region(ocr, image, CHAR_TALENT_LEVEL_RECT, scaler) {
             Ok(t) => t,
-            Err(_) => return 0,
+            Err(_) => {
+                annotator::record_ocr(label, CHAR_TALENT_LEVEL_RECT, "(ocr error)");
+                annotator::set_final(label, "0");
+                return 0;
+            }
         };
+        let level = Self::parse_talent_level(&text);
+        annotator::record_ocr(label, CHAR_TALENT_LEVEL_RECT, &text);
+        annotator::set_final(label, &level.to_string());
+        level
+    }
+
+    /// Parse a talent level from OCR text. Returns 0 if no valid level found.
+    fn parse_talent_level(text: &str) -> i32 {
         let re = Regex::new(r"[Ll][Vv]\.?\s*(\d{1,2})").unwrap();
-        if let Some(caps) = re.captures(&text) {
+        if let Some(caps) = re.captures(text) {
             let v: i32 = caps[1].parse().unwrap_or(0);
             if (1..=15).contains(&v) {
                 return v;
             }
         }
         let re2 = Regex::new(r"(\d{1,2})").unwrap();
-        if let Some(caps) = re2.captures(&text) {
+        if let Some(caps) = re2.captures(text) {
             let v: i32 = caps[1].parse().unwrap_or(0);
             if (1..=15).contains(&v) {
                 return v;
@@ -661,10 +689,7 @@ impl GoodCharacterScanner {
         }
 
         let ocr = ocr_pool.get();
-        let (level, ascended, raw_level_text) = Self::read_level_from_image(&ocr, &attrs_image, scaler);
-        let lvl_display = level_cap_display(level, ascended);
-        annotator::record_ocr("level", CHAR_LEVEL_RECT, &raw_level_text);
-        annotator::set_final("level", &lvl_display);
+        let (level, ascended, _) = Self::read_level_from_image(&ocr, &attrs_image, scaler);
 
         if Self::is_level_suspicious(level, ascended) {
             log_debug!(
@@ -789,6 +814,10 @@ impl GoodCharacterScanner {
             talent_detail_images,
         } = captures;
 
+        // Begin annotation frame for rescan (overwrites phase 1 dump for same character)
+        annotator::begin_item("characters", char_index, scaler);
+        annotator::add_image("attributes", &attrs_image);
+
         let ocr = ocr_pool.get();
 
         // -- Level --
@@ -796,6 +825,7 @@ impl GoodCharacterScanner {
         let new_ascension = level_to_ascension(new_level, new_ascended);
 
         // -- Constellation: pixel (primary) --
+        annotator::add_image("constellation_tab", &constellation_tab_image);
         let pixel_result = crate::scanner::common::pixel_utils::detect_constellation_pixel(
             &constellation_tab_image, scaler,
         );
@@ -807,10 +837,8 @@ impl GoodCharacterScanner {
         } else {
             let mut ocr_count = 0;
             for (i, node_image) in constellation_node_images.iter().enumerate() {
-                let activated = Self::check_activation_from_image(&ocr, node_image, scaler);
-                let field = format!("rescan_c{}", i + 1);
-                annotator::record_ocr(&field, CHAR_CONSTELLATION_ACTIVATE_RECT, "");
-                annotator::set_final(&field, if activated { "activated" } else { "locked" });
+                let label = format!("constellation_c{}", i + 1);
+                let activated = Self::check_activation_from_image(&ocr, node_image, scaler, &label);
                 if activated {
                     ocr_count = i as i32 + 1;
                 } else {
@@ -829,6 +857,7 @@ impl GoodCharacterScanner {
         };
 
         // -- Talents: overview (primary) --
+        annotator::add_image("talent_overview", &talent_overview_image);
         drop(ocr);
         let ((ov_auto, ov_skill, ov_burst), _) =
             Self::read_talents_from_image(ocr_pool, &talent_overview_image, &name, scaler);
@@ -838,10 +867,7 @@ impl GoodCharacterScanner {
         let talent_labels = ["talent_detail_auto", "talent_detail_skill", "talent_detail_burst"];
         let mut det_levels = [0i32; 3];
         for (i, (img, label)) in talent_detail_images.iter().zip(talent_labels.iter()).enumerate() {
-            annotator::add_image(label, img);
-            det_levels[i] = Self::read_talent_from_detail_image(&ocr, img, scaler);
-            annotator::record_ocr("talent_lv", CHAR_TALENT_LEVEL_RECT, "");
-            annotator::set_final("talent_lv", &det_levels[i].to_string());
+            det_levels[i] = Self::read_talent_from_detail_image(&ocr, img, scaler, label);
         }
         let [det_auto, det_skill, det_burst] = det_levels;
         log_debug!("[talent] 详情: 普攻={} 战技={} 爆发={}", "[talent] detail: auto={} skill={} burst={}",
@@ -933,6 +959,8 @@ impl GoodCharacterScanner {
                 name
             );
         }
+
+        annotator::finalize_success(&serde_json::to_string_pretty(&character).unwrap_or_default());
 
         CharacterResult::Rescanned {
             char_index,

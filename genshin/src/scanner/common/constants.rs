@@ -105,7 +105,7 @@ pub const CHAR_TALENT_OVERVIEW_AUTO: (f64, f64, f64, f64) = (1620.0, 167.0, 90.0
 pub const CHAR_TALENT_OVERVIEW_SKILL: (f64, f64, f64, f64) = (1620.0, 258.0, 90.0, 30.0);
 pub const CHAR_TALENT_OVERVIEW_BURST: (f64, f64, f64, f64) = (1620.0, 349.0, 90.0, 30.0);
 /// Special burst position for Ayaka/Mona (4-slot talent layout)
-pub const CHAR_TALENT_OVERVIEW_BURST_SPECIAL: (f64, f64, f64, f64) = (1620.0, 439.0, 90.0, 30.0);
+pub const CHAR_TALENT_OVERVIEW_BURST_SPECIAL: (f64, f64, f64, f64) = (1620.0, 440.0, 90.0, 30.0);
 
 /// Talent detail click positions (x=1695, y = 165 + index*90)
 pub const CHAR_TALENT_CLICK_X: f64 = 1695.0;
@@ -113,7 +113,7 @@ pub const CHAR_TALENT_FIRST_Y: f64 = 165.0;
 pub const CHAR_TALENT_OFFSET_Y: f64 = 90.0;
 
 /// Talent level OCR region (in detail view)
-pub const CHAR_TALENT_LEVEL_RECT: (f64, f64, f64, f64) = (1.0, 138.0, 559.0, 77.0);
+pub const CHAR_TALENT_LEVEL_RECT: (f64, f64, f64, f64) = (255.0, 168.0, 68.0, 26.0);
 
 /// Next character button position
 pub const CHAR_NEXT_POS: (f64, f64) = (1845.0, 525.0);
