@@ -166,26 +166,26 @@ impl AppState {
         let config_snapshot = serde_json::to_string(&user_config).unwrap_or_default();
         Self {
             lang,
+            scan_characters: user_config.scan_characters,
+            scan_weapons: user_config.scan_weapons,
+            scan_artifacts: user_config.scan_artifacts,
+            verbose: user_config.verbose,
+            continue_on_failure: user_config.continue_on_failure,
+            dump_images: user_config.dump_images,
+            save_on_cancel: user_config.save_on_cancel,
+            char_max_count: user_config.char_max_count,
+            weapon_max_count: user_config.weapon_max_count,
+            artifact_max_count: user_config.artifact_max_count,
+            server_port: user_config.server_port,
+            update_inventory: user_config.update_inventory,
             user_config,
             update_state: Arc::new(Mutex::new(UpdateState::Checking)),
-            scan_characters: true,
-            scan_weapons: true,
-            scan_artifacts: true,
-            verbose: false,
-            continue_on_failure: false,
-            dump_images: false,
-            save_on_cancel: false,
             output_dir: yas_genshin::cli::exe_dir().display().to_string(),
-            char_max_count: 0,
-            weapon_max_count: 0,
-            artifact_max_count: 0,
             names_need_attention: false,
             config_snapshot,
             config_dirty_since: None,
             scan_status: Arc::new(Mutex::new(TaskStatus::Idle)),
-            server_port: 8765,
             server_enabled: Arc::new(AtomicBool::new(true)),
-            update_inventory: true,
             server_status: Arc::new(Mutex::new(TaskStatus::Idle)),
             scanner_log_lines: Arc::new(Mutex::new(Vec::with_capacity(1000))),
             manager_log_lines: Arc::new(Mutex::new(Vec::with_capacity(1000))),
@@ -198,9 +198,27 @@ impl AppState {
         self.lang.t(zh, en)
     }
 
+    /// Sync GUI fields back into user_config so they get serialized on save.
+    fn sync_to_config(&mut self) {
+        self.user_config.scan_characters = self.scan_characters;
+        self.user_config.scan_weapons = self.scan_weapons;
+        self.user_config.scan_artifacts = self.scan_artifacts;
+        self.user_config.verbose = self.verbose;
+        super::log_bridge::set_verbose(self.verbose);
+        self.user_config.continue_on_failure = self.continue_on_failure;
+        self.user_config.dump_images = self.dump_images;
+        self.user_config.save_on_cancel = self.save_on_cancel;
+        self.user_config.char_max_count = self.char_max_count;
+        self.user_config.weapon_max_count = self.weapon_max_count;
+        self.user_config.artifact_max_count = self.artifact_max_count;
+        self.user_config.server_port = self.server_port;
+        self.user_config.update_inventory = self.update_inventory;
+    }
+
     /// Check if user_config changed, and if so, schedule a debounced save.
     /// Call this once per frame from the main update loop.
     pub fn auto_save_tick(&mut self) {
+        self.sync_to_config();
         let current = serde_json::to_string(&self.user_config).unwrap_or_default();
         if current != self.config_snapshot {
             // Config changed — start/reset the debounce timer

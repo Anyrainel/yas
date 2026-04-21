@@ -257,7 +257,6 @@ pub fn detect_artifact_rarity(image: &RgbImage, scaler: &CoordScaler) -> i32 {
         }
     };
 
-    log_debug!("[rarity] 最右x={}, 数量={}, 结果={}星", "[rarity] rightmost_x={}, count={}, result={}*", rightmost_star_x, star_pixel_count, rarity);
     rarity
 }
 
@@ -487,6 +486,28 @@ fn sample_constellation_brightness(
     if count > 0 { sum / count as f64 } else { 0.0 }
 }
 
+/// Per-node constellation detection result (for annotation).
+pub struct ConstellationNodeInfo {
+    /// Icon center position in base 1920×1080 coords.
+    pub pos: (f64, f64),
+    /// Measured brightness (ring average).
+    pub brightness: f64,
+    /// Per-position detection threshold.
+    pub threshold: f64,
+    /// Whether this constellation is activated (brightness >= threshold).
+    pub activated: bool,
+}
+
+/// Full constellation detection result.
+pub struct ConstellationResult {
+    /// Final constellation level (0–6).
+    pub level: i32,
+    /// Whether the detection pattern is monotonic (A*L* — no gaps).
+    pub monotonic: bool,
+    /// Per-node detection info for all 6 constellation nodes.
+    pub nodes: [ConstellationNodeInfo; 6],
+}
+
 /// Detect constellation level from the constellation sidebar screenshot using pixel brightness.
 ///
 /// Checks all 6 icon positions with per-position thresholds, then enforces
@@ -494,8 +515,8 @@ fn sample_constellation_brightness(
 /// Constellation = index of first locked node.
 ///
 /// Accuracy: 100% on 109 test characters (min gap=+55.4, d'=7.14).
-pub fn detect_constellation_pixel(image: &RgbImage, scaler: &CoordScaler) -> (i32, bool) {
-    use super::constants::CONSTELLATION_THRESHOLDS;
+pub fn detect_constellation_pixel(image: &RgbImage, scaler: &CoordScaler) -> ConstellationResult {
+    use super::constants::{CONSTELLATION_NODES, CONSTELLATION_THRESHOLDS};
 
     let mut brightnesses = [0.0_f64; 6];
     for ci in 0..6 {
@@ -503,9 +524,7 @@ pub fn detect_constellation_pixel(image: &RgbImage, scaler: &CoordScaler) -> (i3
     }
 
     // Per-position threshold check
-    let active: Vec<bool> = (0..6)
-        .map(|ci| brightnesses[ci] >= CONSTELLATION_THRESHOLDS[ci])
-        .collect();
+    let active: [bool; 6] = std::array::from_fn(|ci| brightnesses[ci] >= CONSTELLATION_THRESHOLDS[ci]);
 
     // Monotonicity: constellation = first locked position
     let mut constellation = 0;
@@ -526,8 +545,8 @@ pub fn detect_constellation_pixel(image: &RgbImage, scaler: &CoordScaler) -> (i3
         }
     }
 
-    let det_str: String = active.iter().map(|&a| if a { 'A' } else { 'L' }).collect();
     if non_monotonic {
+        let det_str: String = active.iter().map(|&a| if a { 'A' } else { 'L' }).collect();
         log_debug!(
             "[constellation-pixel] 非单调: [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{}",
             "[constellation-pixel] NON-MONOTONIC: [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{}",
@@ -536,18 +555,25 @@ pub fn detect_constellation_pixel(image: &RgbImage, scaler: &CoordScaler) -> (i3
             brightnesses[3], brightnesses[4], brightnesses[5],
             constellation
         );
-    } else {
-        log_debug!(
-            "[constellation-pixel] [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{}",
-            "[constellation-pixel] [{}] br=[{:.0},{:.0},{:.0},{:.0},{:.0},{:.0}] → C{}",
-            det_str,
-            brightnesses[0], brightnesses[1], brightnesses[2],
-            brightnesses[3], brightnesses[4], brightnesses[5],
-            constellation
-        );
     }
 
-    (constellation, !non_monotonic)
+    let nodes = std::array::from_fn(|ci| ConstellationNodeInfo {
+        pos: CONSTELLATION_NODES[ci],
+        brightness: brightnesses[ci],
+        threshold: CONSTELLATION_THRESHOLDS[ci],
+        activated: active[ci],
+    });
+
+    let result = ConstellationResult {
+        level: constellation,
+        monotonic: !non_monotonic,
+        nodes,
+    };
+
+    // Record to annotator as side effect (no-op if annotation disabled)
+    super::annotator::record_constellation(&result);
+
+    result
 }
 
 #[cfg(test)]

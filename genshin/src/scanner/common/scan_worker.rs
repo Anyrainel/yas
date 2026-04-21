@@ -6,24 +6,32 @@ use image::RgbImage;
 use indicatif::{ProgressBar, ProgressStyle};
 use yas::log_error;
 
+use super::grid_voter::GridAnnotation;
+
 /// A work item sent from the capture thread to the worker pool.
 pub struct WorkItem<M: Send> {
     pub index: usize,
     pub image: RgbImage,
     pub metadata: M,
+    /// Grid overlay annotation data for the page (for debug image dumps).
+    pub grid_annotation: Option<GridAnnotation>,
 }
 
 /// Handle to a running worker. Call `join()` to wait for results.
 pub struct WorkerHandle<R> {
-    handle: std::thread::JoinHandle<Vec<R>>,
+    handle: std::thread::JoinHandle<(Vec<R>, Vec<usize>)>,
     /// Set to true by the worker when it detects problems (e.g., consecutive
     /// duplicates). The capture thread should check this periodically and stop.
     pub should_stop: Arc<AtomicBool>,
 }
 
 impl<R> WorkerHandle<R> {
-    /// Wait for the worker to finish and return ordered results.
-    pub fn join(self) -> Vec<R> {
+    /// Wait for the worker to finish and return ordered results plus index map.
+    ///
+    /// Returns `(items, index_map)` where `index_map[i]` is the original
+    /// work item index that produced `items[i]`. This allows correlating
+    /// output positions with debug image folder names.
+    pub fn join(self) -> (Vec<R>, Vec<usize>) {
         self.handle.join().expect("工作线程崩溃 / Worker thread panicked")
     }
 
@@ -96,6 +104,7 @@ where
         let mut results_map: BTreeMap<usize, anyhow::Result<Option<R>>> = BTreeMap::new();
         let mut next_index: usize = 0;
         let mut output: Vec<R> = Vec::new();
+        let mut index_map: Vec<usize> = Vec::new();
         let mut consecutive_errors: usize = 0;
 
         for (index, result) in result_rx {
@@ -104,11 +113,13 @@ where
             // Drain consecutive ready results
             while let Some(result) = results_map.remove(&next_index) {
                 pb.inc(1);
+                let current_index = next_index;
                 next_index += 1;
 
                 match result {
                     Ok(Some(item)) => {
                         output.push(item);
+                        index_map.push(current_index);
                         consecutive_errors = 0;
                     }
                     Ok(None) => {
@@ -116,7 +127,7 @@ where
                         consecutive_errors = 0;
                     }
                     Err(e) => {
-                        log_error!("[worker] 第{}项错误: {}", "[worker] item {} error: {}", next_index - 1, e);
+                        log_error!("[worker] 第{}项错误: {}", "[worker] item {} error: {}", current_index, e);
                         consecutive_errors += 1;
                         if consecutive_errors >= 10 {
                             log_error!("[worker] 连续{}个错误，发送停止信号", "[worker] {} consecutive errors, signaling stop", consecutive_errors);
@@ -130,16 +141,18 @@ where
         // Drain any remaining buffered results
         while let Some(result) = results_map.remove(&next_index) {
             pb.inc(1);
+            let current_index = next_index;
             next_index += 1;
             if let Ok(Some(item)) = result {
                 output.push(item);
+                index_map.push(current_index);
             }
         }
 
         pb.finish_with_message("done");
         let _ = dispatch_handle.join();
 
-        output
+        (output, index_map)
     });
 
     (item_tx, WorkerHandle { handle, should_stop })

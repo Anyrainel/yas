@@ -14,7 +14,8 @@ pub struct GoodWeaponScannerConfig {
     pub log_progress: bool,
     pub dump_images: bool,
     pub max_count: usize,
-    pub capture_delay: u64,
+    /// Fixed delay (ms) before panel stability check.
+    pub panel_delay: u64,
 }
 
 impl Default for GoodWeaponScannerConfig {
@@ -30,7 +31,7 @@ impl Default for GoodWeaponScannerConfig {
             log_progress: false,
             dump_images: false,
             max_count: 0,
-            capture_delay: 40,
+            panel_delay: 50,
         }
     }
 }

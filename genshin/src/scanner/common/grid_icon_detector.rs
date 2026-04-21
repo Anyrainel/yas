@@ -124,6 +124,9 @@ pub struct GridPageDetection {
     /// Computed on the first detection pass and reused for subsequent passes,
     /// since the grid position doesn't change between captures of the same page.
     cached_offset: Option<(f64, f64)>,
+    /// Cell geometry from the first detection pass — same coordinates the real
+    /// detection logic used, so annotations can never diverge.
+    cached_cells: Vec<GridCellAnnotation>,
 }
 
 impl GridPageDetection {
@@ -140,6 +143,7 @@ impl GridPageDetection {
             page_items,
             mode,
             cached_offset: None,
+            cached_cells: Vec::new(),
         }
     }
 
@@ -164,7 +168,11 @@ impl GridPageDetection {
             }
         };
 
-        let results = detect_page_icons(image, scaler, self.page_items, off_x, off_y, self.mode);
+        let (results, cells) = detect_page_icons(image, scaler, self.page_items, off_x, off_y, self.mode);
+        // Cache cell geometry from first pass (positions don't change between passes)
+        if self.cached_cells.is_empty() {
+            self.cached_cells = cells;
+        }
         for (i, result) in results.iter().enumerate() {
             let v = &mut self.votes[i];
             if result.lock { v.0 += 1; } else { v.1 += 1; }
@@ -186,6 +194,22 @@ impl GridPageDetection {
             astral: v.2 > v.3,
             elixir: v.4 > v.5,
         })
+    }
+
+    /// Build annotation data for all cells on this page: bounding boxes + detection results.
+    /// Cell geometry comes from the actual detection pass — same coordinates used for real logic.
+    /// Returns `None` if no detection pass has run.
+    pub fn annotation_snapshot(&self) -> Option<(Vec<GridCellAnnotation>, Vec<(usize, bool, bool)>)> {
+        if self.cached_cells.is_empty() {
+            return None;
+        }
+        let detections: Vec<(usize, bool, bool)> = (0..self.page_items)
+            .map(|i| {
+                let v = &self.votes[i];
+                (i, v.0 > v.1, v.2 > v.3) // (index, lock, astral)
+            })
+            .collect();
+        Some((self.cached_cells.clone(), detections))
     }
 
     /// Number of detection passes accumulated so far.
@@ -273,7 +297,7 @@ impl LightnessSat {
 /// Returns `(0.0, off_y)` in 1080p base coordinates. For artifacts: off_y ≈ 0
 /// at top of inventory; scroll causes ±12 px gy variation. For weapons: the
 /// expected center is shifted by `WEAPON_CY_OFFSET`.
-fn calibrate_grid(
+pub fn calibrate_grid(
     image: &RgbImage,
     scaler: &CoordScaler,
     mode: GridMode,
@@ -328,13 +352,7 @@ fn calibrate_grid(
         }
     }
 
-    let off_y = (best_gy - grid_cy) / scaler.factor_y();
-
-    log_debug!(
-        "[grid-cal] 网格校准: gy={:.1} 偏移_y={:+.1} 模式={:?}",
-        "[grid-cal] grid calibration: gy={:.1} off_y={:+.1} mode={:?}",
-        best_gy, off_y, mode,
-    );
+    let off_y = (best_gy - exp_cy) / scaler.factor_y();
 
     (0.0, off_y)
 }
@@ -346,6 +364,8 @@ fn calibrate_grid(
 /// Detect icons for all items on a page from a single full screenshot.
 ///
 /// Uses a pre-computed grid offset to position icon slot sampling areas.
+/// Returns detection results AND the cell geometry that was actually used,
+/// so annotations can never diverge from the real detection coordinates.
 fn detect_page_icons(
     image: &RgbImage,
     scaler: &CoordScaler,
@@ -353,19 +373,38 @@ fn detect_page_icons(
     off_x: f64,
     off_y: f64,
     mode: GridMode,
-) -> Vec<GridIconResult> {
+) -> (Vec<GridIconResult>, Vec<GridCellAnnotation>) {
+    let cy_base = match mode {
+        GridMode::Weapon => GRID_CY + WEAPON_CY_OFFSET,
+        GridMode::Artifact => GRID_CY,
+    };
+
     let mut results = Vec::with_capacity(page_items);
+    let mut cells = Vec::with_capacity(page_items);
+
     for i in 0..page_items {
         let row = i / COLS;
         let col = i % COLS;
 
         // Cell center (1080p base coords) with calibration offset
         let cx = GRID_CX + col as f64 * GRID_OX + off_x;
-        let cy = GRID_CY + row as f64 * GRID_OY + off_y;
+        let cy = cy_base + row as f64 * GRID_OY + off_y;
 
         // Icon slot 1 position (= cell center + lock offset)
         let slot_x = cx + LOCK_DX;
         let slot1_y = cy + LOCK_DY;
+        let slot2_y = slot1_y + SLOT_SPACING;
+
+        let (lock_pos, astral_pos) = match mode {
+            GridMode::Artifact => ((slot_x, slot1_y), (slot_x, slot2_y)),
+            GridMode::Weapon => ((slot_x, slot2_y), (slot_x, slot2_y)),
+        };
+
+        cells.push(GridCellAnnotation {
+            rect: (cx - CARD_W / 2.0, cy - CARD_H / 2.0, CARD_W, CARD_H),
+            lock_pos,
+            astral_pos,
+        });
 
         match mode {
             GridMode::Artifact => {
@@ -376,7 +415,6 @@ fn detect_page_icons(
                 let mut has_astral = false;
                 let mut has_elixir = false;
 
-                let slot2_y = slot1_y + SLOT_SPACING;
                 let slot2_color = sample_mean_color(image, scaler, slot_x, slot2_y);
 
                 if has_lock && is_astral_color(&slot2_color) {
@@ -401,7 +439,6 @@ fn detect_page_icons(
             }
             GridMode::Weapon => {
                 // Weapon: slot 1 = refinement badge (ignored), slot 2 = lock. No astral/elixir.
-                let slot2_y = slot1_y + SLOT_SPACING;
                 let slot2_color = sample_mean_color(image, scaler, slot_x, slot2_y);
                 let has_lock = is_lock_color(&slot2_color);
 
@@ -410,7 +447,7 @@ fn detect_page_icons(
         }
     }
 
-    results
+    (results, cells)
 }
 
 /// Mean color (R, G, B) of a small crop area around a base-resolution point.
@@ -454,6 +491,18 @@ fn sample_mean_color(
 
     (sum_r / count as f64, sum_g / count as f64, sum_b / count as f64)
 }
+
+/// Per-cell annotation data for grid overlay drawing.
+#[derive(Clone)]
+pub struct GridCellAnnotation {
+    /// Cell bounding box in base 1920×1080 coords (x, y, w, h).
+    pub rect: (f64, f64, f64, f64),
+    /// Lock icon position (base coords). Always computed; use with GridIconResult.lock.
+    pub lock_pos: (f64, f64),
+    /// Astral icon position (base coords, artifacts only).
+    pub astral_pos: (f64, f64),
+}
+
 
 fn is_lock_color(color: &(f64, f64, f64)) -> bool {
     let (r, g, _b) = *color;

@@ -11,6 +11,7 @@ pub mod backpack_scanner;
 pub mod ocr_factory;
 pub mod ocr_pool;
 pub mod scan_worker;
+pub mod annotator;
 pub mod debug_dump;
 pub mod roll_solver;
 pub mod equip_parser;

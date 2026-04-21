@@ -68,6 +68,9 @@ pub struct GoodSubStat {
     /// when the substat has exactly 1 roll (i.e., the value IS the initial roll).
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "initialValue")]
     pub initial_value: Option<f64>,
+    /// Per-roll raw values from game packet data (capture only, not set by OCR scanner).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rolls: Vec<f64>,
 }
 
 /// GOOD v3 full export

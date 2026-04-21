@@ -30,8 +30,9 @@ fn init_cli() {
     let config = yas_genshin::cli::load_config_or_default();
     yas::lang::set_lang(&config.lang);
 
+    let level = if config.verbose { log::LevelFilter::Debug } else { log::LevelFilter::Info };
     env_logger::Builder::new()
-        .filter_level(log::LevelFilter::Info)
+        .filter_level(level)
         .format(|buf, record| {
             use std::io::Write;
             let raw = format!("{}", record.args());

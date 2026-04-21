@@ -35,7 +35,17 @@ const OCR_CONFUSIONS: &[(&str, &str)] = &[
 ///    tail but the shared prefix "海染" is unique across all candidates.
 ///
 /// Port of `fuzzyMatchMap()` from GOODScanner/lib/constants.js
+/// Like `fuzzy_match_map` but also returns the matched entity name (map key).
+/// Returns `Some((entity_name, good_key))` on match.
+pub fn fuzzy_match_map_pair(text: &str, map: &HashMap<String, String>) -> Option<(String, String)> {
+    fuzzy_match_map_inner(text, map)
+}
+
 pub fn fuzzy_match_map(text: &str, map: &HashMap<String, String>) -> Option<String> {
+    fuzzy_match_map_inner(text, map).map(|(_, val)| val)
+}
+
+fn fuzzy_match_map_inner(text: &str, map: &HashMap<String, String>) -> Option<(String, String)> {
     if text.is_empty() {
         return None;
     }
@@ -83,7 +93,7 @@ pub fn fuzzy_match_map(text: &str, map: &HashMap<String, String>) -> Option<Stri
         if cleaned.contains(from) {
             let alt = cleaned.replace(from, to);
             if let Some(val) = map.get(&alt) {
-                return Some(val.clone());
+                return Some((alt, val.clone()));
             }
         }
     }
@@ -104,51 +114,49 @@ pub fn fuzzy_match_map(text: &str, map: &HashMap<String, String>) -> Option<Stri
         }).collect();
         if combined != cleaned {
             if let Some(val) = map.get(&combined) {
-                log_debug!("[fuzzy] 组合OCR混淆匹配: cleaned={:?} → combined={:?} → {:?}", "[fuzzy] combined OCR confusion match: cleaned={:?} → combined={:?} → {:?}", cleaned, combined, val);
-                return Some(val.clone());
+                log_debug!("[fuzzy] 组合OCR混淆匹配: cleaned={:?} → {} ({})", "[fuzzy] combined OCR confusion match: cleaned={:?} → {} ({})", cleaned, combined, val);
+                return Some((combined, val.clone()));
             }
         }
     }
 
     // Exact match
     if let Some(val) = map.get(&cleaned) {
-        log_debug!("[fuzzy] 精确匹配: cleaned={:?} → {:?}", "[fuzzy] exact match: cleaned={:?} → {:?}", cleaned, val);
-        return Some(val.clone());
+        return Some((cleaned, val.clone()));
     }
 
     // Substring match: prefer "cleaned contains map key" (OCR added noise around real name)
     // over "map key contains cleaned" (OCR truncated the name).
-    let mut best_match: Option<String> = None;
+    let mut best_match: Option<(String, String)> = None;
     let mut best_len: usize = 0;
 
     for (cn, val) in map.iter() {
         // cleaned contains the map key — OCR returned name + noise
         if cleaned.contains(cn.as_str()) && cn.len() > best_len {
-            best_match = Some(val.clone());
+            best_match = Some((cn.clone(), val.clone()));
             best_len = cn.len();
         }
     }
-    if best_match.is_some() {
-        log_debug!("[fuzzy] 子串匹配(cleaned⊃key): cleaned={:?} → {:?}", "[fuzzy] substring match (cleaned⊃key): cleaned={:?} → {:?}", cleaned, best_match);
+    if let Some(ref m) = best_match {
+        log_debug!("[fuzzy] 子串匹配(cleaned⊃key): cleaned={:?} → {} ({})", "[fuzzy] substring match (cleaned⊃key): cleaned={:?} → {} ({})", cleaned, m.0, m.1);
         return best_match;
     }
 
     // Fallback: map key contains cleaned — OCR truncated the name
     for (cn, val) in map.iter() {
         if cn.contains(cleaned.as_str()) && cleaned.len() > best_len {
-            best_match = Some(val.clone());
+            best_match = Some((cn.clone(), val.clone()));
             best_len = cleaned.len();
         }
     }
-    if best_match.is_some() {
-        log_debug!("[fuzzy] 反向子串匹配(key⊃cleaned): cleaned={:?} → {:?}", "[fuzzy] reverse substring (key⊃cleaned): cleaned={:?} → {:?}", cleaned, best_match);
+    if let Some(ref m) = best_match {
+        log_debug!("[fuzzy] 反向子串匹配(key⊃cleaned): cleaned={:?} → {} ({})", "[fuzzy] reverse substring (key⊃cleaned): cleaned={:?} → {} ({})", cleaned, m.0, m.1);
         return best_match;
     }
 
     // Levenshtein distance fallback — character-level comparison for CJK
     let cleaned_chars: Vec<char> = cleaned.chars().collect();
     let mut min_dist = usize::MAX;
-    let mut best_debug_name = String::new();
     for (cn, val) in map.iter() {
         let cn_chars: Vec<char> = cn.chars().collect();
         let dist = edit_distance_chars(&cleaned_chars, &cn_chars);
@@ -156,14 +164,13 @@ pub fn fuzzy_match_map(text: &str, map: &HashMap<String, String>) -> Option<Stri
         let threshold = std::cmp::max(1, cn_chars.len() * 3 / 10);
         if dist < min_dist && dist <= threshold {
             min_dist = dist;
-            best_match = Some(val.clone());
-            best_debug_name = cn.clone();
+            best_match = Some((cn.clone(), val.clone()));
         }
     }
 
-    if best_match.is_some() {
-        log_debug!("[fuzzy] Levenshtein匹配: cleaned={:?} → {:?} (name={:?}, dist={}, map_size={})", "[fuzzy] Levenshtein match: cleaned={:?} → {:?} (name={:?}, dist={}, map_size={})",
-            cleaned, best_match, best_debug_name, min_dist, map.len());
+    if let Some(ref m) = best_match {
+        log_debug!("[fuzzy] Levenshtein匹配: cleaned={:?} → {} ({}) (dist={}, map_size={})", "[fuzzy] Levenshtein match: cleaned={:?} → {} ({}) (dist={}, map_size={})",
+            cleaned, m.0, m.1, min_dist, map.len());
         return best_match;
     }
 
@@ -173,8 +180,7 @@ pub fn fuzzy_match_map(text: &str, map: &HashMap<String, String>) -> Option<Stri
     // "海染砗磲" — confident match even though edit distance is too high.
     const LCS_MIN_CHARS: usize = 2;
     let mut best_lcs_len: usize = 0;
-    let mut best_lcs_match: Option<String> = None;
-    let mut best_lcs_name = String::new();
+    let mut best_lcs_match: Option<(String, String)> = None;
     let mut is_unique = true;
 
     for (cn, val) in map.iter() {
@@ -182,21 +188,22 @@ pub fn fuzzy_match_map(text: &str, map: &HashMap<String, String>) -> Option<Stri
         let lcs = longest_common_substring_len(&cleaned_chars, &cn_chars);
         if lcs > best_lcs_len {
             best_lcs_len = lcs;
-            best_lcs_match = Some(val.clone());
-            best_lcs_name = cn.clone();
+            best_lcs_match = Some((cn.clone(), val.clone()));
             is_unique = true;
         } else if lcs == best_lcs_len && lcs > 0 {
             // Tied — no longer unique, unless it's the same GOOD key
             // (some maps might have aliases pointing to the same value)
-            if best_lcs_match.as_deref() != Some(val.as_str()) {
+            if best_lcs_match.as_ref().map(|(_, v)| v.as_str()) != Some(val.as_str()) {
                 is_unique = false;
             }
         }
     }
 
     if best_lcs_len >= LCS_MIN_CHARS && is_unique {
-        log_debug!("[fuzzy] LCS唯一性匹配: cleaned={:?} → {:?} (name={:?}, lcs_len={}, map_size={})", "[fuzzy] LCS uniqueness match: cleaned={:?} → {:?} (name={:?}, lcs_len={}, map_size={})",
-            cleaned, best_lcs_match, best_lcs_name, best_lcs_len, map.len());
+        if let Some(ref m) = best_lcs_match {
+            log_debug!("[fuzzy] LCS唯一性匹配: cleaned={:?} → {} ({}) (lcs_len={}, map_size={})", "[fuzzy] LCS uniqueness match: cleaned={:?} → {} ({}) (lcs_len={}, map_size={})",
+                cleaned, m.0, m.1, best_lcs_len, map.len());
+        }
         return best_lcs_match;
     }
 

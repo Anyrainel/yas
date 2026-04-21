@@ -1,10 +1,119 @@
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
+use ab_glyph::{Font, FontVec, PxScale, ScaleFont, point};
 use image::{GenericImageView, Rgb, RgbImage};
 
 use super::coord_scaler::CoordScaler;
+use super::grid_icon_detector::GridCellAnnotation;
+use super::pixel_utils::ConstellationResult;
 
-// ── Bitmap font (6×8 printable ASCII 32..127) ──────────────────────────────
+// ── CJK font rendering (ab_glyph + Windows system font) ─────────────────────
+
+/// Base font size for CJK labels at 1920×1080 resolution.
+/// Scaled proportionally for higher resolutions (e.g., 2× at 4K).
+const CJK_FONT_SIZE_BASE: f32 = 24.0;
+
+/// Cached system font (loaded once, shared across all dump collectors).
+static SYSTEM_FONT: OnceLock<Option<FontVec>> = OnceLock::new();
+
+fn get_system_font() -> Option<&'static FontVec> {
+    SYSTEM_FONT.get_or_init(|| {
+        // Try common Windows CJK fonts (present on all Windows 7+)
+        let paths = [
+            "C:/Windows/Fonts/msyh.ttc",    // Microsoft YaHei (微软雅黑)
+            "C:/Windows/Fonts/msyhbd.ttc",   // Microsoft YaHei Bold
+            "C:/Windows/Fonts/simsun.ttc",   // SimSun (宋体)
+            "C:/Windows/Fonts/simhei.ttf",   // SimHei (黑体)
+        ];
+        for path in &paths {
+            if let Ok(data) = std::fs::read(path) {
+                // .ttc files: use index 0 (regular weight)
+                if let Ok(font) = FontVec::try_from_vec_and_index(data, 0) {
+                    return Some(font);
+                }
+            }
+        }
+        None
+    }).as_ref()
+}
+
+/// Draw a text label using the system CJK font (ab_glyph).
+/// Renders a background rectangle behind the text, then alpha-blends glyphs on top.
+fn draw_label_cjk(
+    image: &mut RgbImage,
+    font: &FontVec,
+    x: i32,
+    y: i32,
+    text: &str,
+    fg: Rgb<u8>,
+    bg: Rgb<u8>,
+    font_size: f32,
+) {
+    let scaled = font.as_scaled(PxScale::from(font_size));
+    let pad = (font_size * 0.15).ceil() as i32;
+    let iw = image.width() as i32;
+    let ih = image.height() as i32;
+
+    // Measure text width
+    let text_w: f32 = text.chars()
+        .map(|ch| scaled.h_advance(scaled.glyph_id(ch)))
+        .sum();
+    let bg_w = text_w.ceil() as i32 + pad * 2;
+    let bg_h = font_size.ceil() as i32 + pad * 2;
+
+    // Draw background rectangle
+    for py in y.max(0)..(y + bg_h).min(ih) {
+        for px in x.max(0)..(x + bg_w).min(iw) {
+            image.put_pixel(px as u32, py as u32, bg);
+        }
+    }
+
+    // Draw text glyphs with alpha blending
+    let baseline_y = y as f32 + pad as f32 + scaled.ascent();
+    let mut cursor_x = x as f32 + pad as f32;
+
+    for ch in text.chars() {
+        let glyph_id = scaled.glyph_id(ch);
+        let glyph = glyph_id.with_scale_and_position(
+            PxScale::from(font_size),
+            point(cursor_x, baseline_y),
+        );
+
+        if let Some(outlined) = font.outline_glyph(glyph) {
+            let bounds = outlined.px_bounds();
+            outlined.draw(|gx, gy, coverage| {
+                let px = gx as i32 + bounds.min.x as i32;
+                let py = gy as i32 + bounds.min.y as i32;
+                if px >= 0 && px < iw && py >= 0 && py < ih && coverage > 0.05 {
+                    let existing = image.get_pixel(px as u32, py as u32);
+                    let blend = |f: u8, b: u8| -> u8 {
+                        (f as f32 * coverage + b as f32 * (1.0 - coverage)).round().clamp(0.0, 255.0) as u8
+                    };
+                    image.put_pixel(px as u32, py as u32, Rgb([
+                        blend(fg[0], existing[0]),
+                        blend(fg[1], existing[1]),
+                        blend(fg[2], existing[2]),
+                    ]));
+                }
+            });
+        }
+
+        cursor_x += scaled.h_advance(glyph_id);
+    }
+}
+
+/// Measure the pixel dimensions of a label rendered with `draw_label_cjk`.
+fn label_size_cjk(font: &FontVec, text: &str, font_size: f32) -> (i32, i32) {
+    let scaled = font.as_scaled(PxScale::from(font_size));
+    let pad = (font_size * 0.15).ceil() as i32;
+    let text_w: f32 = text.chars()
+        .map(|ch| scaled.h_advance(scaled.glyph_id(ch)))
+        .sum();
+    (text_w.ceil() as i32 + pad * 2, font_size.ceil() as i32 + pad * 2)
+}
+
+// ── Bitmap font fallback (6×8 printable ASCII 32..127) ───────────────────────
 // Each glyph is 6 columns × 8 rows packed into [u8; 6] (one byte per column,
 // LSB = top row).  Total: 96 glyphs × 6 bytes = 576 bytes.
 #[rustfmt::skip]
@@ -139,43 +248,48 @@ fn draw_rect(image: &mut RgbImage, x: i32, y: i32, w: i32, h: i32, color: Rgb<u8
     }
 }
 
-fn draw_crosshair(image: &mut RgbImage, cx: i32, cy: i32, size: i32, color: Rgb<u8>) {
+fn draw_crosshair(image: &mut RgbImage, cx: i32, cy: i32, size: i32, thickness: i32, color: Rgb<u8>) {
     let iw = image.width() as i32;
     let ih = image.height() as i32;
+    let half_t = thickness / 2;
     for d in -size..=size {
+        // Horizontal arm
         let hx = cx + d;
-        let vy = cy + d;
-        if hx >= 0 && hx < iw && cy >= 0 && cy < ih {
-            image.put_pixel(hx as u32, cy as u32, color);
+        for t in -half_t..=half_t {
+            let py = cy + t;
+            if hx >= 0 && hx < iw && py >= 0 && py < ih {
+                image.put_pixel(hx as u32, py as u32, color);
+            }
         }
-        if cx >= 0 && cx < iw && vy >= 0 && vy < ih {
-            image.put_pixel(cx as u32, vy as u32, color);
+        // Vertical arm
+        let vy = cy + d;
+        for t in -half_t..=half_t {
+            let px = cx + t;
+            if px >= 0 && px < iw && vy >= 0 && vy < ih {
+                image.put_pixel(px as u32, vy as u32, color);
+            }
         }
     }
 }
 
-/// Annotation scale factor. The base 6×8 font and drawing primitives are
-/// designed for tiny images. At game resolution (1920×1080+), we scale
-/// everything up so annotations are readable without zooming.
+/// Annotation scale factor for bitmap font fallback.
 const ANNOTATION_SCALE: i32 = 3;
 
 /// Draw a text label using the embedded 6×8 bitmap font, scaled by `ANNOTATION_SCALE`.
-/// Non-ASCII characters render as `?`.
-fn draw_label(image: &mut RgbImage, x: i32, y: i32, text: &str, fg: Rgb<u8>, bg: Rgb<u8>) {
+/// Non-ASCII characters render as `?`. Used as fallback when system font is unavailable.
+fn draw_label_bitmap(image: &mut RgbImage, x: i32, y: i32, text: &str, fg: Rgb<u8>, bg: Rgb<u8>) {
     let s = ANNOTATION_SCALE;
     let iw = image.width() as i32;
     let ih = image.height() as i32;
     let char_w = 6 * s;
     let char_h = 8 * s;
     let pad = s; // padding around text
-    let text_w = text.len() as i32 * char_w + pad * 2;
+    let text_w = text.chars().count() as i32 * char_w + pad * 2;
     let text_h = char_h + pad * 2;
     // Draw background rectangle
-    for py in y..y + text_h {
-        for px in x..x + text_w {
-            if px >= 0 && px < iw && py >= 0 && py < ih {
-                image.put_pixel(px as u32, py as u32, bg);
-            }
+    for py in y.max(0)..(y + text_h).min(ih) {
+        for px in x.max(0)..(x + text_w).min(iw) {
+            image.put_pixel(px as u32, py as u32, bg);
         }
     }
     // Draw characters (each pixel in the 6×8 glyph becomes an s×s block)
@@ -191,7 +305,6 @@ fn draw_label(image: &mut RgbImage, x: i32, y: i32, text: &str, fg: Rgb<u8>, bg:
             let bits = glyph[col as usize];
             for row in 0..8i32 {
                 if bits & (1 << row) != 0 {
-                    // Fill an s×s block for this pixel
                     for dy in 0..s {
                         for dx in 0..s {
                             let px = base_x + col * s + dx;
@@ -207,10 +320,85 @@ fn draw_label(image: &mut RgbImage, x: i32, y: i32, text: &str, fg: Rgb<u8>, bg:
     }
 }
 
-/// Height of a label drawn by `draw_label`, for positioning labels above regions.
-const LABEL_HEIGHT: i32 = 8 * ANNOTATION_SCALE + ANNOTATION_SCALE * 2 + 2;
+/// Measure label size for bitmap font.
+fn label_size_bitmap(text: &str) -> (i32, i32) {
+    let s = ANNOTATION_SCALE;
+    let w = text.chars().count() as i32 * 6 * s + s * 2;
+    let h = 8 * s + s * 2;
+    (w, h)
+}
+
+// ── Unified label drawing ────────────────────────────────────────────────────
+
+/// Compute the scaled CJK font size for the given image width.
+/// At 1920px → `CJK_FONT_SIZE_BASE`, scales linearly for larger/smaller images.
+fn scaled_font_size(image_width: u32) -> f32 {
+    CJK_FONT_SIZE_BASE * image_width as f32 / 1920.0
+}
+
+/// Draw a label at (x, y) using the best available font.
+/// `font_size` is the pre-computed scaled font size for the current image.
+/// Returns (label_width, label_height).
+fn draw_smart_label(image: &mut RgbImage, x: i32, y: i32, text: &str, fg: Rgb<u8>, bg: Rgb<u8>, font_size: f32) -> (i32, i32) {
+    if let Some(font) = get_system_font() {
+        let size = label_size_cjk(font, text, font_size);
+        draw_label_cjk(image, font, x, y, text, fg, bg, font_size);
+        size
+    } else {
+        let size = label_size_bitmap(text);
+        draw_label_bitmap(image, x, y, text, fg, bg);
+        size
+    }
+}
+
+/// Measure label size using the best available font.
+/// `font_size` is the pre-computed scaled font size for the current image.
+fn measure_label(text: &str, font_size: f32) -> (i32, i32) {
+    if let Some(font) = get_system_font() {
+        label_size_cjk(font, text, font_size)
+    } else {
+        label_size_bitmap(text)
+    }
+}
+
+// ── Level cap display helper ─────────────────────────────────────────────────
+
+/// Convert (level, ascended) to "level/cap" display string.
+///
+/// Genshin ascension boundaries: 20, 40, 50, 60, 70, 80 → cap 90.
+/// At a boundary level, `ascended=true` means the cap is the next boundary.
+pub fn level_cap_display(level: i32, ascended: bool) -> String {
+    let caps: [(i32, i32); 8] = [
+        (20, 40), (40, 50), (50, 60), (60, 70),
+        (70, 80), (80, 90), (90, 95), (95, 100),
+    ];
+    let cap = 'find: {
+        for &(boundary, next_cap) in &caps {
+            if level < boundary {
+                break 'find boundary;
+            }
+            if level == boundary && !ascended {
+                break 'find boundary;
+            }
+            if level == boundary && ascended {
+                break 'find next_cap;
+            }
+        }
+        100
+    };
+    format!("{}/{}", level, cap)
+}
 
 // ── DumpEntry & DumpCollector ───────────────────────────────────────────────
+
+/// Where to position the label relative to its OCR bounding box.
+#[derive(Clone, Copy, PartialEq)]
+pub enum LabelPosition {
+    /// Right of region if space allows, else left (default).
+    Auto,
+    /// Below the bounding box.
+    Below,
+}
 
 pub enum DumpEntry {
     OcrRegion {
@@ -218,7 +406,12 @@ pub enum DumpEntry {
         /// Base 1920×1080 coords (already shifted by y_shift where applicable)
         rect: (f64, f64, f64, f64),
         raw_text: String,
+        /// GOOD key / code-level result (used in result.txt).
         final_result: String,
+        /// Human-readable display name for image annotation (e.g., Chinese name).
+        /// When set and different from raw_text, annotation shows "raw -> display".
+        display_result: String,
+        label_pos: LabelPosition,
     },
     PixelCheck {
         field_name: String,
@@ -226,6 +419,20 @@ pub enum DumpEntry {
         pos: (f64, f64),
         rgb: [u8; 3],
         result_text: String,
+        /// Optional color override for crosshair + label (default: GREEN).
+        color: Option<Rgb<u8>>,
+    },
+    /// Constellation detection result — 6 node bounding boxes + final level.
+    Constellation {
+        level: i32,
+        /// Per-node: (center_pos, activated, brightness, threshold)
+        nodes: Vec<((f64, f64), bool, f64, f64)>,
+    },
+    /// Grid overlay — cell bounding boxes + detected lock/astral positions.
+    GridOverlay {
+        cells: Vec<GridCellAnnotation>,
+        /// Per-cell detection results: (index, lock_detected, astral_detected)
+        detections: Vec<(usize, bool, bool)>,
     },
 }
 
@@ -279,10 +486,13 @@ impl DumpCollector {
             rect,
             raw_text: raw_text.to_string(),
             final_result: String::new(),
+            display_result: String::new(),
+            label_pos: LabelPosition::Auto,
         }));
     }
 
     /// Update the final (post-processed) result for a previously recorded OCR entry.
+    /// This is the GOOD key / code-level value shown in result.txt.
     pub fn set_final_result(&mut self, field_name: &str, final_result: &str) {
         for (_, entry) in self.entries.iter_mut().rev() {
             if let DumpEntry::OcrRegion { field_name: ref name, final_result: ref mut fr, .. } = entry {
@@ -294,7 +504,33 @@ impl DumpCollector {
         }
     }
 
-    /// Record a pixel check result.
+    /// Set the human-readable display name for image annotations.
+    /// When this differs from raw_text, the image label shows "raw -> display".
+    /// Use this with the Chinese name (not the GOOD key) for entity names.
+    pub fn set_display_result(&mut self, field_name: &str, display: &str) {
+        for (_, entry) in self.entries.iter_mut().rev() {
+            if let DumpEntry::OcrRegion { field_name: ref name, display_result: ref mut dr, .. } = entry {
+                if name == field_name {
+                    *dr = display.to_string();
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Set label position to Below for a field (e.g., weapon name).
+    pub fn set_label_below(&mut self, field_name: &str) {
+        for (_, entry) in self.entries.iter_mut().rev() {
+            if let DumpEntry::OcrRegion { field_name: ref name, label_pos: ref mut lp, .. } = entry {
+                if name == field_name {
+                    *lp = LabelPosition::Below;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Record a pixel check result with default color (green).
     pub fn record_pixel(
         &mut self,
         img_idx: usize,
@@ -303,12 +539,49 @@ impl DumpCollector {
         rgb: [u8; 3],
         result_text: &str,
     ) {
+        self.record_pixel_colored(img_idx, field_name, pos, rgb, result_text, None);
+    }
+
+    /// Record a pixel check result with an optional color override.
+    pub fn record_pixel_colored(
+        &mut self,
+        img_idx: usize,
+        field_name: &str,
+        pos: (f64, f64),
+        rgb: [u8; 3],
+        result_text: &str,
+        color: Option<Rgb<u8>>,
+    ) {
         self.entries.push((img_idx, DumpEntry::PixelCheck {
             field_name: field_name.to_string(),
             pos,
             rgb,
             result_text: result_text.to_string(),
+            color,
         }));
+    }
+
+    /// Record constellation detection results for annotation.
+    /// Draws per-node bounding boxes with yes/no labels and a centered "Cx" label.
+    pub fn record_constellation(&mut self, img_idx: usize, result: &ConstellationResult) {
+        let nodes: Vec<_> = result.nodes.iter().map(|n| {
+            (n.pos, n.activated, n.brightness, n.threshold)
+        }).collect();
+        self.entries.push((img_idx, DumpEntry::Constellation {
+            level: result.level,
+            nodes,
+        }));
+    }
+
+    /// Record grid overlay for annotation.
+    /// `cells` come from the detection pass. `detections` maps cell index → (lock, astral).
+    pub fn record_grid_overlay(
+        &mut self,
+        img_idx: usize,
+        cells: Vec<GridCellAnnotation>,
+        detections: Vec<(usize, bool, bool)>,
+    ) {
+        self.entries.push((img_idx, DumpEntry::GridOverlay { cells, detections }));
     }
 
     /// Add a warning message to the result file.
@@ -348,12 +621,21 @@ impl DumpCollector {
             let full_name = if single { "full.png".to_string() } else { format!("full_{}.png", label) };
             let _ = image.save(self.dir.join(&full_name));
 
+            // Scale all annotation sizes based on image resolution
+            let fs = scaled_font_size(image.width());
+            let scale = image.width() as f32 / 1920.0;
+            let rect_thickness = (2.0 * scale).round().max(1.0) as i32; // split: floor(t/2) inside, rest outside
+            let rect_outset = rect_thickness - rect_thickness / 2; // pixels drawn outside the OCR region
+            let cross_size = (18.0 * scale).round() as i32; // half of old 36px at 1080p
+            let cross_thickness = (2.0 * scale).round().max(1.0) as i32;
+            let gap = (6.0 * scale).round().max(2.0) as i32;
+
             // Build annotated image
             let mut annotated = image.clone();
             for (entry_img_idx, entry) in &self.entries {
                 if *entry_img_idx != img_idx { continue; }
                 match entry {
-                    DumpEntry::OcrRegion { field_name, rect, raw_text, final_result } => {
+                    DumpEntry::OcrRegion { field_name, rect, raw_text, display_result, label_pos, .. } => {
                         let (bx, by, bw, bh) = *rect;
                         let x = self.scaler.x(bx);
                         let y = self.scaler.y(by);
@@ -363,47 +645,145 @@ impl DumpCollector {
                         // Skip zero-area entries (synthetic/metadata entries)
                         if w <= 0 || h <= 0 { continue; }
 
-                        draw_rect(&mut annotated, x, y, w, h, RED, ANNOTATION_SCALE);
-                        // Label to the right if it fits, otherwise to the left.
-                        // Most game-panel regions are on the right side of the screen,
-                        // so labels usually end up on the left.
-                        let label_text = if final_result.is_empty() {
-                            format!("{}: {}", field_name, truncate_for_label(raw_text))
+                        // Expand outward so floor(t/2) pixels sit on/inside the region
+                        draw_rect(&mut annotated,
+                            x - rect_outset, y - rect_outset,
+                            w + rect_outset * 2, h + rect_outset * 2,
+                            RED, rect_thickness);
+
+                        // Build label text: no field names, just OCR results.
+                        // If display_result is set and differs from raw, show "raw -> display".
+                        // Strip colons (: ：) before comparing — set names often differ only by colon.
+                        let raw_trimmed = raw_text.trim();
+                        let normalize = |s: &str| s.replace([':', '：'], "");
+                        let raw_norm = normalize(raw_trimmed);
+                        let disp_norm = normalize(display_result);
+                        // Treat as same if: colons stripped match, or raw == display + "已装备"
+                        let effectively_same = !display_result.is_empty()
+                            && (disp_norm == raw_norm
+                                || raw_norm == format!("{}已装备", disp_norm));
+                        let label_text = if !display_result.is_empty() && !effectively_same && display_result != raw_trimmed {
+                            format!("{} -> {}", raw_trimmed, display_result)
+                        } else if effectively_same {
+                            display_result.to_string()
+                        } else if !raw_trimmed.is_empty() {
+                            raw_trimmed.to_string()
                         } else {
-                            format!("{} -> {}", field_name, truncate_for_label(final_result))
+                            continue; // no text to show
                         };
-                        let label_w = label_text.len() as i32 * 6 * ANNOTATION_SCALE + ANNOTATION_SCALE * 2;
-                        let gap = ANNOTATION_SCALE * 2;
+
+                        let (label_w, label_h) = measure_label(&label_text, fs);
                         let img_w = annotated.width() as i32;
-                        let label_x = if x + w + gap + label_w <= img_w {
-                            x + w + gap // right of region
-                        } else {
-                            x - label_w - gap // left of region
+
+                        let (label_x, label_y) = match label_pos {
+                            LabelPosition::Below => {
+                                // Center below the bounding box
+                                let lx = x + (w - label_w) / 2;
+                                let ly = y + h + gap;
+                                (lx.max(0).min(img_w - label_w), ly)
+                            }
+                            LabelPosition::Auto => {
+                                // Right of region if it fits, otherwise left
+                                let lx = if x + w + gap + label_w <= img_w {
+                                    x + w + gap
+                                } else {
+                                    x - label_w - gap
+                                };
+                                let ly = y + (h - label_h) / 2;
+                                (lx, ly)
+                            }
                         };
-                        let label_y = y + (h - LABEL_HEIGHT) / 2;
-                        draw_label(&mut annotated, label_x, label_y, &label_text, RED, BLACK);
+                        draw_smart_label(&mut annotated, label_x, label_y, &label_text, RED, BLACK, fs);
 
                         // Save individual crop
                         self.save_crop(image, field_name, *rect);
                     }
-                    DumpEntry::PixelCheck { field_name, pos, rgb, result_text } => {
+                    DumpEntry::PixelCheck { field_name, pos, rgb: _, result_text, color, .. } => {
+                        let draw_color = color.unwrap_or(GREEN);
                         let cx = self.scaler.x(pos.0);
                         let cy = self.scaler.y(pos.1);
-                        let cross_size = 12 * ANNOTATION_SCALE;
-                        draw_crosshair(&mut annotated, cx, cy, cross_size, CYAN);
-                        let label_text = format!("{}: rgb({},{},{}) {}", field_name, rgb[0], rgb[1], rgb[2], result_text);
-                        let label_w = label_text.len() as i32 * 6 * ANNOTATION_SCALE + ANNOTATION_SCALE * 2;
-                        let gap = ANNOTATION_SCALE * 2;
+                        draw_crosshair(&mut annotated, cx, cy, cross_size, cross_thickness, draw_color);
+
+                        // Label: just the result (no field name, no RGB values)
+                        let label_text = result_text.to_string();
+                        let (label_w, label_h) = measure_label(&label_text, fs);
                         let img_w = annotated.width() as i32;
                         let label_x = if cx + cross_size + gap + label_w <= img_w {
-                            cx + cross_size + gap // right of crosshair
+                            cx + cross_size + gap
                         } else {
-                            cx - cross_size - gap - label_w // left of crosshair
+                            cx - cross_size - gap - label_w
                         };
-                        draw_label(&mut annotated, label_x, cy - LABEL_HEIGHT / 2, &label_text, GREEN, BLACK);
+                        draw_smart_label(&mut annotated, label_x, cy - label_h / 2, &label_text, draw_color, BLACK, fs);
 
                         // Save pixel neighbourhood crop
                         self.save_pixel_crop(image, field_name, *pos);
+                    }
+                    DumpEntry::Constellation { level, nodes } => {
+                        // Draw bounding box per node with label on the left
+                        let box_r = 45.0; // slightly larger than ring outer (41)
+                        for (i, &(pos, activated, _brightness, _threshold)) in nodes.iter().enumerate() {
+                            let cx = self.scaler.x(pos.0);
+                            let cy = self.scaler.y(pos.1);
+                            let r = self.scaler.x(box_r);
+                            let color = if activated { GREEN } else { RED };
+                            draw_rect(&mut annotated, cx - r, cy - r, r * 2, r * 2, color, 2);
+                            let label = format!("C{}: {}", i + 1, if activated { "yes" } else { "no" });
+                            let (lw, lh) = measure_label(&label, fs);
+                            // Place label to the left of the bounding box
+                            draw_smart_label(&mut annotated, cx - r - gap - lw, cy - lh / 2, &label, color, BLACK, fs);
+                        }
+                        // "Cx" label further left, between nodes 3 and 4
+                        let center_label = format!("C{}", level);
+                        let (clw, clh) = measure_label(&center_label, fs);
+                        let mid_y = if nodes.len() >= 4 {
+                            let y3 = self.scaler.y(nodes[2].0 .1);
+                            let y4 = self.scaler.y(nodes[3].0 .1);
+                            (y3 + y4) / 2
+                        } else {
+                            self.scaler.y(540.0)
+                        };
+                        // Find the leftmost node label edge and place C# further left
+                        let leftmost_x = nodes.iter().map(|&(pos, _, _, _)| {
+                            let cx = self.scaler.x(pos.0);
+                            let r = self.scaler.x(box_r);
+                            let sample_label = "C6: yes"; // widest possible label
+                            let (sw, _) = measure_label(sample_label, fs);
+                            cx - r - gap - sw
+                        }).min().unwrap_or(0);
+                        draw_smart_label(&mut annotated, leftmost_x - gap - clw, mid_y - clh / 2,
+                            &center_label, CYAN, BLACK, fs);
+                    }
+                    DumpEntry::GridOverlay { cells, detections } => {
+                        let grid_thickness = (1.0 * scale).round().max(1.0) as i32;
+                        // Draw all cell bounding boxes
+                        for cell in cells {
+                            let x = self.scaler.x(cell.rect.0);
+                            let y = self.scaler.y(cell.rect.1);
+                            let w = self.scaler.x(cell.rect.2);
+                            let h = self.scaler.y(cell.rect.3);
+                            draw_rect(&mut annotated, x, y, w, h, RED, grid_thickness);
+                        }
+                        // Draw crosshairs + labels only for detected lock/astral
+                        for &(idx, lock, astral) in detections {
+                            if idx >= cells.len() { continue; }
+                            let cell = &cells[idx];
+                            if lock {
+                                let cx = self.scaler.x(cell.lock_pos.0);
+                                let cy = self.scaler.y(cell.lock_pos.1);
+                                draw_crosshair(&mut annotated, cx, cy, cross_size / 2, cross_thickness, CYAN);
+                                let x_off = cross_size / 2 + gap;
+                                let (_, lh) = measure_label("lock", fs);
+                                draw_smart_label(&mut annotated, cx + x_off, cy - lh / 2, "lock", CYAN, BLACK, fs);
+                            }
+                            if astral {
+                                let cx = self.scaler.x(cell.astral_pos.0);
+                                let cy = self.scaler.y(cell.astral_pos.1);
+                                draw_crosshair(&mut annotated, cx, cy, cross_size / 2, cross_thickness, GREEN);
+                                let x_off = cross_size / 2 + gap;
+                                let (_, lh) = measure_label("astral", fs);
+                                draw_smart_label(&mut annotated, cx + x_off, cy - lh / 2, "astral", GREEN, BLACK, fs);
+                            }
+                        }
                     }
                 }
             }
@@ -457,16 +837,24 @@ impl DumpCollector {
             for (entry_idx, entry) in &self.entries {
                 if *entry_idx != img_idx { continue; }
                 match entry {
-                    DumpEntry::OcrRegion { field_name, raw_text, final_result, .. } => {
-                        let display_raw = if raw_text.is_empty() { "(empty)" } else { raw_text.trim() };
-                        if final_result.is_empty() {
-                            out.push_str(&format!("{:<16} {}\n", format!("{}:", field_name), display_raw));
+                    DumpEntry::OcrRegion { field_name, raw_text, final_result, display_result, .. } => {
+                        let label = format!("{}:", field_name);
+                        let raw = raw_text.trim();
+                        let fin = final_result.trim();
+                        let disp = display_result.trim();
+                        if raw.is_empty() && !fin.is_empty() {
+                            // Computed/summary field (no OCR source)
+                            out.push_str(&format!("{:<16} {}\n", label, fin));
+                        } else if fin.is_empty() || raw == fin {
+                            // No post-processing, or result identical to raw
+                            let shown = if raw.is_empty() { "(empty)" } else { raw };
+                            out.push_str(&format!("{:<16} {}\n", label, shown));
+                        } else if !disp.is_empty() && disp != raw && disp != fin {
+                            // 3-tier: raw OCR -> fuzzy-matched name -> GOOD key
+                            out.push_str(&format!("{:<16} {} -> {} -> {}\n",
+                                label, raw, disp, fin));
                         } else {
-                            out.push_str(&format!("{:<16} {} -> {}\n",
-                                format!("{}:", field_name),
-                                display_raw,
-                                final_result,
-                            ));
+                            out.push_str(&format!("{:<16} {} -> {}\n", label, raw, fin));
                         }
                     }
                     DumpEntry::PixelCheck { field_name, rgb, result_text, .. } => {
@@ -475,6 +863,28 @@ impl DumpCollector {
                             rgb[0], rgb[1], rgb[2],
                             result_text,
                         ));
+                    }
+                    DumpEntry::Constellation { level, nodes } => {
+                        out.push_str(&format!("{:<16} C{}\n", "constellation:", level));
+                        for (i, &(_pos, activated, brightness, threshold)) in nodes.iter().enumerate() {
+                            out.push_str(&format!("  C{}: {:<3} brightness={:.0} threshold={:.0}\n",
+                                i + 1,
+                                if activated { "yes" } else { "no" },
+                                brightness,
+                                threshold,
+                            ));
+                        }
+                    }
+                    DumpEntry::GridOverlay { cells, detections } => {
+                        out.push_str(&format!("{:<16} {} cells\n", "grid:", cells.len()));
+                        let locks: Vec<_> = detections.iter().filter(|d| d.1).map(|d| d.0).collect();
+                        let astrals: Vec<_> = detections.iter().filter(|d| d.2).map(|d| d.0).collect();
+                        if !locks.is_empty() {
+                            out.push_str(&format!("{:<16} cells {:?}\n", "  locked:", locks));
+                        }
+                        if !astrals.is_empty() {
+                            out.push_str(&format!("{:<16} cells {:?}\n", "  astral:", astrals));
+                        }
                     }
                 }
             }
@@ -520,19 +930,6 @@ fn capitalize(s: &str) -> String {
     match c.next() {
         None => String::new(),
         Some(f) => f.to_uppercase().to_string() + c.as_str(),
-    }
-}
-
-/// Truncate a string for use in an on-image label (ASCII-safe, max 40 chars).
-/// Replaces CJK characters with `?` since the bitmap font can't render them.
-fn truncate_for_label(s: &str) -> String {
-    let cleaned: String = s.trim().chars().map(|c| {
-        if c as u32 >= 32 && c as u32 <= 127 { c } else { '?' }
-    }).collect();
-    if cleaned.len() > 40 {
-        format!("{}...", &cleaned[..37])
-    } else {
-        cleaned
     }
 }
 

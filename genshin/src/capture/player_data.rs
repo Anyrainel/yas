@@ -64,6 +64,27 @@ const MIN_WEAPON_RARITY: u32 = 3;
 /// Minimum artifact rarity to export (4★+).
 const MIN_ARTIFACT_RARITY: u32 = 4;
 
+/// Artifact sets whose max rarity is 4★ (sourced from mappings.json).
+/// The data_cache incorrectly lists some of these at rarity 5, so we hardcode
+/// the true max rarity to avoid filtering out valid 4★ artifacts.
+const MAX_4STAR_ARTIFACT_SETS: &[&str] = &[
+    "Berserker",
+    "BraveHeart",
+    "DefendersWill",
+    "Gambler",
+    "Instructor",
+    "MartialArtist",
+    "PrayersForDestiny",
+    "PrayersForIllumination",
+    "PrayersForWisdom",
+    "PrayersToSpringtime",
+    "PrayersToTheFirmament",
+    "ResolutionOfSojourner",
+    "Scholar",
+    "TheExile",
+    "TinyMiracle",
+];
+
 /// Accumulates packet data and exports to GOOD format.
 pub struct PlayerData {
     data_cache: DataCache,
@@ -226,21 +247,23 @@ impl PlayerData {
                 let artifact_data = self.data_cache.get_artifact(item.item_id)?;
                 let artifact = equip.reliquary();
 
-                // Accumulate substats: group by property, sum values, track initial
-                let mut substats: IndexMap<Property, (f64, f64)> = IndexMap::new();
+                // Accumulate substats: group by property, sum values, track initial + per-roll
+                let mut substats: IndexMap<Property, (f64, f64, Vec<f64>)> = IndexMap::new();
                 for substat_id in artifact.append_prop_id_list.iter() {
                     let substat = self.data_cache.get_affix(*substat_id)?;
                     let entry = substats
                         .entry(substat.property)
-                        .or_insert((0.0, substat.value));
+                        .or_insert((0.0, substat.value, Vec::new()));
                     entry.0 += substat.value;
+                    entry.2.push(substat.value);
                 }
                 let substats: Vec<GoodSubStat> = substats
                     .into_iter()
-                    .map(|(property, (value, initial_value))| GoodSubStat {
+                    .map(|(property, (value, initial_value, rolls))| GoodSubStat {
                         key: property.good_name().to_string(),
                         value: round_stat(property, value),
                         initial_value: Some(round_stat(property, initial_value)),
+                        rolls,
                     })
                     .collect();
 
@@ -254,6 +277,7 @@ impl PlayerData {
                             key: substat.property.good_name().to_string(),
                             value: rounded,
                             initial_value: Some(rounded),
+                            rolls: vec![substat.value],
                         })
                     })
                     .collect();
@@ -275,11 +299,19 @@ impl PlayerData {
                     return None;
                 }
 
-                // Skip artifacts below their set's max rarity (e.g. 4★ of a 5★ set)
-                if let Some(max_rarity) = self.data_cache.artifact_set_max_rarity(&artifact_data.set) {
-                    if (rarity as u32) < max_rarity {
-                        return None;
-                    }
+                // Skip artifacts below their set's max rarity (e.g. 4★ of a 5★ set).
+                // Use the hardcoded MAX_4STAR_ARTIFACT_SETS list as ground truth for
+                // 4★-max sets, since data_cache incorrectly reports some as rarity 5.
+                let good_key = to_good_key(&artifact_data.set);
+                let true_max_rarity = if MAX_4STAR_ARTIFACT_SETS.contains(&good_key.as_str()) {
+                    4u32
+                } else {
+                    self.data_cache
+                        .artifact_set_max_rarity(&artifact_data.set)
+                        .unwrap_or(5)
+                };
+                if (rarity as u32) < true_max_rarity {
+                    return None;
                 }
 
                 Some(GoodArtifact {
@@ -343,11 +375,12 @@ impl PlayerData {
     }
 }
 
-/// Round a stat value the same way the game does (half-up rounding).
+/// Round a stat value the same way the game does (f64 half-up rounding).
 ///
-/// Rust's `f64::round()` uses banker's rounding (round-to-even), which disagrees
-/// with the game at exact .5 boundaries. For example, DEF rolls 16.20+23.15+23.15
-/// = 62.50 → game displays 63, but banker's rounds to 62.
+/// Note: Rust's `f64::round()` is actually round-half-away-from-zero (correct
+/// for positive values), but we use the explicit floor(x+0.5) form to make the
+/// intent clear. Verified against 274 rounding boundary cases from packet
+/// capture vs OCR — the game uses half-up, not banker's rounding.
 ///
 /// Percentages round to 1 decimal; flat stats round to integers.
 fn round_stat(property: Property, value: f64) -> f64 {

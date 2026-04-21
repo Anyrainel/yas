@@ -42,9 +42,13 @@ pub fn exe_dir() -> PathBuf {
 #[cfg(target_os = "windows")]
 const ORT_DLL_NAME: &str = "onnxruntime.dll";
 
-/// Mirror URLs to try in order. CDN proxies first (fast globally), GitHub direct last.
+/// Mirror URLs to try in order.
+/// NuGet global CDN first (Akamai, good China connectivity), then GitHub proxies,
+/// then GitHub direct. NuGet .nupkg is a ZIP with a different internal DLL path
+/// (see `extract_onnxruntime_dll`).
 #[cfg(target_os = "windows")]
 const ORT_DOWNLOAD_URLS: &[&str] = &[
+    "https://globalcdn.nuget.org/packages/microsoft.ml.onnxruntime.1.22.0.nupkg",
     "https://gh-proxy.com/https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-1.22.0.zip",
     "https://ghfast.top/https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-1.22.0.zip",
     "https://github.com/microsoft/onnxruntime/releases/download/v1.22.0/onnxruntime-win-x64-1.22.0.zip",
@@ -54,6 +58,66 @@ const ORT_DOWNLOAD_URLS: &[&str] = &[
 /// Anything smaller is almost certainly a corrupted or partial download.
 #[cfg(target_os = "windows")]
 const ORT_DLL_MIN_SIZE: u64 = 5 * 1024 * 1024; // 5 MB
+
+/// VC++ runtime DLLs required by onnxruntime.dll (from VS 2015-2022 Redistributable x64).
+#[cfg(target_os = "windows")]
+const VCPP_REQUIRED_DLLS: &[&str] = &[
+    "VCRUNTIME140.dll",
+    "VCRUNTIME140_1.dll",
+    "MSVCP140.dll",
+    "MSVCP140_1.dll",
+];
+
+/// Check if the Visual C++ 2015-2022 Redistributable (x64) is installed by
+/// verifying that all required runtime DLLs can be loaded.
+///
+/// Returns `Ok(())` if all DLLs are present, or `Err` with a user-facing
+/// message listing the missing DLLs and a download link.
+#[cfg(target_os = "windows")]
+pub fn check_vcpp_runtime() -> Result<()> {
+    use windows_sys::Win32::System::LibraryLoader::LoadLibraryExW;
+    use windows_sys::Win32::System::LibraryLoader::LOAD_LIBRARY_SEARCH_SYSTEM32;
+
+    let mut missing = Vec::new();
+    for &dll_name in VCPP_REQUIRED_DLLS {
+        let wide: Vec<u16> = dll_name.encode_utf16().chain(std::iter::once(0)).collect();
+        let handle = unsafe {
+            LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32)
+        };
+        if handle.is_null() {
+            missing.push(dll_name);
+        } else {
+            unsafe { windows_sys::Win32::Foundation::FreeLibrary(handle) };
+        }
+    }
+
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    const VCPP_URL: &str = "https://aka.ms/vs/17/release/vc_redist.x64.exe";
+    let missing_list = missing.join(", ");
+    log_error!(
+        "缺少 Visual C++ 运行库: {}",
+        "Missing Visual C++ runtime DLLs: {}",
+        missing_list
+    );
+    log_error!(
+        "请安装 VC++ 2015-2022 Redistributable (x64): {}",
+        "Install VC++ 2015-2022 Redistributable (x64): {}",
+        VCPP_URL
+    );
+    Err(anyhow!(
+        "缺少 Visual C++ 运行库 ({})，OCR引擎无法加载。\n\
+         请下载安装: {}\n\
+         / Missing Visual C++ runtime ({}). The OCR engine cannot load.\n\
+         Please install from: {}",
+        missing_list,
+        VCPP_URL,
+        missing_list,
+        VCPP_URL,
+    ))
+}
 
 /// Check if ONNX Runtime is available. Returns true if found, false if download needed.
 /// Also detects corrupted/truncated files by checking the DLL size.
@@ -153,6 +217,8 @@ fn download_onnxruntime_inner(dll_path: &std::path::Path) -> Result<()> {
 /// instead of any older/incompatible system DLL that might be on PATH.
 #[cfg(target_os = "windows")]
 fn ensure_onnxruntime() -> Result<()> {
+    check_vcpp_runtime()?;
+
     if check_onnxruntime() {
         return Ok(());
     }
@@ -171,6 +237,10 @@ fn ensure_onnxruntime() -> Result<()> {
 }
 
 /// Extract onnxruntime.dll from the downloaded zip archive.
+///
+/// Supports two layouts:
+/// - GitHub release zip: `onnxruntime-win-x64-*/lib/onnxruntime.dll`
+/// - NuGet .nupkg: `runtimes/win-x64/native/onnxruntime.dll`
 #[cfg(target_os = "windows")]
 fn extract_onnxruntime_dll(zip_bytes: &[u8], dest: &std::path::Path) -> Result<()> {
     use std::io::{Cursor, Read};
@@ -178,11 +248,16 @@ fn extract_onnxruntime_dll(zip_bytes: &[u8], dest: &std::path::Path) -> Result<(
     let mut archive = zip::ZipArchive::new(reader)
         .map_err(|e| anyhow!("无法打开压缩包 / Cannot open zip archive: {}", e))?;
 
+    let suffixes = [
+        "lib/onnxruntime.dll",               // GitHub release zip
+        "runtimes/win-x64/native/onnxruntime.dll", // NuGet .nupkg
+    ];
+
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)
             .map_err(|e| anyhow!("无法读取压缩包条目 / Cannot read zip entry: {}", e))?;
         let name = file.name().to_string();
-        if name.ends_with("lib/onnxruntime.dll") {
+        if suffixes.iter().any(|s| name.ends_with(s)) {
             let mut buf = Vec::new();
             file.read_to_end(&mut buf)?;
             std::fs::write(dest, &buf)?;
@@ -220,12 +295,17 @@ fn default_open_delay() -> u64 { DEFAULT_DELAY_OPEN_SCREEN }
 fn default_close_delay() -> u64 { DEFAULT_DELAY_CLOSE_SCREEN }
 fn default_scroll_delay() -> u64 { DEFAULT_DELAY_SCROLL }
 fn default_tab_delay() -> u64 { DEFAULT_DELAY_INV_TAB_SWITCH }
-fn default_capture_delay() -> u64 { DEFAULT_DELAY_CAPTURE }
+fn default_weapon_panel_delay() -> u64 { DEFAULT_WEAPON_PANEL_DELAY }
+fn default_artifact_panel_timeout() -> u64 { DEFAULT_ARTIFACT_PANEL_TIMEOUT }
+fn default_artifact_extra_delay() -> u64 { DEFAULT_ARTIFACT_EXTRA_DELAY }
 
 fn default_mgr_transition() -> u64 { 1500 }
 fn default_mgr_action() -> u64 { 800 }
 fn default_mgr_cell() -> u64 { 100 }
 fn default_mgr_scroll() -> u64 { 400 }
+
+fn default_true() -> bool { true }
+fn default_server_port() -> u16 { 8765 }
 
 /// Deserialize a u64 that may arrive as a number, a numeric string, or an
 /// empty/invalid string.  Non-numeric values silently fall back to 0 so that
@@ -266,14 +346,17 @@ fn is_default_open_delay(v: &u64) -> bool { *v == DEFAULT_DELAY_OPEN_SCREEN }
 fn is_default_close_delay(v: &u64) -> bool { *v == DEFAULT_DELAY_CLOSE_SCREEN }
 fn is_default_scroll_delay(v: &u64) -> bool { *v == DEFAULT_DELAY_SCROLL }
 fn is_default_tab_delay(v: &u64) -> bool { *v == DEFAULT_DELAY_INV_TAB_SWITCH }
-fn is_default_capture_delay(v: &u64) -> bool { *v == DEFAULT_DELAY_CAPTURE }
+fn is_default_weapon_panel_delay(v: &u64) -> bool { *v == DEFAULT_WEAPON_PANEL_DELAY }
+fn is_default_artifact_panel_timeout(v: &u64) -> bool { *v == DEFAULT_ARTIFACT_PANEL_TIMEOUT }
+fn is_default_artifact_extra_delay(v: &u64) -> bool { *v == DEFAULT_ARTIFACT_EXTRA_DELAY }
 
 /// Fields in GoodUserConfig that must be unsigned integers.
 /// If the JSON has an invalid value (e.g. empty string from old config versions),
 /// we remove the field so serde fills in its default.
 const U64_FIELDS: &[&str] = &[
     "char_tab_delay", "char_next_delay", "char_open_delay", "char_close_delay",
-    "inv_scroll_delay", "inv_tab_delay", "inv_open_delay", "capture_delay",
+    "inv_scroll_delay", "inv_tab_delay", "inv_open_delay",
+    "weapon_panel_delay", "artifact_panel_timeout", "artifact_extra_delay",
     "mgr_transition_delay", "mgr_action_delay", "mgr_cell_delay", "mgr_scroll_delay",
     // Old aliases — also sanitize in case they appear
     "weapon_scroll_delay", "artifact_scroll_delay", "weapon_tab_delay", "artifact_tab_delay",
@@ -338,9 +421,17 @@ pub struct GoodUserConfig {
     #[serde(default = "default_open_delay", skip_serializing_if = "is_default_open_delay", deserialize_with = "deserialize_u64_lenient", alias = "weapon_open_delay", alias = "artifact_open_delay")]
     pub inv_open_delay: u64,
 
-    /// Delay (ms) after panel load detection, before screen capture for OCR.
-    #[serde(default = "default_capture_delay", skip_serializing_if = "is_default_capture_delay", deserialize_with = "deserialize_u64_lenient")]
-    pub capture_delay: u64,
+    /// Weapon: fixed delay (ms) before panel stability check.
+    #[serde(default = "default_weapon_panel_delay", skip_serializing_if = "is_default_weapon_panel_delay", deserialize_with = "deserialize_u64_lenient")]
+    pub weapon_panel_delay: u64,
+
+    /// Artifact: timeout (ms) for fingerprint-based panel load detection.
+    #[serde(default = "default_artifact_panel_timeout", skip_serializing_if = "is_default_artifact_panel_timeout", deserialize_with = "deserialize_u64_lenient")]
+    pub artifact_panel_timeout: u64,
+
+    /// Artifact: extra delay (ms) after panel load, before capture.
+    #[serde(default = "default_artifact_extra_delay", skip_serializing_if = "is_default_artifact_extra_delay", deserialize_with = "deserialize_u64_lenient")]
+    pub artifact_extra_delay: u64,
 
     // --- Manager delay settings ---
     /// Screen transition delay for the manager (ms). Default: 1500.
@@ -359,6 +450,33 @@ pub struct GoodUserConfig {
     /// GUI language preference: "zh" or "en".
     #[serde(default)]
     pub lang: String,
+
+    // --- GUI advanced settings (persisted so they survive restarts) ---
+
+    #[serde(default = "default_true")]
+    pub scan_characters: bool,
+    #[serde(default = "default_true")]
+    pub scan_weapons: bool,
+    #[serde(default = "default_true")]
+    pub scan_artifacts: bool,
+    #[serde(default)]
+    pub verbose: bool,
+    #[serde(default)]
+    pub continue_on_failure: bool,
+    #[serde(default)]
+    pub dump_images: bool,
+    #[serde(default)]
+    pub save_on_cancel: bool,
+    #[serde(default)]
+    pub char_max_count: usize,
+    #[serde(default)]
+    pub weapon_max_count: usize,
+    #[serde(default)]
+    pub artifact_max_count: usize,
+    #[serde(default = "default_server_port")]
+    pub server_port: u16,
+    #[serde(default = "default_true")]
+    pub update_inventory: bool,
 }
 
 impl GoodUserConfig {
@@ -375,21 +493,6 @@ impl GoodUserConfig {
         }
     }
 
-    /// Returns `true` if any delay field is set below its default value.
-    pub fn has_below_default_delays(&self) -> bool {
-        self.char_tab_delay < default_char_tab_delay()
-            || self.char_next_delay < default_char_next_delay()
-            || self.char_open_delay < default_open_delay()
-            || self.char_close_delay < default_close_delay()
-            || self.inv_scroll_delay < default_scroll_delay()
-            || self.inv_tab_delay < default_tab_delay()
-            || self.inv_open_delay < default_open_delay()
-            || self.capture_delay < default_capture_delay()
-            || self.mgr_transition_delay < default_mgr_transition()
-            || self.mgr_action_delay < default_mgr_action()
-            || self.mgr_cell_delay < default_mgr_cell()
-            || self.mgr_scroll_delay < default_mgr_scroll()
-    }
 }
 
 impl Default for GoodUserConfig {
@@ -406,12 +509,26 @@ impl Default for GoodUserConfig {
             inv_scroll_delay: default_scroll_delay(),
             inv_tab_delay: default_tab_delay(),
             inv_open_delay: default_open_delay(),
-            capture_delay: default_capture_delay(),
+            weapon_panel_delay: default_weapon_panel_delay(),
+            artifact_panel_timeout: default_artifact_panel_timeout(),
+            artifact_extra_delay: default_artifact_extra_delay(),
             mgr_transition_delay: default_mgr_transition(),
             mgr_action_delay: default_mgr_action(),
             mgr_cell_delay: default_mgr_cell(),
             mgr_scroll_delay: default_mgr_scroll(),
             lang: String::new(),
+            scan_characters: true,
+            scan_weapons: true,
+            scan_artifacts: true,
+            verbose: false,
+            continue_on_failure: false,
+            dump_images: false,
+            save_on_cancel: false,
+            char_max_count: 0,
+            weapon_max_count: 0,
+            artifact_max_count: 0,
+            server_port: default_server_port(),
+            update_inventory: true,
         }
     }
 }
@@ -649,7 +766,7 @@ impl GoodScannerApplication {
             log_progress: config.log_progress,
             dump_images: config.dump_images,
             max_count: config.weapon_max_count,
-            capture_delay: user_config.capture_delay,
+            panel_delay: user_config.weapon_panel_delay,
         }
     }
 
@@ -667,7 +784,8 @@ impl GoodScannerApplication {
             log_progress: config.log_progress,
             dump_images: config.dump_images,
             max_count: config.artifact_max_count,
-            capture_delay: user_config.capture_delay,
+            panel_timeout: user_config.artifact_panel_timeout,
+            extra_delay: user_config.artifact_extra_delay,
         }
     }
 
@@ -852,6 +970,7 @@ pub fn run_scan_core(
     cancel_token: Option<yas::cancel::CancelToken>,
 ) -> Result<String> {
     init_rayon_pool();
+    crate::scanner::common::annotator::init(config.dump_images);
 
     let report = |msg: &str| {
         if let Some(f) = status_fn { f(msg); }
@@ -879,9 +998,9 @@ pub fn run_scan_core(
     report("查找游戏窗口 / Finding game window...");
     let game_info = GoodScannerApplication::get_game_info()?;
     log_info!(
-        "游戏窗口: {}x{}, 云游戏={}",
-        "Game window: {}x{}, cloud={}",
-        game_info.window.width, game_info.window.height, game_info.is_cloud,
+        "游戏窗口: {}x{}",
+        "Game window: {}x{}",
+        game_info.window.width, game_info.window.height,
     );
 
     report("初始化屏幕截图 / Initializing screen capture...");
@@ -968,6 +1087,9 @@ pub fn run_scan_core(
         }
     }
 
+    // Wait for any pending debug image writes to finish
+    crate::scanner::common::annotator::flush();
+
     // Export as GOOD v3
     let export = GoodExport::new(characters, weapons, artifacts);
     let json = serde_json::to_string_pretty(&export)?;
@@ -1001,6 +1123,7 @@ pub fn run_server_core(
     dump_images: bool,
 ) -> Result<()> {
     init_rayon_pool();
+    crate::scanner::common::annotator::init(dump_images);
 
     #[cfg(target_os = "windows")]
     {
@@ -1019,7 +1142,7 @@ pub fn run_server_core(
     let ocr_be = ocr_backend.unwrap_or("ppocrv5").to_string();
     let substat_ocr = artifact_substat_ocr.to_string();
     let scroll_delay = user_config.inv_scroll_delay;
-    let capture_delay = user_config.capture_delay;
+    let capture_delay = user_config.artifact_extra_delay;
     let mappings_clone = mappings.clone();
 
     let mgr_delays = crate::manager::ui_actions::ManagerDelays {
@@ -1099,7 +1222,7 @@ pub fn run_manage_json(
     let manager = crate::manager::orchestrator::ArtifactManager::new(
         mappings,
         pools,
-        user_config.capture_delay,
+        user_config.artifact_extra_delay,
         user_config.inv_scroll_delay,
         false,
         false, // dump_images: offline JSON mode doesn't support it

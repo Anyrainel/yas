@@ -7,7 +7,7 @@ use yas::{log_debug, log_info, log_warn};
 
 use crate::scanner::artifact::GoodArtifactScanner;
 use crate::scanner::common::backpack_scanner::{
-    self, BackpackScanConfig, BackpackScanner, GridEvent, ScanAction,
+    self, BackpackScanConfig, BackpackScanner, GridEvent, PanelWaitMode, ScanAction,
 };
 use crate::scanner::common::constants::*;
 use super::ui_actions::{d_action, d_cell};
@@ -53,7 +53,7 @@ struct PageToggle {
 }
 
 /// Panel pool rect for wait_until_panel_loaded (same as backpack_scanner).
-const PANEL_POOL_RECT: (f64, f64, f64, f64) = (1400.0, 300.0, 300.0, 200.0);
+const PANEL_POOL_RECT: (f64, f64, f64, f64) = (1330.0, 478.0, 370.0, 187.0);
 
 impl LockManager {
     pub fn new(
@@ -180,8 +180,10 @@ impl LockManager {
         // when a max target level has been computed (fast mode).
         let scan_config = BackpackScanConfig {
             delay_scroll,
-            delay_before_capture: capture_delay,
+            panel_wait: PanelWaitMode::Fingerprint { timeout_ms: 200 },
+            extra_delay: capture_delay,
             probe_last_cell_per_page: max_target_level >= 0,
+            detect_grid_duplicates: false,
         };
 
         // Clones for closure capture.
@@ -432,11 +434,6 @@ impl LockManager {
                         toggle_counter += 1;
 
                         if new_lock == toggle.desired_lock {
-                            if toggle.desired_lock {
-                                log_debug!("[lock_manager] 锁定成功 ({},{})", "[lock_manager] Lock success ({},{})", toggle.row, toggle.col);
-                            } else {
-                                log_debug!("[lock_manager] 解锁成功 ({},{})", "[lock_manager] Unlock success ({},{})", toggle.row, toggle.col);
-                            }
                             results.insert(toggle.result_id.clone(), InstructionResult {
                                 id: toggle.result_id.clone(),
                                 status: InstructionStatus::Success,

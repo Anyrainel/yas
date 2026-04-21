@@ -34,7 +34,14 @@ pub const DEFAULT_DELAY_CHAR_NEXT: u64 = 300;
 pub const DEFAULT_DELAY_INV_TAB_SWITCH: u64 = 400;
 pub const DEFAULT_DELAY_SCROLL: u64 = 200;
 pub const DEFAULT_DELAY_GRID_ITEM: u64 = 125;
-pub const DEFAULT_DELAY_CAPTURE: u64 = 40;
+/// Weapon: fixed delay (ms) before stability check. Weapons use fixed-delay
+/// mode because identical weapons have identical panels (fingerprint won't change).
+pub const DEFAULT_WEAPON_PANEL_DELAY: u64 = 50;
+/// Artifact: timeout (ms) for fingerprint-based panel load detection.
+pub const DEFAULT_ARTIFACT_PANEL_TIMEOUT: u64 = 200;
+/// Artifact: extra delay (ms) after panel load detection, before capture.
+pub const DEFAULT_ARTIFACT_EXTRA_DELAY: u64 = 0;
+
 
 // ================================================================
 // Character scanner coordinates (at 1920x1080 base resolution)
@@ -44,7 +51,7 @@ pub const DEFAULT_DELAY_CAPTURE: u64 = 40;
 /// Character name + element OCR region
 pub const CHAR_NAME_RECT: (f64, f64, f64, f64) = (128.0, 18.0, 330.0, 60.0);
 /// Character level OCR region
-pub const CHAR_LEVEL_RECT: (f64, f64, f64, f64) = (1440.0, 203.0, 248.0, 42.0);
+pub const CHAR_LEVEL_RECT: (f64, f64, f64, f64) = (1443.0, 203.0, 242.0, 42.0);
 
 /// Left-side tab positions (character detail screen)
 pub const CHAR_TAB_ATTRIBUTES: (f64, f64) = (220.0, 158.0);
@@ -92,11 +99,11 @@ pub const CONSTELLATION_THRESHOLDS: [f64; 6] = [
 
 /// Talent overview OCR regions (level display on right side of talent list)
 /// Width: 90px to accommodate 2-digit levels (Lv.13) at 1080p.
-pub const CHAR_TALENT_OVERVIEW_AUTO: (f64, f64, f64, f64) = (1620.0, 166.0, 90.0, 30.0);
-pub const CHAR_TALENT_OVERVIEW_SKILL: (f64, f64, f64, f64) = (1620.0, 256.0, 90.0, 30.0);
-pub const CHAR_TALENT_OVERVIEW_BURST: (f64, f64, f64, f64) = (1620.0, 346.0, 90.0, 30.0);
+pub const CHAR_TALENT_OVERVIEW_AUTO: (f64, f64, f64, f64) = (1620.0, 167.0, 90.0, 30.0);
+pub const CHAR_TALENT_OVERVIEW_SKILL: (f64, f64, f64, f64) = (1620.0, 258.0, 90.0, 30.0);
+pub const CHAR_TALENT_OVERVIEW_BURST: (f64, f64, f64, f64) = (1620.0, 349.0, 90.0, 30.0);
 /// Special burst position for Ayaka/Mona (4-slot talent layout)
-pub const CHAR_TALENT_OVERVIEW_BURST_SPECIAL: (f64, f64, f64, f64) = (1620.0, 436.0, 90.0, 30.0);
+pub const CHAR_TALENT_OVERVIEW_BURST_SPECIAL: (f64, f64, f64, f64) = (1620.0, 439.0, 90.0, 30.0);
 
 /// Talent detail click positions (x=1695, y = 165 + index*90)
 pub const CHAR_TALENT_CLICK_X: f64 = 1695.0;
@@ -118,7 +125,7 @@ pub const WEAPON_CARD_X: f64 = 1307.0;
 pub const WEAPON_CARD_Y: f64 = 119.0;
 
 /// Weapon OCR regions (relative offsets from card base are baked in)
-pub const WEAPON_NAME_RECT: (f64, f64, f64, f64) = (1307.0, 119.0, 494.0, 59.0);
+pub const WEAPON_NAME_RECT: (f64, f64, f64, f64) = (1305.0, 119.0, 496.0, 59.0);
 pub const WEAPON_LEVEL_RECT: (f64, f64, f64, f64) = (1370.0, 389.0, 131.0, 30.0);
 pub const WEAPON_REFINEMENT_RECT: (f64, f64, f64, f64) = (1368.0, 439.0, 124.0, 32.0);
 pub const WEAPON_EQUIP_RECT: (f64, f64, f64, f64) = (1417.0, 999.0, 419.0, 50.0);

@@ -9,11 +9,11 @@ use regex::Regex;
 use yas::ocr::ImageToText;
 
 use super::GoodWeaponScannerConfig;
-use crate::scanner::common::backpack_scanner::{BackpackScanConfig, BackpackScanner, GridEvent, ScanAction};
+use crate::scanner::common::backpack_scanner::{BackpackScanConfig, BackpackScanner, GridEvent, PanelWaitMode, ScanAction};
 use crate::scanner::common::constants::*;
 use crate::scanner::common::coord_scaler::CoordScaler;
 use crate::scanner::common::equip_parser;
-use crate::scanner::common::fuzzy_match::fuzzy_match_map;
+use crate::scanner::common::fuzzy_match::{fuzzy_match_map, fuzzy_match_map_pair};
 use crate::scanner::common::grid_icon_detector::{GridIconResult, GridMode};
 use crate::scanner::common::grid_voter::{PagedGridVoter, ReadyItem};
 
@@ -24,6 +24,7 @@ lazy_static::lazy_static! {
     static ref REFINE_R_RE: Regex = Regex::new(r"(?i)[Rr](\d)").unwrap();
     static ref BARE_DIGIT_RE: Regex = Regex::new(r"(\d)").unwrap();
 }
+use crate::scanner::common::annotator;
 use crate::scanner::common::game_controller::GenshinGameController;
 use crate::scanner::common::mappings::MappingManager;
 use crate::scanner::common::models::{DebugOcrField, DebugScanResult, GoodWeapon};
@@ -152,29 +153,20 @@ impl GoodWeaponScanner {
         ocr_regions: &WeaponOcrRegions,
         mappings: &MappingManager,
         config: &GoodWeaponScannerConfig,
-        item_index: usize,
+        _item_index: usize,
         grid_icons: Option<GridIconResult>,
     ) -> Result<WeaponScanResult> {
-        use crate::scanner::common::debug_dump::DumpCollector;
-        use super::super::common::constants::{WEAPON_LOCK_POS1, STAR_Y};
-
-        // Create dump collector at top (before any detection)
-        let mut dump = if config.dump_images {
-            let mut dc = DumpCollector::new("debug_images", "weapons", item_index, scaler);
-            dc.add_image("panel", image);
-            Some(dc)
-        } else {
-            None
-        };
+        use crate::scanner::common::debug_dump::level_cap_display;
+        use super::super::common::constants::STAR_Y;
 
         // OCR weapon name
         let name_text = Self::ocr_image_region(ocr, image, ocr_regions.name, scaler)?;
-        let weapon_key = fuzzy_match_map(&name_text, &mappings.weapon_name_map);
-        if let Some(ref mut d) = dump {
-            d.record_ocr(0, "name", ocr_regions.name, &name_text);
-        }
-        if config.verbose {
-            log_debug!("[weapon] 名称OCR: {:?} -> {:?}", "[weapon] name OCR: {:?} -> {:?}", name_text, weapon_key);
+        let weapon_pair = fuzzy_match_map_pair(&name_text, &mappings.weapon_name_map);
+        let weapon_key = weapon_pair.as_ref().map(|(_, k)| k.clone());
+        annotator::record_ocr("name", ocr_regions.name, &name_text);
+        annotator::set_label_below("name");
+        if let Some((entity, key)) = &weapon_pair {
+            log_debug!("[weapon] 名称OCR: {:?} -> {} ({})", "[weapon] name OCR: {:?} -> {} ({})", name_text, entity, key);
         }
 
         if weapon_key.is_none() {
@@ -182,45 +174,50 @@ impl GoodWeaponScanner {
             for &stop_name in WEAPON_STOP_NAMES.iter().chain(WEAPON_FORGING_STOP_NAMES.iter()) {
                 if name_text.contains(stop_name) {
                     log_info!("[weapon] 检测到「{}」，停止扫描", "[weapon] detected 「{}」, stopping", stop_name);
-                    if let Some(d) = dump { d.finalize_skip(&format!("stop signal: {}", stop_name)); }
+                    annotator::finalize_skip(&format!("stop signal: {}", stop_name));
                     return Ok(WeaponScanResult::Stop);
                 }
             }
 
             if pixel_utils::weapon_below_min_rarity(image, scaler, config.min_rarity) {
-                if let Some(d) = dump { d.finalize_skip("below min rarity"); }
+                annotator::finalize_skip("below min rarity");
                 return Ok(WeaponScanResult::Stop);
             }
 
             if config.continue_on_failure {
                 log_warn!("[weapon] 无法匹配「{}」，跳过", "[weapon] cannot match: 「{}」, skipping", name_text);
-                if let Some(d) = dump { d.finalize_error(None, &format!("cannot match weapon name: {}", name_text)); }
+                annotator::finalize_error(None, &format!("cannot match weapon name: {}", name_text));
                 return Ok(WeaponScanResult::Skip);
             }
-            if let Some(d) = dump { d.finalize_error(None, &format!("cannot match weapon name: {}", name_text)); }
+            annotator::finalize_error(None, &format!("cannot match weapon name: {}", name_text));
             bail!("无法匹配武器 / Cannot match weapon: \u{300C}{}\u{300D}", name_text);
         }
 
-        let weapon_key = weapon_key.unwrap();
-        if let Some(ref mut d) = dump {
-            d.set_final_result("name", &weapon_key);
-        }
+        let (cn_name_owned, weapon_key) = weapon_pair.unwrap();
+        annotator::set_final("name", &weapon_key);
+        let cn_name: &str = &cn_name_owned;
+        annotator::set_display("name", cn_name);
 
         // OCR level
         let level_text = Self::ocr_image_region(ocr, image, ocr_regions.level, scaler)?;
         let (level, ascended) = Self::parse_weapon_level(&level_text);
-        if let Some(ref mut d) = dump {
-            d.record_ocr(0, "level", ocr_regions.level, &level_text);
-            d.set_final_result("level", &format!("lv={} asc={}", level, ascended));
+        let level_display = level_cap_display(level, ascended);
+        // Show raw OCR only if it doesn't trivially resolve to the same level/cap
+        let raw_digits: String = level_text.chars().filter(|c| c.is_ascii_digit() || *c == '/').collect();
+        let display_digits: String = level_display.chars().filter(|c| c.is_ascii_digit() || *c == '/').collect();
+        if raw_digits == display_digits {
+            annotator::record_ocr("level", ocr_regions.level, &level_display);
+        } else {
+            annotator::record_ocr("level", ocr_regions.level, &level_text);
+            annotator::set_display("level", &level_display);
         }
+        annotator::set_final("level", &level_display);
 
         // OCR refinement
         let ref_text = Self::ocr_image_region(ocr, image, ocr_regions.refinement, scaler)?;
         let refinement = Self::parse_refinement(&ref_text);
-        if let Some(ref mut d) = dump {
-            d.record_ocr(0, "refinement", ocr_regions.refinement, &ref_text);
-            d.set_final_result("refinement", &format!("R{}", refinement));
-        }
+        annotator::record_ocr("refinement", ocr_regions.refinement, &ref_text);
+        annotator::set_final("refinement", &format!("R{}", refinement));
 
         // OCR equip status
         // Try primary engine first, fall back to v5 if no match (v4 dict lacks rare chars like 魈)
@@ -232,15 +229,24 @@ impl GoodWeaponScanner {
                 location = Self::parse_equip_location(&equip_text_v5, mappings);
                 if !location.is_empty() {
                     log_debug!("[weapon] {} 装备: v4「{}」失败, v5「{}」→ {}", "[weapon] {} equip: v4「{}」failed, v5「{}」→ {}", weapon_key, equip_text.trim(), equip_text_v5.trim(), location);
+                    annotator::add_warning(&format!("equip: v4「{}」failed, v5「{}」matched",
+                        equip_text.trim(), equip_text_v5.trim()));
                 }
             }
         }
         if !equip_text.is_empty() {
-            log_debug!("[weapon] {} 装备OCR: {:?} -> {:?}", "[weapon] {} equip OCR: {:?} -> {:?}", weapon_key, equip_text, location);
+            log_debug!("[weapon] {} 装备OCR: {:?} -> {}", "[weapon] {} equip OCR: {:?} -> {}", weapon_key, equip_text, location);
         }
-        if let Some(ref mut d) = dump {
-            d.record_ocr(0, "equip", ocr_regions.equip, &equip_text);
-            d.set_final_result("equip", if location.is_empty() { "(none)" } else { &location });
+        annotator::record_ocr("equip", ocr_regions.equip, &equip_text);
+        if location.is_empty() {
+            annotator::set_final("equip", "(none)");
+        } else {
+            annotator::set_final("equip", &location);
+            let cn_name = mappings.character_name_map.iter()
+                .find(|(_, v)| v.as_str() == location)
+                .map(|(cn, _)| cn.as_str())
+                .unwrap_or(&location);
+            annotator::set_display("equip", cn_name);
         }
 
         // Pixel-based detections
@@ -254,7 +260,7 @@ impl GoodWeaponScanner {
         let ascension = level_to_ascension(level, ascended);
 
         // Record pixel detections
-        if let Some(ref mut d) = dump {
+        {
             // Rarity — use the star band center position for the detected rarity
             let star_pos = match rarity {
                 5 => (1485.0, STAR_Y),
@@ -269,19 +275,27 @@ impl GoodWeaponScanner {
             } else {
                 [0, 0, 0]
             };
-            d.record_pixel(0, "rarity", star_pos, rgb, &format!("{}*", rarity));
+            annotator::record_pixel("rarity", star_pos, rgb, &format!("{}*", rarity));
 
-            // Lock
-            let lock_px = scaler.x(WEAPON_LOCK_POS1.0) as u32;
-            let lock_py = scaler.y(WEAPON_LOCK_POS1.1) as u32;
-            let lock_rgb = if lock_px < image.width() && lock_py < image.height() {
-                let p = image.get_pixel(lock_px, lock_py);
-                [p[0], p[1], p[2]]
+            if grid_icons.is_none() {
+                // Panel pixel-based: annotate the actual pixel position
+                // WEAPON_LOCK_POS1 from glob import of constants
+                let lock_pos = (WEAPON_LOCK_POS1.0, WEAPON_LOCK_POS1.1);
+                let lock_rgb = {
+                    let lx = scaler.x(lock_pos.0) as u32;
+                    let ly = scaler.y(lock_pos.1) as u32;
+                    if lx < image.width() && ly < image.height() {
+                        image.get_pixel(lx, ly).0
+                    } else {
+                        [0, 0, 0]
+                    }
+                };
+                annotator::record_pixel("lock", lock_pos, lock_rgb,
+                    if lock { "locked" } else { "unlocked" });
             } else {
-                [0, 0, 0]
-            };
-            d.record_pixel(0, "lock", WEAPON_LOCK_POS1, lock_rgb,
-                if lock { "locked" } else { "unlocked" });
+                annotator::add_warning(&format!("lock={} (source: grid)",
+                    if lock { "locked" } else { "unlocked" }));
+            }
         }
 
         let weapon = GoodWeapon {
@@ -294,10 +308,7 @@ impl GoodWeaponScanner {
             lock,
         };
 
-        if let Some(d) = dump {
-            let json = serde_json::to_string_pretty(&weapon).unwrap_or_default();
-            d.finalize_success(&json);
-        }
+        annotator::finalize_success(&serde_json::to_string_pretty(&weapon).unwrap_or_default());
 
         Ok(WeaponScanResult::Weapon(weapon))
     }
@@ -534,6 +545,13 @@ impl GoodWeaponScanner {
                 if worker_cancel.is_cancelled() {
                     return Ok(None);
                 }
+
+                annotator::begin_item("weapons", work_item.index, &worker_scaler);
+                annotator::add_image("panel", &work_item.image);
+                if let Some(ref ann) = work_item.grid_annotation {
+                    annotator::record_grid_overlay(ann.0.clone(), ann.1.clone());
+                }
+
                 let ocr_guard = worker_ocr_pool.get();
                 let equip_guard = worker_equip_pool.get();
 
@@ -547,24 +565,34 @@ impl GoodWeaponScanner {
                     &worker_config,
                     work_item.index,
                     work_item.metadata,
-                )? {
-                    WeaponScanResult::Weapon(weapon) => {
+                ) {
+                    Ok(WeaponScanResult::Weapon(weapon)) => {
                         if weapon.rarity >= worker_config.min_rarity {
                             Ok(Some(weapon))
                         } else {
+                            annotator::finalize_skip("below min rarity filter");
                             Ok(None)
                         }
                     }
-                    WeaponScanResult::Stop => Ok(None),
-                    WeaponScanResult::Skip => Ok(None),
+                    Ok(WeaponScanResult::Stop) => {
+                        annotator::finalize_skip("stop signal");
+                        Ok(None)
+                    }
+                    Ok(WeaponScanResult::Skip) => Ok(None),
+                    Err(e) => {
+                        annotator::finalize_error(None, &e.to_string());
+                        Err(e)
+                    }
                 }
             },
         );
 
         let scan_config = BackpackScanConfig {
             delay_scroll: self.config.delay_scroll,
-            delay_before_capture: self.config.capture_delay,
+            panel_wait: PanelWaitMode::FixedDelay { delay_ms: self.config.panel_delay },
+            extra_delay: 0,
             probe_last_cell_per_page: false,
+            detect_grid_duplicates: true,
         };
 
         let total = total_count as usize;
@@ -576,7 +604,7 @@ impl GoodWeaponScanner {
             for item in ready {
                 let worker_idx = item.idx - start_at;
                 if item_tx
-                    .send(WorkItem { index: worker_idx, image: item.image, metadata: item.metadata })
+                    .send(WorkItem { index: worker_idx, image: item.image, metadata: item.metadata, grid_annotation: item.grid_annotation })
                     .is_err()
                 {
                     log_error!("[weapon] 工作通道已关闭", "[weapon] worker channel closed");
@@ -614,21 +642,28 @@ impl GoodWeaponScanner {
         let _ = emit_ready(leftover, &item_tx);
 
         drop(item_tx);
-        let weapons = worker_handle.join();
+        let (weapons, index_map) = worker_handle.join();
 
+        // Write index map for debug image correlation (output position → folder name)
+        if self.config.dump_images {
+            let map_path = std::path::Path::new("debug_images").join("weapons").join("index_map.json");
+            let _ = std::fs::write(&map_path, serde_json::to_string(&index_map).unwrap_or_default());
+        }
+
+        let elapsed = now.elapsed().unwrap_or_default().as_secs_f64();
         if cancel.is_cancelled() {
             log_info!(
-                "[weapon] 已中断，扫描了{}把武器，耗时{:?}",
-                "[weapon] interrupted, {} weapons scanned in {:?}",
+                "[weapon] 已中断，扫描了{}把武器，耗时{:.3}s",
+                "[weapon] interrupted, {} weapons scanned in {:.3}s",
                 weapons.len(),
-                now.elapsed().unwrap_or_default()
+                elapsed
             );
         } else {
             log_info!(
-                "[weapon] 完成，扫描了{}把武器，耗时{:?}",
-                "[weapon] complete, {} weapons scanned in {:?}",
+                "[weapon] 完成，扫描了{}把武器，耗时{:.3}s",
+                "[weapon] complete, {} weapons scanned in {:.3}s",
                 weapons.len(),
-                now.elapsed().unwrap_or_default()
+                elapsed
             );
         }
 

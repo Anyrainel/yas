@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
 use anyhow::{anyhow, Result};
-use yas::{log_debug, log_error, log_info, log_warn};
+use yas::{log_error, log_info, log_warn};
 use tiny_http::{Header, Method, Response, Server};
 
 use crate::manager::models::*;
@@ -321,7 +321,7 @@ where
                     }
                 }
                 if let Err(e) = request.respond(resp) {
-                    log_debug!("CORS preflight 响应失败: {}", "CORS preflight response failed: {}", e);
+                    log_warn!("CORS preflight 响应失败: {}", "CORS preflight response failed: {}", e);
                 }
                 continue;
             }
@@ -455,7 +455,6 @@ where
     // This thread owns ctrl (which is !Send) so it must be the original thread.
     // Game controller + manager are created lazily on first job to avoid
     // focusing the game window at server startup.
-    log_debug!("执行线程就绪", "Execution thread ready");
     let mut executor: Option<Box<dyn ManageExecutor>> = None;
     let mut init_executor = Some(init_executor);
 
@@ -524,7 +523,6 @@ where
                 let mut cache = artifact_cache.lock().unwrap();
                 if matches!(*cache, ArtifactCache::Complete(_)) {
                     *cache = ArtifactCache::Incomplete;
-                    log_debug!("[job {}] 执行前清除快照缓存", "[job {}] Pre-execution: artifact cache invalidated", job_id);
                 }
             }
         }
@@ -607,10 +605,8 @@ where
     // Channel disconnected — wait for internal threads to fully stop before
     // returning. Without this, detached threads may still be tearing down
     // when the process exits, causing heap corruption in test suites.
-    log_debug!("执行线程退出，等待内部线程", "Execution loop exited, joining internal threads");
     let _ = shutdown_watcher.join();
     let _ = http_thread.join();
-    log_debug!("HTTP 服务器已完全关闭", "HTTP server fully shut down");
     Ok(())
 }
 
@@ -995,6 +991,7 @@ mod tests {
                 key: "critRate_".to_string(),
                 value: 3.9,
                 initial_value: None,
+                rolls: vec![],
             }],
             location: String::new(),
             lock: locked,

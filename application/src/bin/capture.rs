@@ -35,7 +35,7 @@ fn main() {
 
     // Init GUI logger
     let logger = log_bridge::GuiLogger::new(log_lines.clone(), manager_log_lines, 2000);
-    logger.init();
+    logger.init(false);
 
     // Panic hook: write panics to log (stderr is invisible in GUI mode)
     std::panic::set_hook(Box::new(|info| {

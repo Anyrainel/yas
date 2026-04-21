@@ -39,18 +39,25 @@
 //! `T = (row, col)` so it can re-click the same grid cell later to toggle
 //! the lock.
 
+use std::sync::Arc;
+
 use image::RgbImage;
 
 use super::coord_scaler::CoordScaler;
 use super::grid_icon_detector::{
-    GridIconResult, GridMode, GridPageDetection, ITEMS_PER_PAGE,
+    GridCellAnnotation, GridIconResult, GridMode, GridPageDetection, ITEMS_PER_PAGE,
 };
+
+/// Grid annotation snapshot: cell bounding boxes + per-cell (index, lock, astral).
+pub type GridAnnotation = Arc<(Vec<GridCellAnnotation>, Vec<(usize, bool, bool)>)>;
 
 /// An item that is ready to be emitted by the caller (voting has settled).
 pub struct ReadyItem<T> {
     pub idx: usize,
     pub image: RgbImage,
     pub metadata: Option<GridIconResult>,
+    /// Grid overlay annotation data for the page (shared across items on the same page).
+    pub grid_annotation: Option<GridAnnotation>,
     pub payload: T,
 }
 
@@ -120,12 +127,14 @@ impl<T> PagedGridVoter<T> {
             state.detection.detect_pass(&image, scaler, idx);
             state.passes_done = 3;
             // Flush deferred items now that we have 3 passes.
+            let ann = state.detection.annotation_snapshot().map(Arc::new);
             for (d_idx, d_img, d_payload) in state.deferred.drain(..) {
                 let gi = state.detection.get(d_idx);
                 ready.push(ReadyItem {
                     idx: d_idx,
                     image: d_img,
                     metadata: gi,
+                    grid_annotation: ann.clone(),
                     payload: d_payload,
                 });
             }
@@ -138,7 +147,8 @@ impl<T> PagedGridVoter<T> {
         } else {
             // Either 1 pass (items 0–12) or 3 passes (items 26+).
             let gi = state.detection.get(idx);
-            ready.push(ReadyItem { idx, image, metadata: gi, payload });
+            let ann = state.detection.annotation_snapshot().map(Arc::new);
+            ready.push(ReadyItem { idx, image, metadata: gi, grid_annotation: ann, payload });
         }
 
         ready
@@ -164,6 +174,7 @@ impl<T> PagedGridVoter<T> {
             state.detection.detect_pass(trigger_image, scaler, trigger_idx);
             state.passes_done = 3;
         }
+        let ann = state.detection.annotation_snapshot().map(Arc::new);
         let mut ready = Vec::with_capacity(state.deferred.len());
         for (d_idx, d_img, d_payload) in state.deferred.drain(..) {
             let gi = state.detection.get(d_idx);
@@ -171,6 +182,7 @@ impl<T> PagedGridVoter<T> {
                 idx: d_idx,
                 image: d_img,
                 metadata: gi,
+                grid_annotation: ann.clone(),
                 payload: d_payload,
             });
         }
@@ -195,6 +207,7 @@ impl<T> PagedGridVoter<T> {
             state.detection.detect_pass(&last_img, scaler, last_idx);
             state.passes_done = 3;
         }
+        let ann = state.detection.annotation_snapshot().map(Arc::new);
         let mut ready = Vec::with_capacity(state.deferred.len());
         for (d_idx, d_img, d_payload) in state.deferred.drain(..) {
             let gi = state.detection.get(d_idx);
@@ -202,6 +215,7 @@ impl<T> PagedGridVoter<T> {
                 idx: d_idx,
                 image: d_img,
                 metadata: gi,
+                grid_annotation: ann.clone(),
                 payload: d_payload,
             });
         }

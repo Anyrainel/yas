@@ -6223,6 +6223,7 @@ dependencies = [
 name = "yas_scanner_genshin"
 version = "0.1.16"
 dependencies = [
+ "ab_glyph",
  "anyhow",
  "auto-artifactarium",
  "base64 0.22.1",
@@ -6248,6 +6249,7 @@ dependencies = [
  "tokio-util",
  "uuid",
  "windows-capture",
+ "windows-sys 0.59.0",
  "yas_core",
  "zip",
 ]

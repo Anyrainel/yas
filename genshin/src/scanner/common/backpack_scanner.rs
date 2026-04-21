@@ -7,8 +7,59 @@ use yas::ocr::ImageToText;
 use yas::utils;
 
 use super::constants::*;
+use super::coord_scaler::CoordScaler;
 use super::game_controller::GenshinGameController;
 use super::pixel_utils;
+
+/// Fingerprint a grid cell's region (excludes 3px border to avoid selection highlight).
+/// Sampled every 4th row for speed.
+fn cell_fingerprint(image: &RgbImage, scaler: &CoordScaler, row: usize, col: usize) -> u64 {
+    let cx = GRID_FIRST_X + col as f64 * GRID_OFFSET_X;
+    let cy = GRID_FIRST_Y + row as f64 * GRID_OFFSET_Y;
+    // Exclude outer 3px on each edge to avoid selection highlight bleed
+    let bx = cx - GRID_OFFSET_X * 0.5 + 3.0;
+    let by = cy - GRID_OFFSET_Y * 0.5 + 3.0;
+    let bw = GRID_OFFSET_X - 6.0;
+    let bh = GRID_OFFSET_Y - 6.0;
+
+    let x0 = scaler.x(bx) as u32;
+    let y0 = scaler.y(by) as u32;
+    let x1 = (scaler.x(bx + bw) as u32).min(image.width());
+    let y1 = (scaler.y(by + bh) as u32).min(image.height());
+
+    let mut sum: u64 = 0;
+    let mut y = y0;
+    while y < y1 {
+        for x in x0..x1 {
+            let p = image.get_pixel(x, y);
+            sum = sum.wrapping_add(p[0] as u64 + p[1] as u64 + p[2] as u64);
+        }
+        y += 4;
+    }
+    sum
+}
+
+/// Fingerprint all visible grid cells on the current page.
+/// Returns a vec of (grid_index, fingerprint) for items in [page_start..page_start+count].
+fn fingerprint_grid_cells(
+    image: &RgbImage,
+    scaler: &CoordScaler,
+    start_row: usize,
+    visible_rows: usize,
+    total_row: usize,
+    scanned_row: usize,
+    last_row_col: usize,
+) -> Vec<u64> {
+    let mut fps = Vec::new();
+    for r in start_row..start_row + visible_rows {
+        let cum_row = scanned_row + (r - start_row);
+        let cols = if cum_row == total_row - 1 { last_row_col } else { GRID_COLS };
+        for c in 0..cols {
+            fps.push(cell_fingerprint(image, scaler, r, c));
+        }
+    }
+    fps
+}
 
 /// If the "5-star sort by acquired time" filter is active on the artifact tab,
 /// click it to dismiss so that all rarities are visible.
@@ -152,26 +203,47 @@ pub enum GridEvent {
     PageScrolled,
 }
 
-/// Configuration for backpack grid scanning delays.
-pub struct BackpackScanConfig {
-    pub delay_scroll: u64,
-    /// Delay (ms) after panel load detection, before capture.
-    /// Gives the panel extra time to finish rendering text.
-    pub delay_before_capture: u64,
-    /// If true, `scan_grid` clicks the bottom-right visible cell at the start
-    /// of each page, captures its image, and emits `GridEvent::PageStarted`
-    /// so the caller can decide whether to skip the page. Scanners leave this
-    /// false; the lock manager enables it for its level-based page-skip
-    /// optimization.
-    pub probe_last_cell_per_page: bool,
+/// Panel wait strategy.
+pub enum PanelWaitMode {
+    /// Fixed delay then stability check (for weapons — identical items have identical panels).
+    FixedDelay { delay_ms: u64 },
+    /// Fingerprint-based detection: wait until panel content differs from previous AND is stable.
+    Fingerprint { timeout_ms: u64 },
 }
 
-/// Panel pool rect — region of the detail panel whose pixel sum changes
-/// when a different item is selected.
-const PANEL_POOL_RECT: (f64, f64, f64, f64) = (1400.0, 300.0, 300.0, 200.0);
+/// Configuration for backpack grid scanning.
+pub struct BackpackScanConfig {
+    pub delay_scroll: u64,
+    /// How to wait for the detail panel to load after clicking a grid item.
+    pub panel_wait: PanelWaitMode,
+    /// Extra delay (ms) after panel is ready, before capture.
+    pub extra_delay: u64,
+    /// If true, `scan_grid` clicks the bottom-right visible cell at the start
+    /// of each page, captures its image, and emits `GridEvent::PageStarted`
+    /// so the caller can decide whether to skip the page.
+    pub probe_last_cell_per_page: bool,
+    /// Enable duplicate grid cell detection. When true, at the start of each
+    /// page the grid cells are fingerprinted. If a cell matches the previous
+    /// cell, the panel wait is skipped entirely (for FixedDelay mode) or uses
+    /// a shorter timeout (for Fingerprint mode).
+    pub detect_grid_duplicates: bool,
+}
 
-/// Default timeout for panel-load detection (milliseconds).
-const PANEL_LOAD_TIMEOUT_MS: u64 = 400;
+/// Panel pool rect — substats + set name region whose pixel sum changes
+/// when a different item is selected. Covers both artifact and weapon panels.
+/// Panel fingerprint region — substats text area.
+/// Top at y=478 avoids the lock icon area (y=428) whose fade-in animation
+/// would prevent fingerprint stabilization.
+const PANEL_POOL_RECT: (f64, f64, f64, f64) = (1330.0, 478.0, 370.0, 187.0);
+
+// NOTE: The full right-panel detail area (covering all OCR + pixel-check
+// regions for both artifacts and weapons, with 10px margin) is approximately:
+//   (1310, 110, 480, 860)  — right edge at 1790, bottom at 970.
+// This can be used for partial-capture optimization in the future if the
+// grid voter is refactored to not need left-side grid icons from every image.
+
+/// Fast timeout for duplicate items in Fingerprint mode (e.g., identical weapons).
+const PANEL_LOAD_FAST_TIMEOUT_MS: u64 = 100;
 
 /// Delay between scroll ticks (milliseconds).
 const SCROLL_TICK_DELAY_MS: u32 = 10;
@@ -203,6 +275,7 @@ impl<'a> BackpackScanner<'a> {
     pub fn scaler(&self) -> &super::coord_scaler::CoordScaler {
         &self.ctrl.scaler
     }
+
 
     /// Open the backpack by pressing B.
     /// Assumes the game is on the main overworld UI.
@@ -267,19 +340,9 @@ impl<'a> BackpackScanner<'a> {
                 && self.pages_scrolled % SCROLL_CORRECTION_INTERVAL as u32 == 0
             {
                 ticks -= 1;
-                log_debug!(
-                    "[backpack] 第{}页滚动修正(-1刻度)",
-                    "[backpack] scroll correction at page {} (-1 tick)",
-                    self.pages_scrolled
-                );
             }
         }
 
-        log_debug!(
-            "[backpack] 滚动{}行({}刻度，第{}页)",
-            "[backpack] scroll {} rows ({} ticks, page {})",
-            row_count, ticks, self.pages_scrolled
-        );
 
         // Send scroll ticks with small delays to avoid overwhelming the game
         for i in 0..ticks {
@@ -327,12 +390,14 @@ impl<'a> BackpackScanner<'a> {
 
         // Click the first grid position to ensure focus
         self.ctrl.click_at(GRID_FIRST_X, GRID_FIRST_Y);
-        utils::sleep(300);
 
         let row = GRID_ROWS.min(total_row);
         let mut scanned_row: usize = 0;
         let mut scanned_count: usize = 0;
         let mut start_row: usize = 0;
+        // Per-page grid cell fingerprints for duplicate detection.
+        // Index within this vec = position on visible page.
+        let mut page_cell_fps: Vec<u64> = Vec::new();
 
         // Skip pages by scrolling
         if start_at > 0 {
@@ -373,12 +438,19 @@ impl<'a> BackpackScanner<'a> {
                 let x = GRID_FIRST_X + probe_col as f64 * GRID_OFFSET_X;
                 let y = GRID_FIRST_Y + probe_screen_row as f64 * GRID_OFFSET_Y;
                 self.ctrl.click_at(x, y);
-                let _ = self.ctrl.wait_until_panel_loaded(
-                    PANEL_POOL_RECT,
-                    PANEL_LOAD_TIMEOUT_MS,
-                );
-                if config.delay_before_capture > 0 {
-                    utils::sleep(config.delay_before_capture as u32);
+                match &config.panel_wait {
+                    PanelWaitMode::FixedDelay { delay_ms } => {
+                        utils::sleep(*delay_ms as u32);
+                        let _ = self.ctrl.ensure_panel_stable(PANEL_POOL_RECT, 100);
+                    }
+                    PanelWaitMode::Fingerprint { timeout_ms } => {
+                        let _ = self.ctrl.wait_until_panel_loaded(
+                            PANEL_POOL_RECT, *timeout_ms,
+                        );
+                    }
+                }
+                if config.extra_delay > 0 {
+                    utils::sleep(config.extra_delay as u32);
                 }
                 match self.ctrl.capture_game() {
                     Ok(image) => {
@@ -424,7 +496,20 @@ impl<'a> BackpackScanner<'a> {
                 }
                 scanned_row += rows_added;
             } else {
+                // Duplicate detection: fingerprint grid cells at page start.
+                if config.detect_grid_duplicates {
+                    if let Ok(grid_img) = self.ctrl.capture_game() {
+                        let visible_rows = row - start_row;
+                        page_cell_fps = fingerprint_grid_cells(
+                            &grid_img, &self.ctrl.scaler,
+                            start_row, visible_rows,
+                            total_row, scanned_row, last_row_col,
+                        );
+                    }
+                }
+
                 let mut stopped = false;
+                let mut page_item_idx: usize = 0; // position within this page
                 'page: for cur_row in start_row..row {
                     let row_item_count = if scanned_row == total_row - 1 {
                         last_row_col
@@ -441,6 +526,7 @@ impl<'a> BackpackScanner<'a> {
                         // Skip items before start_at
                         if scanned_count < start_at {
                             scanned_count += 1;
+                            page_item_idx += 1;
                             continue;
                         }
 
@@ -449,23 +535,45 @@ impl<'a> BackpackScanner<'a> {
                         let y = GRID_FIRST_Y + cur_row as f64 * GRID_OFFSET_Y;
                         self.ctrl.click_at(x, y);
 
-                        // Wait for panel to load
-                        let _ = self.ctrl.wait_until_panel_loaded(
-                            PANEL_POOL_RECT,
-                            PANEL_LOAD_TIMEOUT_MS,
-                        );
+                        // Is this cell a known duplicate of the previous?
+                        let is_duplicate = config.detect_grid_duplicates
+                            && page_item_idx > 0
+                            && page_item_idx < page_cell_fps.len()
+                            && page_cell_fps[page_item_idx] == page_cell_fps[page_item_idx - 1];
 
-                        // Pre-capture delay: let panel text finish rendering
-                        if config.delay_before_capture > 0 {
-                            utils::sleep(config.delay_before_capture as u32);
+                        // Wait for panel to load based on configured mode
+                        match &config.panel_wait {
+                            PanelWaitMode::FixedDelay { delay_ms } => {
+                                if !is_duplicate {
+                                    utils::sleep(*delay_ms as u32);
+                                    let _ = self.ctrl.ensure_panel_stable(
+                                        PANEL_POOL_RECT, 100,
+                                    );
+                                }
+                            }
+                            PanelWaitMode::Fingerprint { timeout_ms } => {
+                                let timeout = if is_duplicate {
+                                    PANEL_LOAD_FAST_TIMEOUT_MS
+                                } else {
+                                    *timeout_ms
+                                };
+                                let _ = self.ctrl.wait_until_panel_loaded(
+                                    PANEL_POOL_RECT, timeout,
+                                );
+                            }
                         }
 
-                        // Capture and process
+                        // Extra delay after panel ready
+                        if config.extra_delay > 0 {
+                            utils::sleep(config.extra_delay as u32);
+                        }
+
                         let image = match self.ctrl.capture_game() {
                             Ok(img) => img,
                             Err(e) => {
                                 log_error!("[backpack] 截图失败: {}", "[backpack] capture failed: {}", e);
                                 scanned_count += 1;
+                                page_item_idx += 1;
                                 continue;
                             }
                         };
@@ -488,15 +596,12 @@ impl<'a> BackpackScanner<'a> {
                                 break 'page;
                             }
                             ScanAction::SkipPage => {
-                                // SkipPage is only valid from PageStarted.
-                                log_debug!(
-                                    "[backpack] Item处理返回SkipPage，已忽略，视为Continue",
-                                    "[backpack] SkipPage from Item handler is ignored; treating as Continue"
-                                );
+                                // SkipPage is only valid from PageStarted; ignored here.
                             }
                         }
 
                         scanned_count += 1;
+                        page_item_idx += 1;
                     }
 
                     scanned_row += 1;
@@ -532,6 +637,9 @@ impl<'a> BackpackScanner<'a> {
             if !self.scroll_rows(scroll_row) {
                 break 'outer;
             }
+
+            // Reset fingerprint after scroll — new page means panel content changed
+            self.ctrl.reset_panel_fingerprint();
 
             let action = callback(&mut *self.ctrl, GridEvent::PageScrolled);
             if matches!(action, ScanAction::Stop) {

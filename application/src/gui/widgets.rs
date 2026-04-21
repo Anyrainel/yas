@@ -125,6 +125,8 @@ pub fn inventory_delays(ui: &mut egui::Ui, state: &mut AppState, l: Lang) {
         (l.t("翻页等待", "Page scroll"), &mut state.user_config.inv_scroll_delay, defaults.inv_scroll_delay),
         (l.t("标签切换", "Tab switch"), &mut state.user_config.inv_tab_delay, defaults.inv_tab_delay),
         (l.t("打开背包", "Open backpack"), &mut state.user_config.inv_open_delay, defaults.inv_open_delay),
-        (l.t("截图前等待", "Pre-capture"), &mut state.user_config.capture_delay, defaults.capture_delay),
+        (l.t("武器面板延迟", "Weapon panel delay"), &mut state.user_config.weapon_panel_delay, defaults.weapon_panel_delay),
+        (l.t("圣遗物面板超时", "Artifact panel timeout"), &mut state.user_config.artifact_panel_timeout, defaults.artifact_panel_timeout),
+        (l.t("圣遗物额外延迟", "Artifact extra delay"), &mut state.user_config.artifact_extra_delay, defaults.artifact_extra_delay),
     ]);
 }

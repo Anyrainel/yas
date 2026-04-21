@@ -440,7 +440,7 @@ fn run_sel_verify(dir: &str, json_path: &str) -> Result<()> {
             let mut active = Vec::new();
             let mut inactive = Vec::new();
             for s in &result.substats {
-                let sub = GoodSubStat { key: s.key.clone(), value: s.value, initial_value: None };
+                let sub = GoodSubStat { key: s.key.clone(), value: s.value, initial_value: None, rolls: vec![] };
                 if s.inactive { inactive.push(sub); } else { active.push(sub); }
             }
             (active, inactive)
@@ -448,7 +448,7 @@ fn run_sel_verify(dir: &str, json_path: &str) -> Result<()> {
             let mut active = Vec::new();
             let mut inactive = Vec::new();
             for (key, value, is_inactive) in &parsed_subs {
-                let sub = GoodSubStat { key: key.clone(), value: *value, initial_value: None };
+                let sub = GoodSubStat { key: key.clone(), value: *value, initial_value: None, rolls: vec![] };
                 if *is_inactive { inactive.push(sub); } else { active.push(sub); }
             }
             (active, inactive)

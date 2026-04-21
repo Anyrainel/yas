@@ -444,20 +444,14 @@ pub fn click_equipment_slot(
     yas::utils::sleep(d_cell() * 2);
 
     // Step 1: Click 圣遗物 menu to show artifact circles
-    log_debug!("[click_equipment_slot] 点击圣遗物菜单", "clicking artifact menu");
     ctrl.click_at(CHAR_ARTIFACT_MENU_X, CHAR_ARTIFACT_MENU_Y);
     yas::utils::sleep(d_transition() * 4 / 5); // wait for circle animation
 
     // Step 2: Click "替换" button to open the artifact selection list.
-    // The button appears at the bottom-right of the character artifact view.
-    log_debug!(
-        "[click_equipment_slot] 点击替换按钮({}, {})",
-        "clicking replace button at ({}, {})", CHAR_REPLACE_BUTTON_X, CHAR_REPLACE_BUTTON_Y);
     ctrl.click_at(CHAR_REPLACE_BUTTON_X, CHAR_REPLACE_BUTTON_Y);
     yas::utils::sleep(d_transition() * 4 / 3); // wait for selection view to load
 
     // Step 3: Click the correct slot tab
-    log_debug!("[click_equipment_slot] 点击{}标签({}, {})", "clicking {} tab at ({}, {})", slot_key, tab_pos.0, tab_pos.1);
     ctrl.click_at(tab_pos.0, tab_pos.1);
     yas::utils::sleep(d_action());
 
@@ -1483,7 +1477,6 @@ fn full_match_detail_panel(
     for (idx, rect) in sub_rects.iter().enumerate() {
         let text = ocr_region_enhanced(ctrl, ocr, *rect).unwrap_or_default();
         if text.is_empty() {
-            log_debug!("[{}] 副词条{}为空", "[{}] substat {} is empty", tag, idx);
             continue;
         }
         if let Some(parsed) = stat_parser::parse_stat_from_text(&text) {

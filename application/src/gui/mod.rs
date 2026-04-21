@@ -34,7 +34,7 @@ pub fn run_gui() {
         state.manager_log_lines.clone(),
         2000,
     );
-    logger.init();
+    logger.init(state.verbose);
 
     // Install a panic hook that writes to the log file (the default hook
     // writes to stderr, which GUI users never see).  This covers panics on

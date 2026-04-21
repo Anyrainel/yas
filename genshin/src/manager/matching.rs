@@ -99,6 +99,7 @@ mod tests {
                 key: k.to_string(),
                 value: *v,
                 initial_value: None,
+                rolls: vec![],
             }).collect(),
             location: String::new(),
             lock: false,
@@ -118,6 +119,7 @@ mod tests {
             key: k.to_string(),
             value: *v,
             initial_value: None,
+            rolls: vec![],
         }).collect();
         art
     }

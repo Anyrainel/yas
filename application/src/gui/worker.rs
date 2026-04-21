@@ -312,6 +312,15 @@ pub fn spawn_scan(state: &AppState) -> TaskHandle {
     let stopping_msg = lang.t("正在停止扫描...", "Stopping scan...").to_string();
 
     let handle = spawn_with_safety_net("Scanner", LogSource::Scanner, status.clone(), move |status| {
+        // Check VC++ runtime before loading ONNX
+        #[cfg(target_os = "windows")]
+        {
+            if let Err(e) = yas_genshin::cli::check_vcpp_runtime() {
+                *status.lock().unwrap() = TaskStatus::Failed(localize(&format!("{}", e)));
+                return;
+            }
+        }
+
         // Ensure ONNX runtime on the worker thread
         #[cfg(target_os = "windows")]
         {
@@ -404,6 +413,15 @@ pub fn spawn_server(state: &AppState) -> TaskHandle {
     *status.lock().unwrap() = TaskStatus::Running(msg);
 
     let handle = spawn_with_safety_net("Server", LogSource::Manager, status.clone(), move |status| {
+        // Check VC++ runtime before loading ONNX
+        #[cfg(target_os = "windows")]
+        {
+            if let Err(e) = yas_genshin::cli::check_vcpp_runtime() {
+                *status.lock().unwrap() = TaskStatus::Failed(localize(&format!("{}", e)));
+                return;
+            }
+        }
+
         // Ensure ONNX runtime
         #[cfg(target_os = "windows")]
         {

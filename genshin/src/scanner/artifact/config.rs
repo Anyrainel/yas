@@ -17,7 +17,10 @@ pub struct GoodArtifactScannerConfig {
     pub log_progress: bool,
     pub dump_images: bool,
     pub max_count: usize,
-    pub capture_delay: u64,
+    /// Timeout (ms) for fingerprint-based panel load detection.
+    pub panel_timeout: u64,
+    /// Extra delay (ms) after panel load, before capture.
+    pub extra_delay: u64,
 }
 
 impl Default for GoodArtifactScannerConfig {
@@ -34,7 +37,8 @@ impl Default for GoodArtifactScannerConfig {
             log_progress: false,
             dump_images: false,
             max_count: 0,
-            capture_delay: 40,
+            panel_timeout: 200,
+            extra_delay: 0,
         }
     }
 }

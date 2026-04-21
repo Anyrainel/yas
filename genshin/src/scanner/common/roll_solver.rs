@@ -62,11 +62,13 @@ fn is_percent_stat(key: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Roll table lookup — pre-computed from game's exact f32 + banker's rounding
+// Roll table lookup — pre-computed from rollTable.json
 // ---------------------------------------------------------------------------
 // Source: genshin-substat-lookup (rollTable.json), which enumerates ALL valid
-// display values using the game's exact C# float32 arithmetic and
-// string.Format banker's rounding.
+// display values by brute-forcing all roll combinations.
+// Verified: the game uses f64 half-up rounding (MidpointRounding.AwayFromZero),
+// NOT C#'s default banker's rounding — confirmed by comparing 274 boundary
+// cases between packet capture rolls and OCR-scanned display values.
 //
 // Each table entry is (display_value × 10, roll_count_bitmask) where
 // bit N-1 is set if N rolls can produce that display value.

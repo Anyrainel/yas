@@ -21,13 +21,13 @@ from scipy.optimize import linear_sum_assignment
 ARTIFACT_FIELD_IMAGES = {
     "setKey": ["set_name.png"],
     "mainStatKey": ["main_stat.png"],
-    "slotKey": ["name.png"],
+    "slotKey": ["slot.png"],
     "level": ["level.png"],
-    "rarity": ["star5_px.png", "star4_px.png"],
+    "rarity": ["rarity.png"],
     "location": ["equip.png"],
-    "lock": ["lock_px.png"],
-    "astralMark": ["astral_px.png"],
-    "elixirCrafted": ["elixir_px.png"],
+    "lock": ["annotated.png"],
+    "astralMark": ["annotated.png"],
+    "elixirCrafted": ["elixir.png"],
 }
 
 WEAPON_FIELD_IMAGES = {
@@ -35,12 +35,12 @@ WEAPON_FIELD_IMAGES = {
     "level": ["level.png"],
     "refinement": ["refinement.png"],
     "location": ["equip.png"],
-    "lock": ["lock_px.png"],
-    "rarity": ["star5_px.png", "star4_px.png", "star3_px.png"],
+    "lock": ["annotated.png"],
+    "rarity": ["rarity.png"],
 }
 
 # For substats, any substat field maps to all sub images
-SUBSTAT_IMAGES = ["sub0.png", "sub1.png", "sub2.png", "sub3.png"]
+SUBSTAT_IMAGES = ["sub[0].png", "sub[1].png", "sub[2].png", "sub[3].png"]
 
 
 def load_json(path):
@@ -387,13 +387,26 @@ def diff_single_weapon(exp, act):
     return diffs
 
 
-def find_dump_folder(images_dir, category, index, name_hint=""):
-    """Find the dump folder for an item by index."""
-    exact = os.path.join(images_dir, category, f"{index:04d}")
+def load_index_map(images_dir, category):
+    """Load the index map (output position → folder index) if available."""
+    map_path = os.path.join(images_dir, category, "index_map.json")
+    if os.path.exists(map_path):
+        with open(map_path, "r") as f:
+            return json.load(f)
+    return None
+
+
+def find_dump_folder(images_dir, category, index, index_map=None, name_hint=""):
+    """Find the dump folder for an item by output array index.
+
+    If index_map is available, translates output position to folder name.
+    """
+    folder_idx = index_map[index] if index_map and index < len(index_map) else index
+    exact = os.path.join(images_dir, category, f"{folder_idx:04d}")
     if os.path.isdir(exact):
         return exact
     # Fallback: try with name suffix (old format)
-    pattern = os.path.join(images_dir, category, f"{index:04d}_*")
+    pattern = os.path.join(images_dir, category, f"{folder_idx:04d}_*")
     matches = glob.glob(pattern)
     if matches:
         return matches[0]
@@ -412,7 +425,7 @@ def image_ref(folder, filename):
     return ""
 
 
-def images_for_field(folder, field, category="artifact"):
+def images_for_field(folder, field, category="artifact", act_art=None):
     """Get relevant image references for a diff field."""
     if folder is None:
         return []
@@ -426,10 +439,26 @@ def images_for_field(folder, field, category="artifact"):
             if ref:
                 refs.append(ref)
     elif "substats" in field or "unactivated" in field:
-        for img in SUBSTAT_IMAGES:
-            ref = image_ref(folder, img)
+        # Determine which substat line to show based on the stat key's position
+        # in the actual artifact's substat list
+        stat_key = field.split(".")[-1]  # e.g. "critRate_" from "substats.critRate_"
+        line_idx = None
+        if act_art and stat_key != "count":
+            all_subs = list(act_art.get("substats") or []) + list(act_art.get("unactivatedSubstats") or [])
+            for i, s in enumerate(all_subs):
+                if s.get("key") == stat_key:
+                    line_idx = i
+                    break
+        if line_idx is not None and line_idx < 4:
+            ref = image_ref(folder, f"sub[{line_idx}].png")
             if ref:
                 refs.append(ref)
+        else:
+            # Fallback: show all substat images
+            for img in SUBSTAT_IMAGES:
+                ref = image_ref(folder, img)
+                if ref:
+                    refs.append(ref)
 
     return refs
 
@@ -481,9 +510,72 @@ def generate_report(actual_path, expected_path, images_dir="debug_images", no_im
         lines.append(f"- **Images**: `{images_dir}/`")
     lines.append("")
 
+    # Load index maps for correlating output positions with debug image folders
+    art_index_map = None if no_images else load_index_map(images_dir, "artifacts")
+    wpn_index_map = None if no_images else load_index_map(images_dir, "weapons")
+
     # === ARTIFACTS ===
     exp_artifacts = expected.get("artifacts") or []
     act_artifacts = actual.get("artifacts") or []
+    if not exp_artifacts or not act_artifacts:
+        exp_artifacts = []
+        act_artifacts = []
+
+
+    # --- Duplicate detection ---
+    def artifact_fingerprint(a):
+        """Fingerprint an artifact for duplicate detection.
+
+        Uses identity fields: set, slot, rarity, level, mainStat, substats (sorted by key+value).
+        Excludes location/lock/astralMark which can differ for the same artifact.
+        """
+        subs = tuple(sorted(
+            (s["key"], s["value"]) for s in (a.get("substats") or [])
+        ))
+        return (
+            a.get("setKey", ""),
+            a.get("slotKey", ""),
+            a.get("rarity", 0),
+            a.get("level", 0),
+            a.get("mainStatKey", ""),
+            subs,
+        )
+
+    def find_duplicates(artifacts, label):
+        """Find duplicate artifacts, return list of (fingerprint, indices) with count > 1."""
+        from collections import Counter
+        fp_to_indices = defaultdict(list)
+        for i, a in enumerate(artifacts):
+            fp_to_indices[artifact_fingerprint(a)].append(i)
+        return [(fp, indices) for fp, indices in fp_to_indices.items() if len(indices) > 1]
+
+    exp_dupes = find_duplicates(exp_artifacts, "expected")
+    act_dupes = find_duplicates(act_artifacts, "actual")
+
+    if exp_dupes or act_dupes:
+        lines.append("### Duplicate artifacts\n")
+        for label, dupes, artifacts_list in [
+            ("Expected", exp_dupes, exp_artifacts),
+            ("Actual", act_dupes, act_artifacts),
+        ]:
+            if not dupes:
+                continue
+            total_duped = sum(len(indices) for _, indices in dupes)
+            lines.append(f"**{label}**: {len(dupes)} duplicated artifacts ({total_duped} total instances)\n")
+            for fp, indices in sorted(dupes, key=lambda x: -len(x[1]))[:20]:
+                set_key, slot_key, rarity, level, main_stat, subs = fp
+                subs_str = ", ".join(f"{k}={v}" for k, v in subs)
+                locations = [artifacts_list[i].get("location", "") for i in indices]
+                loc_str = ", ".join(f'"{l}"' if l else '""' for l in locations)
+                lines.append(
+                    f"- {len(indices)}× [{', '.join(f'{i:04d}' for i in indices)}] "
+                    f"{set_key}/{slot_key} {rarity}★ lv{level} {main_stat} "
+                    f"[{subs_str}] locations=[{loc_str}]"
+                )
+            if len(dupes) > 20:
+                lines.append(f"- *... and {len(dupes) - 20} more*")
+            lines.append("")
+
     artifact_diffs = diff_artifacts(exp_artifacts, act_artifacts)
 
     lines.append(f"## Artifacts ({len(act_artifacts)} scanned, {len(exp_artifacts)} expected, {len(artifact_diffs)} issues)\n")
@@ -562,7 +654,7 @@ def generate_report(actual_path, expected_path, images_dir="debug_images", no_im
         def render_diff_entry(entry, lines_out):
             idx, set_key, slot_key, diffs, exp_art, act_art = entry
             is_missing = any(f == "_status" and "MISSING" in ev for f, ev, av in diffs)
-            folder = None if (is_missing or no_images) else find_dump_folder(images_dir, "artifacts", idx)
+            folder = None if (is_missing or no_images) else find_dump_folder(images_dir, "artifacts", idx, art_index_map)
             status = ""
             for field, ev, av in diffs:
                 if field == "_status":
@@ -586,7 +678,7 @@ def generate_report(actual_path, expected_path, images_dir="debug_images", no_im
                     continue
                 lines_out.append(f"- **{field}**: expected=`{ev}` actual=`{av}`")
                 if not no_images:
-                    imgs = images_for_field(folder, field, "artifact")
+                    imgs = images_for_field(folder, field, "artifact", act_art=act_art)
                     for img in imgs:
                         lines_out.append(f"  - {img}")
 
@@ -626,7 +718,7 @@ def generate_report(actual_path, expected_path, images_dir="debug_images", no_im
     # === WEAPONS ===
     exp_weapons = expected.get("weapons") or []
     act_weapons = actual.get("weapons") or []
-    if exp_weapons or act_weapons:
+    if exp_weapons and act_weapons:
         weapon_diffs = diff_weapons(exp_weapons, act_weapons)
         lines.append(f"## Weapons ({len(act_weapons)} scanned, {len(exp_weapons)} expected, {len(weapon_diffs)} issues)\n")
 
@@ -656,7 +748,7 @@ def generate_report(actual_path, expected_path, images_dir="debug_images", no_im
 
                 lines.append(f"#### [{idx:04d}] {key}{status} — {diff_summary}\n")
 
-                folder = None if no_images else find_dump_folder(images_dir, "weapons", idx)
+                folder = None if no_images else find_dump_folder(images_dir, "weapons", idx, wpn_index_map)
                 for field, ev, av in diffs:
                     if field == "_status":
                         continue
@@ -675,7 +767,7 @@ def generate_report(actual_path, expected_path, images_dir="debug_images", no_im
     # === CHARACTERS ===
     exp_characters = expected.get("characters") or []
     act_characters = actual.get("characters") or []
-    if exp_characters or act_characters:
+    if exp_characters and act_characters:
         char_diffs = diff_characters(exp_characters, act_characters)
         lines.append(f"## Characters ({len(act_characters)} scanned, {len(exp_characters)} expected, {len(char_diffs)} issues)\n")
 
@@ -714,14 +806,35 @@ def generate_report(actual_path, expected_path, images_dir="debug_images", no_im
     return "\n".join(lines)
 
 
+def shift_lock_astral(artifacts, offset=-1):
+    """Shift lock/astralMark fields by `offset` positions.
+
+    Each artifact[i] gets lock/astral from artifact[i+offset].
+    Out-of-bounds indices keep their original values.
+    """
+    n = len(artifacts)
+    orig_lock = [a.get("lock", False) for a in artifacts]
+    orig_astral = [a.get("astralMark", False) for a in artifacts]
+    for i in range(n):
+        src = i - offset  # src index whose lock/astral we take
+        if 0 <= src < n:
+            artifacts[i]["lock"] = orig_lock[src]
+            artifacts[i]["astralMark"] = orig_astral[src]
+    return artifacts
+
+
 def main():
     images_dir = "debug_images"
     no_images = False
+    do_shift_lock = False
 
     args = sys.argv[1:]
     if "--no-images" in args:
         no_images = True
         args.remove("--no-images")
+    if "--shift-lock" in args:
+        do_shift_lock = True
+        args.remove("--shift-lock")
 
     if len(args) >= 2:
         actual_path = args[0]
@@ -741,6 +854,20 @@ def main():
         print("Images:   disabled")
     else:
         print(f"Images:   {images_dir}/")
+    if do_shift_lock:
+        print("Lock shift: ON (each artifact gets previous artifact's lock/astral)")
+
+    # Apply lock shift to actual before diffing
+    if do_shift_lock:
+        actual_data = load_json(actual_path)
+        if "artifacts" in actual_data:
+            actual_data["artifacts"] = shift_lock_astral(actual_data["artifacts"], offset=-1)
+        # Write to temp file and use that
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8")
+        json.dump(actual_data, tmp, ensure_ascii=False)
+        tmp.close()
+        actual_path = tmp.name
 
     report = generate_report(actual_path, expected_path, images_dir, no_images=no_images)
 

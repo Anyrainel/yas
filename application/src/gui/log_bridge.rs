@@ -18,6 +18,12 @@ pub fn set_thread_log_source(src: LogSource) {
     LOG_SOURCE_OVERRIDE.with(|c| c.set(Some(src)));
 }
 
+/// Update the global log level filter (call when verbose checkbox toggles).
+pub fn set_verbose(verbose: bool) {
+    let level = if verbose { LevelFilter::Debug } else { LevelFilter::Info };
+    log::set_max_level(level);
+}
+
 fn classify(record: &Record) -> LogSource {
     if let Some(src) = LOG_SOURCE_OVERRIDE.with(|c| c.get()) {
         return src;
@@ -59,31 +65,32 @@ impl GuiLogger {
         Self { scanner, manager, max_lines, log_file }
     }
 
-    pub fn init(self) {
+    pub fn init(self, verbose: bool) {
         log::set_boxed_logger(Box::new(self)).unwrap();
-        log::set_max_level(LevelFilter::Info);
+        let level = if verbose { LevelFilter::Debug } else { LevelFilter::Info };
+        log::set_max_level(level);
     }
 }
 
 impl Log for GuiLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        if metadata.level() > Level::Info {
+        let max = log::max_level();
+        if metadata.level() > max {
             return false;
         }
-        // Filter third-party crate info logs — only show warn+ from dependencies.
-        // Our crates (yas, yas_genshin, yas_application) pass through at Info level.
-        if metadata.level() == Level::Info {
-            match metadata.target() {
-                t if t.starts_with("yas")
-                    || t.starts_with("yas_genshin")
-                    || t.starts_with("yas_scanner_genshin")
-                    || t.starts_with("yas_application")
-                    || t.starts_with("yas_core") => true,
-                _ => false,
+        // Our crates pass through at Info+ (and Debug when verbose).
+        // Third-party crates: only Warn and Error.
+        match metadata.level() {
+            Level::Error | Level::Warn => true,
+            Level::Info | Level::Debug => {
+                matches!(metadata.target(),
+                    t if t.starts_with("yas")
+                        || t.starts_with("yas_genshin")
+                        || t.starts_with("yas_scanner_genshin")
+                        || t.starts_with("yas_application")
+                        || t.starts_with("yas_core"))
             }
-        } else {
-            // Warn and Error from all crates
-            true
+            Level::Trace => false,
         }
     }
 

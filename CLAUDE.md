@@ -1,10 +1,18 @@
 # Yas — Genshin Impact Scanner
 
-## IMPORTANT: Build Rules
+## Build Rules
 
 - **NEVER kill GOODScanner.exe or any user process to unblock a build.** If `cargo build` fails with "access denied" because the exe is locked, tell the user and wait. If they confirm the process can be stopped, wait for it to exit on its own or let the user close it.
 
-## IMPORTANT: DRY is Top Priority
+## Prioritization
+
+- **When instructions are clear, implement them directly.** Do not block one clear item because another item needs discussion. Make all clear changes first, then discuss the unclear ones.
+
+## No Piecemeal Refactoring
+
+- **When receiving feedback that changes a design decision, propagate its full implications** — don't patch only the specific spot the user pointed at. If the feedback implies a different ownership model, naming scheme, or data flow, update all affected sites, not just the one mentioned.
+
+## DRY is Top Priority
 
 - **Never duplicate logic between test binaries and production code.** Core features (UI navigation, OCR scanning, filter operations, grid scanning) must be implemented as well-defined methods in the proper modules (e.g., `manager/ui_actions.rs`). Test binaries should only contain test-specific looping/reporting logic and call shared functions.
 - When refactoring for DRY, **ensure logic equivalence** — the extracted function must behave identically to the original inline code.
