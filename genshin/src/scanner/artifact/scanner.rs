@@ -399,7 +399,23 @@ impl GoodArtifactScanner {
                 purple_count += 1;
             }
         }
-        purple_count >= 2
+        let crafted = purple_count >= 2;
+        // Annotate at middle probe position
+        let elixir_pos = (1520.0, 423.0);
+        let rgb = {
+            let x = scaler.scale_x(elixir_pos.0) as u32;
+            let y = scaler.scale_y(elixir_pos.1) as u32;
+            if x < image.width() && y < image.height() {
+                let p = image.get_pixel(x, y);
+                [p[0], p[1], p[2]]
+            } else {
+                [0, 0, 0]
+            }
+        };
+        annotator::record_pixel_colored("elixir", elixir_pos, rgb,
+            if crafted { "crafted" } else { "not crafted" },
+            [200, 160, 255]); // light purple
+        crafted
     }
 
     fn parse_equip_location(text: &str, mappings: &MappingManager) -> String {
@@ -478,30 +494,8 @@ impl GoodArtifactScanner {
         item_index: usize,
         grid_icons: Option<GridIconResult>,
     ) -> Result<ArtifactScanResult> {
-        use super::super::common::constants::STAR_Y;
-
-        // Helper: read pixel RGB from image at base coords
-        let read_px = |pos: (f64, f64)| -> [u8; 3] {
-            let px = scaler.x(pos.0) as u32;
-            let py = scaler.y(pos.1) as u32;
-            if px < image.width() && py < image.height() {
-                let p = image.get_pixel(px, py);
-                [p[0], p[1], p[2]]
-            } else {
-                [0, 0, 0]
-            }
-        };
-
         // 0. Detect rarity — stop below min_rarity only if level is 0.
         let rarity = pixel_utils::detect_artifact_rarity(image, scaler);
-        {
-            let star_pos = match rarity {
-                5 => (1485.0, STAR_Y),
-                4 => (1450.0, STAR_Y),
-                _ => (1416.0, STAR_Y),
-            };
-            annotator::record_pixel("rarity", star_pos, read_px(star_pos), &format!("{}*", rarity));
-        }
 
         if rarity < config.min_rarity {
             // Quick level OCR to check if this is lv0 (no elixir shift — rough check is fine)
@@ -577,12 +571,6 @@ impl GoodArtifactScanner {
         // 3. Detect elixir crafted — panel pixel detection only (grid detection is unreliable)
         let elixir_crafted = Self::detect_elixir_crafted(image, scaler);
         let y_shift = if elixir_crafted { ELIXIR_SHIFT } else { 0.0 };
-        {
-            let elixir_pos = (1520.0, 423.0);
-            annotator::record_pixel_colored("elixir", elixir_pos, read_px(elixir_pos),
-                if elixir_crafted { "crafted" } else { "not crafted" },
-                [200, 160, 255]); // light purple
-        }
 
         // 4. Level — dual-engine OCR, collect both for solver
         let parse_level = |text: &str| -> i32 {
@@ -631,9 +619,13 @@ impl GoodArtifactScanner {
         // 5. Lock and astral mark
         let (mut lock, astral_mark) = if let Some(ref gi) = grid_icons {
             // Grid-based detection (majority vote across multiple passes)
+            annotator::add_warning(&format!("lock={} astral={} (source: grid)",
+                if gi.lock { "locked" } else { "unlocked" },
+                if gi.astral { "marked" } else { "unmarked" }));
             (gi.lock, gi.astral)
         } else {
             // Legacy: panel pixel-based detection (requires animation delay)
+            // detect_artifact_lock/astral_mark annotate internally
             (
                 pixel_utils::detect_artifact_lock(image, scaler, y_shift),
                 pixel_utils::detect_artifact_astral_mark(image, scaler, y_shift),
@@ -644,23 +636,6 @@ impl GoodArtifactScanner {
         if astral_mark && !lock {
             log_debug!("[artifact] idx={} 星标=true 但锁定=false — 强制锁定=true（游戏规则）", "[artifact] idx={} astral=true but lock=false — forcing lock=true (game invariant)", item_index);
             lock = true;
-        }
-        {
-            let lock_source = if grid_icons.is_some() { "grid" } else { "panel-fallback" };
-            if grid_icons.is_none() {
-                // Panel pixel-based: annotate the actual pixel positions
-                let lock_pos = (ARTIFACT_LOCK_POS1.0, ARTIFACT_LOCK_POS1.1 + y_shift);
-                let astral_pos = (ARTIFACT_ASTRAL_POS1.0, ARTIFACT_ASTRAL_POS1.1 + y_shift);
-                annotator::record_pixel("lock", lock_pos, read_px(lock_pos),
-                    if lock { "locked" } else { "unlocked" });
-                annotator::record_pixel("astral", astral_pos, read_px(astral_pos),
-                    if astral_mark { "marked" } else { "unmarked" });
-            } else {
-                annotator::add_warning(&format!("lock={} astral={} (source: {})",
-                    if lock { "locked" } else { "unlocked" },
-                    if astral_mark { "marked" } else { "unmarked" },
-                    lock_source));
-            }
         }
 
         // 6. Substats — dual-engine OCR, collect candidates, solve with roll validator.

@@ -157,7 +157,6 @@ impl GoodWeaponScanner {
         grid_icons: Option<GridIconResult>,
     ) -> Result<WeaponScanResult> {
         use crate::scanner::common::debug_dump::level_cap_display;
-        use super::super::common::constants::STAR_Y;
 
         // OCR weapon name
         let name_text = Self::ocr_image_region(ocr, image, ocr_regions.name, scaler)?;
@@ -249,54 +248,17 @@ impl GoodWeaponScanner {
             annotator::set_display("equip", cn_name);
         }
 
-        // Pixel-based detections
+        // Pixel-based detections (annotate internally)
         let rarity = pixel_utils::detect_weapon_rarity(image, scaler);
         // Lock: use grid detection when available, fall back to panel pixel detection
         let lock = if let Some(gi) = grid_icons {
+            annotator::add_warning(&format!("lock={} (source: grid)",
+                if gi.lock { "locked" } else { "unlocked" }));
             gi.lock
         } else {
             pixel_utils::detect_weapon_lock(image, scaler)
         };
         let ascension = level_to_ascension(level, ascended);
-
-        // Record pixel detections
-        {
-            // Rarity — use the star band center position for the detected rarity
-            let star_pos = match rarity {
-                5 => (1485.0, STAR_Y),
-                4 => (1450.0, STAR_Y),
-                _ => (1416.0, STAR_Y),
-            };
-            let px = scaler.x(star_pos.0) as u32;
-            let py = scaler.y(star_pos.1) as u32;
-            let rgb = if px < image.width() && py < image.height() {
-                let p = image.get_pixel(px, py);
-                [p[0], p[1], p[2]]
-            } else {
-                [0, 0, 0]
-            };
-            annotator::record_pixel("rarity", star_pos, rgb, &format!("{}*", rarity));
-
-            if grid_icons.is_none() {
-                // Panel pixel-based: annotate the actual pixel position
-                // WEAPON_LOCK_POS1 from glob import of constants
-                let lock_pos = (WEAPON_LOCK_POS1.0, WEAPON_LOCK_POS1.1);
-                let lock_rgb = {
-                    let lx = scaler.x(lock_pos.0) as u32;
-                    let ly = scaler.y(lock_pos.1) as u32;
-                    if lx < image.width() && ly < image.height() {
-                        image.get_pixel(lx, ly).0
-                    } else {
-                        [0, 0, 0]
-                    }
-                };
-                annotator::record_pixel("lock", lock_pos, lock_rgb,
-                    if lock { "locked" } else { "unlocked" });
-            } else {
-                annotator::add_warning(&format!("lock={} (source: grid)",
-                    if lock { "locked" } else { "unlocked" }));
-            }
-        }
 
         let weapon = GoodWeapon {
             key: weapon_key,

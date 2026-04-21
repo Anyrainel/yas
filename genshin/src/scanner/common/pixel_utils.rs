@@ -3,6 +3,18 @@ use yas::log_debug;
 
 use super::coord_scaler::CoordScaler;
 
+/// Read RGB values at a base-coord position. Returns [0,0,0] if out of bounds.
+fn read_pixel_rgb(image: &RgbImage, scaler: &CoordScaler, bx: f64, by: f64) -> [u8; 3] {
+    let x = scaler.x(bx) as u32;
+    let y = scaler.y(by) as u32;
+    if x < image.width() && y < image.height() {
+        let p = image.get_pixel(x, y);
+        [p[0], p[1], p[2]]
+    } else {
+        [0, 0, 0]
+    }
+}
+
 /// Check if a pixel at the given position (in base 1920x1080 coords) is "star yellow".
 /// Star yellow = R > 150, G > 100, B < 100
 ///
@@ -182,7 +194,7 @@ pub fn detect_weapon_rarity(image: &RgbImage, scaler: &CoordScaler) -> i32 {
         }
     }
 
-    if rightmost_star_x > 1470.0 {
+    let rarity = if rightmost_star_x > 1470.0 {
         5
     } else if rightmost_star_x > 1430.0 {
         4
@@ -196,7 +208,18 @@ pub fn detect_weapon_rarity(image: &RgbImage, scaler: &CoordScaler) -> i32 {
         else if is_star_yellow(image, scaler, 1450.0, STAR_Y) { 4 }
         else if is_star_yellow(image, scaler, 1416.0, STAR_Y) { 3 }
         else { 2 }
-    }
+    };
+
+    let star_pos = match rarity {
+        5 => (1485.0, STAR_Y),
+        4 => (1450.0, STAR_Y),
+        3 => (1416.0, STAR_Y),
+        _ => (1380.0, STAR_Y),
+    };
+    let rgb = read_pixel_rgb(image, scaler, star_pos.0, star_pos.1);
+    super::annotator::record_pixel("rarity", star_pos, rgb, &format!("{}*", rarity));
+
+    rarity
 }
 
 /// Detect artifact rarity from star pixels.
@@ -256,6 +279,15 @@ pub fn detect_artifact_rarity(image: &RgbImage, scaler: &CoordScaler) -> i32 {
             3
         }
     };
+
+    // Annotate: pick the representative star position for the detected rarity
+    let star_pos = match rarity {
+        5 => (1485.0, STAR_Y),
+        4 => (1450.0, STAR_Y),
+        _ => (1416.0, STAR_Y),
+    };
+    let rgb = read_pixel_rgb(image, scaler, star_pos.0, star_pos.1);
+    super::annotator::record_pixel("rarity", star_pos, rgb, &format!("{}*", rarity));
 
     rarity
 }
@@ -357,12 +389,17 @@ pub fn is_substat_dimmed(
 /// Port of `detectWeaponLock()` from GOODScanner/lib/ocr_utils.js
 pub fn detect_weapon_lock(image: &RgbImage, scaler: &CoordScaler) -> bool {
     use super::constants::{WEAPON_LOCK_POS1, WEAPON_LOCK_POS2};
-    detect_dark_icon(
+    let locked = detect_dark_icon(
         image, scaler,
         WEAPON_LOCK_POS1.0, WEAPON_LOCK_POS1.1,
         WEAPON_LOCK_POS2.0, WEAPON_LOCK_POS2.1,
         "\u{6B66}\u{5668}\u{9501}\u{5B9A}", // 武器锁定
-    )
+    );
+    let pos = (WEAPON_LOCK_POS1.0, WEAPON_LOCK_POS1.1);
+    let rgb = read_pixel_rgb(image, scaler, pos.0, pos.1);
+    super::annotator::record_pixel("lock", pos, rgb,
+        if locked { "locked" } else { "unlocked" });
+    locked
 }
 
 /// Detect artifact lock state via dual-pixel verification.
@@ -371,12 +408,17 @@ pub fn detect_weapon_lock(image: &RgbImage, scaler: &CoordScaler) -> bool {
 /// Port of `detectArtifactLock()` from GOODScanner/lib/ocr_utils.js
 pub fn detect_artifact_lock(image: &RgbImage, scaler: &CoordScaler, y_shift: f64) -> bool {
     use super::constants::{ARTIFACT_LOCK_POS1, ARTIFACT_LOCK_POS2};
-    detect_dark_icon(
+    let locked = detect_dark_icon(
         image, scaler,
         ARTIFACT_LOCK_POS1.0, ARTIFACT_LOCK_POS1.1 + y_shift,
         ARTIFACT_LOCK_POS2.0, ARTIFACT_LOCK_POS2.1 + y_shift,
         "\u{5723}\u{9057}\u{7269}\u{9501}\u{5B9A}", // 圣遗物锁定
-    )
+    );
+    let pos = (ARTIFACT_LOCK_POS1.0, ARTIFACT_LOCK_POS1.1 + y_shift);
+    let rgb = read_pixel_rgb(image, scaler, pos.0, pos.1);
+    super::annotator::record_pixel("lock", pos, rgb,
+        if locked { "locked" } else { "unlocked" });
+    locked
 }
 
 /// Verify that an artifact lock toggle succeeded, using asymmetric brightness
@@ -427,12 +469,17 @@ pub fn verify_artifact_lock_toggled(
 /// Port of `detectArtifactAstralMark()` from GOODScanner/lib/ocr_utils.js
 pub fn detect_artifact_astral_mark(image: &RgbImage, scaler: &CoordScaler, y_shift: f64) -> bool {
     use super::constants::{ARTIFACT_ASTRAL_POS1, ARTIFACT_ASTRAL_POS2};
-    detect_dark_icon(
+    let marked = detect_dark_icon(
         image, scaler,
         ARTIFACT_ASTRAL_POS1.0, ARTIFACT_ASTRAL_POS1.1 + y_shift,
         ARTIFACT_ASTRAL_POS2.0, ARTIFACT_ASTRAL_POS2.1 + y_shift,
         "\u{5723}\u{9057}\u{7269}\u{6536}\u{85CF}", // 圣遗物收藏
-    )
+    );
+    let pos = (ARTIFACT_ASTRAL_POS1.0, ARTIFACT_ASTRAL_POS1.1 + y_shift);
+    let rgb = read_pixel_rgb(image, scaler, pos.0, pos.1);
+    super::annotator::record_pixel("astral", pos, rgb,
+        if marked { "marked" } else { "unmarked" });
+    marked
 }
 
 /// Sample average brightness in a ring around a constellation icon position.
