@@ -116,7 +116,7 @@ pub const CHAR_TALENT_OFFSET_Y: f64 = 90.0;
 pub const CHAR_TALENT_LEVEL_RECT: (f64, f64, f64, f64) = (255.0, 168.0, 68.0, 26.0);
 
 /// Next character button position
-pub const CHAR_NEXT_POS: (f64, f64) = (1845.0, 525.0);
+pub const CHAR_NEXT_POS: (f64, f64) = (1850.0, 530.0);
 
 // ================================================================
 // Weapon scanner coordinates (at 1920x1080 base resolution)

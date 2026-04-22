@@ -6215,6 +6215,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tract-onnx",
+ "windows 0.54.0",
  "windows-capture",
  "windows-sys 0.59.0",
 ]

@@ -151,6 +151,7 @@ pub fn get_game_info(window_names: &[&str]) -> Result<GameInfo> {
         window: rect,
         is_cloud,
         ui: UI::Desktop,
-        platform: Platform::Windows
+        platform: Platform::Windows,
+        hwnd: hwnd as isize,
     })
 }

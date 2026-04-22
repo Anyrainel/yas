@@ -8,4 +8,7 @@ pub struct GameInfo {
     pub is_cloud: bool,
     pub ui: UI,
     pub platform: Platform,
+    /// Native window handle (HWND on Windows). Used by WGC capturer.
+    #[cfg(target_os = "windows")]
+    pub hwnd: isize,
 }

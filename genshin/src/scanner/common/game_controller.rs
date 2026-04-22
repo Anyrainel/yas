@@ -7,6 +7,8 @@ use yas::{log_debug, log_warn};
 
 use yas::cancel::CancelToken;
 use yas::capture::{Capturer, GenericCapturer};
+#[cfg(target_os = "windows")]
+use yas::capture::WgcCapturer;
 use yas::game_info::GameInfo;
 use yas::ocr::ImageToText;
 use yas::positioning::Rect;
@@ -49,14 +51,45 @@ impl GenshinGameController {
         let window_size = game_info.window.to_rect_usize().size();
         let scaler = CoordScaler::new(window_size.width as u32, window_size.height as u32);
 
+        let capturer: Rc<dyn Capturer<RgbImage>> = Self::create_capturer(&game_info)?;
+
         Ok(Self {
             game_info,
             scaler,
-            capturer: Rc::new(GenericCapturer::new()?),
+            capturer,
             system_control: SystemControl::new(),
             panel_snapshot: Vec::new(),
             cancel: CancelToken::new(),
         })
+    }
+
+    fn create_capturer(game_info: &GameInfo) -> Result<Rc<dyn Capturer<RgbImage>>> {
+        #[cfg(target_os = "windows")]
+        {
+            match WgcCapturer::new(
+                game_info.hwnd,
+                game_info.window.left,
+                game_info.window.top,
+                game_info.window.width as u32,
+                game_info.window.height as u32,
+            ) {
+                Ok(wgc) => {
+                    log_debug!(
+                        "使用WGC截图（绕过夜灯/色彩滤镜）",
+                        "Using WGC capturer (bypasses Night Light / color filters)"
+                    );
+                    return Ok(Rc::new(wgc));
+                }
+                Err(e) => {
+                    log_warn!(
+                        "WGC截图不可用({}), 回退到GDI截图",
+                        "WGC capturer unavailable ({}), falling back to GDI",
+                        e
+                    );
+                }
+            }
+        }
+        Ok(Rc::new(GenericCapturer::new()?))
     }
 }
 
@@ -211,6 +244,11 @@ impl GenshinGameController {
         let x = self.game_info.window.left as f64 + self.scaler.scale_x(base_x);
         let y = self.game_info.window.top as f64 + self.scaler.scale_y(base_y);
         self.system_control.mouse_move_to(x as i32, y as i32).unwrap();
+        // Settle delay: SetCursorPos (move) and SendInput (click) are different
+        // Windows APIs. Under WGC's continuous frame-copy load, the input queue
+        // can lag behind the cursor update. 10ms lets the position register
+        // before the click event enters the queue.
+        std::thread::sleep(std::time::Duration::from_millis(10));
         self.system_control.mouse_click().unwrap();
     }
 

@@ -16,7 +16,13 @@ impl WindowsSystemControl {
     }
 
     pub fn mouse_click(&mut self) -> anyhow::Result<()> {
-        self.enigo.mouse_click(MouseButton::Left);
+        // Use explicit down/up with a hold delay — enigo's mouse_click sends
+        // down+up back-to-back with zero delay. Some game UI elements (especially
+        // under high CPU/GPU load or WGC capture) need a minimum hold time to
+        // register the click. This matches enigo's key_click which uses 20ms.
+        self.enigo.mouse_down(MouseButton::Left);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        self.enigo.mouse_up(MouseButton::Left);
 
         anyhow::Ok(())
     }
