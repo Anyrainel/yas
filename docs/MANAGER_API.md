@@ -1,4 +1,4 @@
-# Artifact Manager HTTP API
+# GOODScanner HTTP API
 
 Server: `http://127.0.0.1:{port}` (default 8765)
 
@@ -220,10 +220,79 @@ When equipping an artifact that is currently equipped on another character, the 
 | 503 | Manager paused | `{"error": "..."}` |
 
 **Notes:**
-- Equip jobs share the same job queue as manage jobs — only one job of any type can run at a time. `GET /status` and `GET /result` work identically for both job types.
+- Equip jobs share the same job queue as manage/scan jobs — only one job of any type can run at a time. `GET /status` and `GET /result` work identically for all job types.
 - Equip does **not** produce an artifact snapshot. `GET /artifacts` is not updated after an equip job.
 - Invalid entries (empty `setKey`, rarity outside 4–5, level outside 0–20) reject the entire request with 400.
-- Equip jobs invalidate the artifact cache — any previously cached `GET /artifacts` data transitions to 503 (incomplete).
+- Equip jobs invalidate the artifact cache — any previously cached artifact data is cleared.
+
+### `POST /scan` (async)
+
+Initiate a remote OCR scan of characters, weapons, and/or artifacts. Uses the same scanner pipeline as the CLI/GUI scanner. Returns immediately — poll `GET /status` for progress, then fetch results from the per-type data endpoints.
+
+After accepting a job, the server waits 1 second before focusing the game window and starting execution (same as other job types).
+
+#### Request
+
+```json
+{
+  "characters": true,
+  "weapons": true,
+  "artifacts": true
+}
+```
+
+At least one target must be `true`. All fields default to `false` if omitted.
+
+The user must navigate to the appropriate in-game screen before submitting:
+- **Characters**: open character screen (press C)
+- **Weapons**: open backpack → weapon tab
+- **Artifacts**: open backpack → artifact tab (if also scanning weapons, the scanner navigates from weapon tab automatically)
+
+When scanning multiple targets, they execute in order: characters → weapons → artifacts.
+
+#### Progress
+
+`GET /status` reports `total` = number of enabled targets (1–3). `completed` increments after each phase finishes.
+
+#### Result
+
+`GET /result?jobId=xxx` returns a `ManageResult` where each phase is one entry:
+
+```json
+{
+  "results": [
+    {"id": "characters", "status": "success"},
+    {"id": "weapons", "status": "success"},
+    {"id": "artifacts", "status": "success"}
+  ],
+  "summary": {"total": 3, "success": 3, ...}
+}
+```
+
+#### Fetching scan data
+
+After the job completes, fetch results from the per-type data endpoints:
+
+- `GET /characters?jobId=xxx` → `Vec<GoodCharacter>`
+- `GET /weapons?jobId=xxx` → `Vec<GoodWeapon>`
+- `GET /artifacts?jobId=xxx` → `Vec<GoodArtifact>`
+
+Each cache stores only the latest jobId that produced data for that type. A characters-only scan updates only the character cache — weapon and artifact caches retain data from their most recent respective scans.
+
+#### Responses
+
+| Code | When | Body |
+|------|------|------|
+| 202 | Job accepted | `{"jobId": "<uuid>", "targets": {"characters": true, "weapons": true, "artifacts": true}}` |
+| 400 | Bad JSON, or no targets enabled | `{"error": "..."}` |
+| 403 | Disallowed origin | `{"error": "Origin not allowed"}` |
+| 409 | Another job running | `{"error": "..."}` |
+| 503 | Manager paused | `{"error": "..."}` |
+
+**Notes:**
+- Scanning is read-only — it does not modify in-game state or invalidate existing caches.
+- Scan jobs share the same job queue as manage/equip — one job at a time.
+- If a scan fails (e.g., game window not found), previously cached data from earlier scans is preserved.
 
 ### `GET /status`
 
@@ -264,7 +333,7 @@ Lightweight poll — no result payload. Poll every 1 second.
 
 ### `GET /result?jobId=<id>`
 
-Full execution result. Requires the `jobId` returned by `POST /manage`. Idempotent — can be called multiple times. Result is available until the next job replaces it.
+Full execution result. Requires the `jobId` returned by `POST /manage`, `POST /equip`, or `POST /scan`. Idempotent — can be called multiple times. Result is available until the next job replaces it.
 
 #### 200 OK (completed)
 
@@ -309,9 +378,64 @@ Each result contains only `id` and `status`. No human-readable detail — i18n i
 | `aborted` | User cancelled (right-click in game or GUI) |
 | `skipped` | Skipped (earlier failure or abort) |
 
-### `GET /artifacts`
+### `GET /characters?jobId=<id>`
 
-Latest complete artifact inventory snapshot. Updated after each manage job that performs a full backpack scan without interruption. Each element is a full GOOD v3 artifact object with lock states reflecting the latest toggles.
+Character scan data from the latest scan that produced character results.
+
+#### 200 OK
+
+```json
+[
+  {
+    "key": "Furina",
+    "level": 90,
+    "constellation": 1,
+    "ascension": 6,
+    "talent": {"auto": 1, "skill": 9, "burst": 10}
+  }
+]
+```
+
+#### Other responses
+
+| Code | When |
+|------|------|
+| 400 | Missing `jobId` query parameter |
+| 404 | No character data, or `jobId` doesn't match the latest scan that produced characters |
+
+### `GET /weapons?jobId=<id>`
+
+Weapon scan data from the latest scan that produced weapon results.
+
+#### 200 OK
+
+```json
+[
+  {
+    "key": "SkywardHarp",
+    "level": 90,
+    "ascension": 6,
+    "refinement": 1,
+    "location": "Furina",
+    "lock": true
+  }
+]
+```
+
+#### Other responses
+
+| Code | When |
+|------|------|
+| 400 | Missing `jobId` query parameter |
+| 404 | No weapon data, or `jobId` doesn't match the latest scan that produced weapons |
+
+### `GET /artifacts[?jobId=<id>]`
+
+Artifact data. Works for both scan results and manage snapshots — whichever last updated the artifact cache.
+
+The `jobId` parameter is **optional** for backwards compatibility:
+- **With `jobId`**: returns data only if the jobId matches the latest artifact data. Returns 404 on mismatch.
+- **Without `jobId`**: returns the latest artifact data regardless of which job produced it.
 
 #### 200 OK
 
@@ -341,28 +465,45 @@ Latest complete artifact inventory snapshot. Updated after each manage job that 
 
 | Code | When |
 |------|------|
-| 404 | No scan has been performed yet |
-| 503 | Last scan was interrupted or incomplete — data is unavailable |
+| 404 | No artifact data available, or `jobId` doesn't match (when provided) |
 
-**Notes:**
-- The snapshot is only updated when a manage job completes a **full** backpack scan (all items visited, no user abort, no early stop).
-- If the "stop after all matched" option is enabled in the GUI, the scan stops early after finding all targeted artifacts — this produces an incomplete snapshot and `GET /artifacts` will return 503.
-- If a scan is interrupted (user right-click abort), any previously cached data is invalidated (transitions to 503).
-- Lock states in the snapshot reflect the post-toggle state for successfully changed artifacts.
-- The snapshot persists in memory for the server's lifetime. It is not written to disk.
+**Notes on artifact cache sources:**
+- **Scan jobs** (`POST /scan` with `artifacts: true`): populates the artifact cache with the full scan results.
+- **Manage jobs** (`POST /manage`): populates the artifact cache with a post-toggle snapshot when the backpack scan completes fully (no abort, no early stop, no OCR/solver failures).
+- **Equip jobs** (`POST /equip`): invalidate the artifact cache (in-game equipment state changed) but do not produce new data.
+- Each source writes its own `jobId` — use the `jobId` from the job that produced the data.
+- Lock states in manage snapshots reflect post-toggle state for successfully changed artifacts.
+- All cached data persists in memory for the server's lifetime. It is not written to disk.
 
 ## Client Flow
 
+### Manage / Equip
+
 ```
 1. GET /health → check enabled && gameAlive && !busy
-2. POST /manage → get jobId (202)
+2. POST /manage (or POST /equip) → get jobId (202)
 3. Poll GET /status every 1s
    → "running": show progress (completed/total)
    → "completed": proceed to step 4
    → no response: server crashed or game interrupted
 4. GET /result?jobId=<id> → full per-instruction results (idempotent)
-5. GET /artifacts → latest artifact inventory (optional, for syncing client state)
-6. Done. Next POST /manage will replace the stored result.
+5. GET /artifacts?jobId=<id> → updated artifact inventory (optional, manage only)
+6. Done. Next job will replace the stored result.
+```
+
+### Scan
+
+```
+1. GET /health → check enabled && gameAlive && !busy
+2. POST /scan → get jobId (202)
+3. Poll GET /status every 1s
+   → "running": show progress (completed/total phases)
+   → "completed": proceed to step 4
+4. GET /result?jobId=<id> → per-phase results (characters/weapons/artifacts)
+5. GET /characters?jobId=<id> → character data (if scanned)
+   GET /weapons?jobId=<id>    → weapon data (if scanned)
+   GET /artifacts?jobId=<id>  → artifact data (if scanned)
+6. Done. Each data cache retains its jobId independently.
 ```
 
 ## Cancellation
@@ -437,6 +578,14 @@ Level-0 artifact with unactivated substat:
 All targets execute in a single backpack scan pass. Invalid entries (empty keys, rarity outside 4–5, level outside 0–20) reject the entire request with 400 — fix all entries before resubmitting.
 
 ## Changelog
+
+### 2026-04-22
+
+- **`POST /scan` implemented** — New endpoint for initiating OCR scans remotely. Supports scanning characters, weapons, and/or artifacts in any combination. Uses the same async job model as manage/equip (202 → poll → result). Scan data is fetched from per-type endpoints.
+- **`GET /characters?jobId=xxx`** — New endpoint for fetching character scan results.
+- **`GET /weapons?jobId=xxx`** — New endpoint for fetching weapon scan results.
+- **`GET /artifacts` now accepts optional `jobId`** — `GET /artifacts?jobId=<id>` validates the jobId matches; `GET /artifacts` (no jobId) returns the latest data for backwards compatibility. `/characters` and `/weapons` require `jobId`.
+- **Data caching redesign** — Replaced the single `ArtifactCache` enum (Empty/Complete/Incomplete) with per-type `ScanDataCache<T>` structs. Each stores the `jobId` that produced it. Scan jobs update only the caches they scanned. Manage jobs update only the artifact cache. Previous data for unscanned types is preserved across partial scans.
 
 ### 2026-03-31
 

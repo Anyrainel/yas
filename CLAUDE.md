@@ -211,11 +211,48 @@ Two-thread model: HTTP thread (tiny_http) handles requests, execution thread own
 
 ### Data flow
 
-1. Client sends `POST /manage` (lock/unlock) or `POST /equip` → server validates all entries, returns 202 with `jobId`
+1. Client sends `POST /manage`, `POST /equip`, or `POST /scan` → server validates, returns 202 with `jobId`
 2. Client polls `GET /status` for progress
-3. Execution thread: `ArtifactManager` → `LockManager` (backpack scan + toggle) or `EquipManager` (character screen navigation)
+3. Execution thread processes the job (manage/equip/scan)
 4. Client fetches `GET /result?jobId=xxx` (idempotent) for final results
-5. If scan completed fully, `GET /artifacts` returns the artifact snapshot
+5. Client fetches scanned data via `GET /characters?jobId=xxx`, `GET /weapons?jobId=xxx`, `GET /artifacts[?jobId=xxx]`
+
+### API Reference
+
+#### `POST /manage` — Lock/unlock artifacts
+Request: `LockManageRequest` (lock + unlock lists of GOOD v3 artifacts).
+Response: 202 `{"jobId":"uuid","total":N}`.
+
+#### `POST /equip` — Equip/unequip artifacts
+Request: `EquipRequest` (list of artifact + target location pairs).
+Response: 202 `{"jobId":"uuid","total":N}`.
+
+#### `POST /scan` — Scan characters/weapons/artifacts via OCR
+Request: `{"characters":true,"weapons":true,"artifacts":true}` (at least one must be true, fields default to false).
+Response: 202 `{"jobId":"uuid","targets":{"characters":true,"weapons":true,"artifacts":true}}`.
+The scan uses the same OCR pipeline as CLI scanning. Progress `total` = number of enabled targets (1–3), `completed` increments per phase.
+
+#### `GET /status` — Poll job progress (shared by all job types)
+Returns lightweight JSON: state + jobId + progress (running) or summary (completed).
+
+#### `GET /result?jobId=xxx` — Full job result
+Returns `ManageResult` with per-instruction results and summary. For scan jobs, each phase (characters/weapons/artifacts) is one result entry with `id` = phase name.
+
+#### `GET /characters?jobId=xxx` — Character scan data
+Returns `Vec<GoodCharacter>` from the latest scan that produced character data. 400 if missing jobId, 404 if jobId doesn't match.
+
+#### `GET /weapons?jobId=xxx` — Weapon scan data
+Returns `Vec<GoodWeapon>`. Same error semantics as `/characters`.
+
+#### `GET /artifacts[?jobId=xxx]` — Artifact data
+Returns `Vec<GoodArtifact>`. Works for both scan results and manage snapshots. `jobId` is optional for backwards compatibility: if provided, must match latest; if omitted, returns latest. 404 if no data or jobId mismatch.
+
+#### `GET /health` — Health check
+Returns `{"status":"ok","enabled":bool,"busy":bool,"gameAlive":bool}`.
+
+### Data Caching
+
+Each data type (characters, weapons, artifacts) has an independent `ScanDataCache<T>` storing the latest `jobId` + data. Scan jobs update only the caches for targets they scanned — a characters-only scan leaves weapons/artifacts caches from a previous scan intact. Manage jobs that produce artifact snapshots update the artifact cache with their jobId. Cache invalidation: manage/equip jobs that modify in-game state clear the artifact cache before execution.
 
 ### Key config flow
 
@@ -231,7 +268,7 @@ Per-page: scan all items via pipelined OCR → match against targets → re-clic
 
 ### Snapshot (orchestrator.rs)
 
-After a complete scan, builds an artifact snapshot reflecting post-toggle state: updates `lock` and clears `astral_mark` on unlock (game forces this). Served via `GET /artifacts`.
+After a complete manage scan, builds an artifact snapshot reflecting post-toggle state: updates `lock` and clears `astral_mark` on unlock (game forces this). Served via `GET /artifacts?jobId=xxx`.
 
 ## Fuzzy Matching (`fuzzy_match.rs`)
 

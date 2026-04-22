@@ -945,7 +945,7 @@ impl Default for ScanCoreConfig {
 
 impl ScanCoreConfig {
     /// Convert to the internal GoodScannerConfig fields needed by make_*_config.
-    fn to_scanner_config(&self) -> GoodScannerConfig {
+    pub fn to_scanner_config(&self) -> GoodScannerConfig {
         GoodScannerConfig {
             scan_characters: self.scan_characters,
             scan_weapons: self.scan_weapons,
@@ -1162,6 +1162,17 @@ pub fn run_server_core(
         scroll: user_config.mgr_scroll_delay,
     };
 
+    let scan_defaults = ScanCoreConfig {
+        scan_characters: true,
+        scan_weapons: true,
+        scan_artifacts: true,
+        dump_images,
+        ocr_backend: ocr_backend.map(|s| s.to_string()),
+        artifact_substat_ocr: artifact_substat_ocr.to_string(),
+        ..ScanCoreConfig::default()
+    };
+    let exec_user_config = user_config.clone();
+
     let init_executor = move || -> anyhow::Result<Box<dyn crate::server::ManageExecutor>> {
 
         crate::manager::ui_actions::set_manager_delays(mgr_delays.clone());
@@ -1184,7 +1195,12 @@ pub fn run_server_core(
             stop_on_all_matched,
             dump_images,
         );
-        Ok(Box::new(crate::server::GameExecutor { ctrl, manager }))
+        Ok(Box::new(crate::server::GameExecutor {
+            ctrl,
+            manager,
+            user_config: exec_user_config,
+            scan_defaults,
+        }))
     };
 
     crate::server::run_server(server_port, init_executor, enabled, shutdown)

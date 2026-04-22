@@ -2,6 +2,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::scanner::common::models::GoodArtifact;
 
+/// Scan request: which categories to scan remotely.
+/// At least one target must be true.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanRequest {
+    #[serde(default)]
+    pub characters: bool,
+    #[serde(default)]
+    pub weapons: bool,
+    #[serde(default)]
+    pub artifacts: bool,
+}
+
 /// Equip/unequip request: a list of equip instructions.
 /// Each pairs an artifact (GOOD v3 format) with a target location.
 #[derive(Debug, Clone, Serialize, Deserialize)]

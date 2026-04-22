@@ -51,6 +51,10 @@ impl ArtifactManager {
         Self { mappings, pools, capture_delay, delay_scroll, panel_timeout, initial_wait, stop_on_all_matched, dump_images }
     }
 
+    pub fn mappings(&self) -> &Arc<MappingManager> { &self.mappings }
+    pub fn pools(&self) -> &Arc<SharedOcrPools> { &self.pools }
+    pub fn dump_images(&self) -> bool { self.dump_images }
+
     pub fn execute(
         &self,
         ctrl: &mut GenshinGameController,
