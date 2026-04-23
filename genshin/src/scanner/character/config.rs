@@ -21,7 +21,7 @@ impl Default for GoodCharacterScannerConfig {
         Self {
             verbose: false,
             ocr_backend: "ppocrv4".to_string(),
-            tab_delay: 500,
+            tab_delay: 650,
             next_delay: 400,
             open_delay: 1500,
             close_delay: 500,

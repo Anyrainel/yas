@@ -830,10 +830,14 @@ impl GoodCharacterScanner {
             &constellation_tab_image, scaler,
         );
 
-        // -- Constellation: OCR fallback (always run, used as truth) --
+        // -- Constellation: OCR fallback only when the main thread decided to
+        // click the nodes (empty `constellation_node_images` = main trusted the
+        // pixel read because it was monotonic, so we trust it too). --
         let skip_constellation = NO_CONSTELLATION_CHARACTERS.contains(&name.as_str());
         let new_constellation = if skip_constellation {
             0
+        } else if constellation_node_images.is_empty() {
+            pixel_result.level
         } else {
             let mut ocr_count = 0;
             for (i, node_image) in constellation_node_images.iter().enumerate() {
@@ -862,43 +866,52 @@ impl GoodCharacterScanner {
         let ((ov_auto, ov_skill, ov_burst), _) =
             Self::read_talents_from_image(ocr_pool, &talent_overview_image, &name, scaler);
 
-        // -- Talents: click detail fallback (always run, used as truth) --
-        let ocr = ocr_pool.get();
-        let talent_labels = ["talent_detail_auto", "talent_detail_skill", "talent_detail_burst"];
-        let mut det_levels = [0i32; 3];
-        for (i, (img, label)) in talent_detail_images.iter().zip(talent_labels.iter()).enumerate() {
-            det_levels[i] = Self::read_talent_from_detail_image(&ocr, img, scaler, label);
-        }
-        let [det_auto, det_skill, det_burst] = det_levels;
-        log_debug!("[talent] 详情: 普攻={} 战技={} 爆发={}", "[talent] detail: auto={} skill={} burst={}",
-            det_auto, det_skill, det_burst);
+        // -- Talents: click-detail truth only when the main thread decided to
+        // click (empty `talent_detail_images` = main thread's overview OCR
+        // already matched phase 1, so the overview is the truth). --
+        let (raw_auto, raw_skill, raw_burst) = if talent_detail_images.is_empty() {
+            let raw_auto = if ov_auto > 0 { ov_auto } else { 1 };
+            let raw_skill = if ov_skill > 0 { ov_skill } else { 1 };
+            let raw_burst = if ov_burst > 0 { ov_burst } else { 1 };
+            (raw_auto, raw_skill, raw_burst)
+        } else {
+            let ocr = ocr_pool.get();
+            let talent_labels = ["talent_detail_auto", "talent_detail_skill", "talent_detail_burst"];
+            let mut det_levels = [0i32; 3];
+            for (i, (img, label)) in talent_detail_images.iter().zip(talent_labels.iter()).enumerate() {
+                det_levels[i] = Self::read_talent_from_detail_image(&ocr, img, scaler, label);
+            }
+            let [det_auto, det_skill, det_burst] = det_levels;
+            log_debug!("[talent] 详情: 普攻={} 战技={} 爆发={}", "[talent] detail: auto={} skill={} burst={}",
+                det_auto, det_skill, det_burst);
 
-        // Use click fallback as truth when available, overview as fallback
-        let raw_auto = if det_auto > 0 { det_auto } else if ov_auto > 0 { ov_auto } else { 1 };
-        let raw_skill = if det_skill > 0 { det_skill } else if ov_skill > 0 { ov_skill } else { 1 };
-        let raw_burst = if det_burst > 0 { det_burst } else if ov_burst > 0 { ov_burst } else { 1 };
+            if det_auto > 0 && ov_auto > 0 && det_auto != ov_auto {
+                log_debug!(
+                    "[talent] 验证 {} auto: 概览={} 详情={} → 使用详情",
+                    "[talent] verify {} auto: overview={} detail={} → using detail",
+                    name, ov_auto, det_auto
+                );
+            }
+            if det_skill > 0 && ov_skill > 0 && det_skill != ov_skill {
+                log_debug!(
+                    "[talent] 验证 {} skill: 概览={} 详情={} → 使用详情",
+                    "[talent] verify {} skill: overview={} detail={} → using detail",
+                    name, ov_skill, det_skill
+                );
+            }
+            if det_burst > 0 && ov_burst > 0 && det_burst != ov_burst {
+                log_debug!(
+                    "[talent] 验证 {} burst: 概览={} 详情={} → 使用详情",
+                    "[talent] verify {} burst: overview={} detail={} → using detail",
+                    name, ov_burst, det_burst
+                );
+            }
 
-        if det_auto > 0 && ov_auto > 0 && det_auto != ov_auto {
-            log_debug!(
-                "[talent] 验证 {} auto: 概览={} 详情={} → 使用详情",
-                "[talent] verify {} auto: overview={} detail={} → using detail",
-                name, ov_auto, det_auto
-            );
-        }
-        if det_skill > 0 && ov_skill > 0 && det_skill != ov_skill {
-            log_debug!(
-                "[talent] 验证 {} skill: 概览={} 详情={} → 使用详情",
-                "[talent] verify {} skill: overview={} detail={} → using detail",
-                name, ov_skill, det_skill
-            );
-        }
-        if det_burst > 0 && ov_burst > 0 && det_burst != ov_burst {
-            log_debug!(
-                "[talent] 验证 {} burst: 概览={} 详情={} → 使用详情",
-                "[talent] verify {} burst: overview={} detail={} → using detail",
-                name, ov_burst, det_burst
-            );
-        }
+            let raw_auto = if det_auto > 0 { det_auto } else if ov_auto > 0 { ov_auto } else { 1 };
+            let raw_skill = if det_skill > 0 { det_skill } else if ov_skill > 0 { ov_skill } else { 1 };
+            let raw_burst = if det_burst > 0 { det_burst } else if ov_burst > 0 { ov_burst } else { 1 };
+            (raw_auto, raw_skill, raw_burst)
+        };
 
         // -- Build character with new data --
         let (adj_auto, adj_skill, adj_burst, _) =
@@ -1488,8 +1501,9 @@ impl GoodCharacterScanner {
             let old = characters[char_idx].clone();
             let name = old.key.clone();
             let skip_constellation = NO_CONSTELLATION_CHARACTERS.contains(&name.as_str());
+            let has_special = SPECIAL_BURST_CHARACTERS.contains(&name.as_str());
 
-            // 1. Capture attributes
+            // 1. Capture attributes.
             let attrs_image = match ctrl.capture_game() {
                 Ok(img) => img,
                 Err(e) => {
@@ -1498,54 +1512,116 @@ impl GoodCharacterScanner {
                 }
             };
 
-            // 2. Constellation tab capture
-            ctrl.click_at(CHAR_TAB_CONSTELLATION.0, CHAR_TAB_CONSTELLATION.1);
-            utils::sleep(td as u32);
-            let constellation_tab_image = ctrl.capture_game().unwrap_or_else(|_| RgbImage::new(1, 1));
-
-            // 3. Click each constellation node and capture (6 captures)
-            let mut constellation_node_images = Vec::with_capacity(6);
-            if !skip_constellation {
-                for ci in 0..6 {
-                    let click_y = CHAR_CONSTELLATION_Y_BASE + ci as f64 * CHAR_CONSTELLATION_Y_STEP;
-                    ctrl.click_at(CHAR_CONSTELLATION_X, click_y);
-                    let delay = if ci == 0 { td * 3 / 4 } else { td / 2 };
-                    utils::sleep(delay as u32);
-                    constellation_node_images.push(
-                        ctrl.capture_game().unwrap_or_else(|_| RgbImage::new(1, 1))
-                    );
-                }
-                // Dismiss constellation popup
-                ctrl.key_press(enigo::Key::Escape);
-                utils::sleep(td as u32);
-            }
-
-            // 4. Talents overview capture
+            // 2. Talents first: click tab, capture overview.
             ctrl.click_at(CHAR_TAB_TALENTS.0, CHAR_TAB_TALENTS.1);
             utils::sleep(td as u32);
             let talent_overview_image = ctrl.capture_game().unwrap_or_else(|_| RgbImage::new(1, 1));
 
-            // 5. Click each talent detail and capture (3 captures)
-            let has_special = SPECIAL_BURST_CHARACTERS.contains(&name.as_str());
-            let talent_indices: [usize; 3] = if has_special { [0, 1, 3] } else { [0, 1, 2] };
-            let mut talent_detail_images = Vec::with_capacity(3);
-            for (ti, &talent_idx) in talent_indices.iter().enumerate() {
-                let click_y = CHAR_TALENT_FIRST_Y + talent_idx as f64 * CHAR_TALENT_OFFSET_Y;
-                ctrl.click_at(CHAR_TALENT_CLICK_X, click_y);
-                let delay = if ti == 0 { td * 3 / 4 } else { td / 2 };
-                utils::sleep(delay as u32);
-                talent_detail_images.push(
-                    ctrl.capture_game().unwrap_or_else(|_| RgbImage::new(1, 1))
+            // 3. OCR the overview on the main thread with the v4 guard we already
+            // hold. If all three values land and match the phase-1 result, the
+            // overview is consistent — skip the detail clicks. Otherwise fall
+            // through to click each detail for disambiguation.
+            let burst_rect = if has_special {
+                CHAR_TALENT_OVERVIEW_BURST_SPECIAL
+            } else {
+                CHAR_TALENT_OVERVIEW_BURST
+            };
+            let ov_auto = Self::ocr_image_region(
+                ocr, &talent_overview_image, CHAR_TALENT_OVERVIEW_AUTO, &ctrl.scaler,
+            ).ok().map(|t| Self::parse_lv_text(&t)).unwrap_or(0);
+            let ov_skill = Self::ocr_image_region(
+                ocr, &talent_overview_image, CHAR_TALENT_OVERVIEW_SKILL, &ctrl.scaler,
+            ).ok().map(|t| Self::parse_lv_text(&t)).unwrap_or(0);
+            let ov_burst = Self::ocr_image_region(
+                ocr, &talent_overview_image, burst_rect, &ctrl.scaler,
+            ).ok().map(|t| Self::parse_lv_text(&t)).unwrap_or(0);
+
+            // Compare to phase-1 values. Match = overview is stable; skip details.
+            // Require all three > 0 (OCR actually landed) AND equal to phase-1.
+            // The phase-1 stored values are post-adjustment, but auto/skill/burst
+            // ≤ 10 and the adjustment is a clamp — matching the unadjusted overview
+            // means phase 1 wasn't an OCR glitch.
+            let talents_consistent = ov_auto > 0 && ov_skill > 0 && ov_burst > 0
+                && ov_auto == old.talent.auto
+                && ov_skill == old.talent.skill
+                && ov_burst == old.talent.burst;
+
+            let mut talent_detail_images = Vec::new();
+            if !talents_consistent {
+                // 4a. Click each talent detail and capture (3 captures).
+                let talent_indices: [usize; 3] = if has_special { [0, 1, 3] } else { [0, 1, 2] };
+                for (ti, &talent_idx) in talent_indices.iter().enumerate() {
+                    let click_y = CHAR_TALENT_FIRST_Y + talent_idx as f64 * CHAR_TALENT_OFFSET_Y;
+                    ctrl.click_at(CHAR_TALENT_CLICK_X, click_y);
+                    let delay = if ti == 0 { td * 3 / 4 } else { td / 2 };
+                    utils::sleep(delay as u32);
+                    talent_detail_images.push(
+                        ctrl.capture_game().unwrap_or_else(|_| RgbImage::new(1, 1))
+                    );
+                }
+                // Dismiss talent detail popup.
+                ctrl.key_press(enigo::Key::Escape);
+                utils::sleep(td as u32);
+                log_debug!(
+                    "[talent] 第二轮 {}: 概览({},{},{}) != 旧({},{},{}) → 点击详情",
+                    "[talent] pass2 {}: overview({},{},{}) != old({},{},{}) → clicking details",
+                    name, ov_auto, ov_skill, ov_burst,
+                    old.talent.auto, old.talent.skill, old.talent.burst,
+                );
+            } else {
+                log_debug!(
+                    "[talent] 第二轮 {}: 概览与旧值一致 ({},{},{}) → 跳过详情点击",
+                    "[talent] pass2 {}: overview matches old ({},{},{}) → skipping detail clicks",
+                    name, ov_auto, ov_skill, ov_burst,
                 );
             }
 
-            // 6. Dismiss talent detail popup and return to attributes
-            ctrl.key_press(enigo::Key::Escape);
+            // 5. Constellation tab capture.
+            ctrl.click_at(CHAR_TAB_CONSTELLATION.0, CHAR_TAB_CONSTELLATION.1);
             utils::sleep(td as u32);
+            let constellation_tab_image = ctrl.capture_game().unwrap_or_else(|_| RgbImage::new(1, 1));
+
+            // 6. Pixel detection on the tab image. Monotonic = clean, trust it;
+            // only click nodes if the pattern is ambiguous (non-monotonic) OR
+            // the character has no constellations (then there's nothing to click
+            // either way, so skip regardless).
+            let mut constellation_node_images = Vec::new();
+            if !skip_constellation {
+                let pixel_check = crate::scanner::common::pixel_utils::detect_constellation_pixel(
+                    &constellation_tab_image, &ctrl.scaler,
+                );
+                if pixel_check.monotonic {
+                    log_debug!(
+                        "[constellation] 第二轮 {}: 像素单调 C{} → 跳过节点点击",
+                        "[constellation] pass2 {}: pixel monotonic C{} → skipping node clicks",
+                        name, pixel_check.level,
+                    );
+                } else {
+                    log_debug!(
+                        "[constellation] 第二轮 {}: 像素非单调 → 点击每个节点",
+                        "[constellation] pass2 {}: pixel non-monotonic → clicking each node",
+                        name,
+                    );
+                    for ci in 0..6 {
+                        let click_y = CHAR_CONSTELLATION_Y_BASE + ci as f64 * CHAR_CONSTELLATION_Y_STEP;
+                        ctrl.click_at(CHAR_CONSTELLATION_X, click_y);
+                        let delay = if ci == 0 { td * 3 / 4 } else { td / 2 };
+                        utils::sleep(delay as u32);
+                        constellation_node_images.push(
+                            ctrl.capture_game().unwrap_or_else(|_| RgbImage::new(1, 1))
+                        );
+                    }
+                    // Dismiss constellation popup.
+                    ctrl.key_press(enigo::Key::Escape);
+                    utils::sleep(td as u32);
+                }
+            }
+
+            // 7. Return to attributes tab.
             ctrl.click_at(CHAR_TAB_ATTRIBUTES.0, CHAR_TAB_ATTRIBUTES.1);
             utils::sleep((td / 2) as u32);
 
-            // 7. Send to worker
+            // 8. Send to worker.
             let rescan = RescanCaptures {
                 char_index: char_idx,
                 name,

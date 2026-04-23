@@ -57,17 +57,32 @@ pub fn show(
                 });
 
             // === Timing Delays ===
+            //
+            // Scan API runs the same character/weapon/artifact scanners as the
+            // scanner tab, so all their delays apply when the server executes a
+            // scan job. Layout: character + inventory on row 1, manager on row 2.
             egui::CollapsingHeader::new(l.t("延迟设置", "Timing Delays"))
                 .default_open(false)
                 .show(ui, |ui| {
                     ui.add_enabled_ui(!is_server_running, |ui| {
                         let defaults = yas_genshin::cli::GoodUserConfig::default();
                         ui.columns(2, |cols| {
-                            // Shared inventory delays (same fields as scanner tab)
-                            widgets::inventory_delays(&mut cols[0], state, l);
+                            widgets::delay_group(&mut cols[0], "char_delays", l.t("角色", "Character"), l, &mut [
+                                (l.t("打开界面", "Open screen"), &mut state.user_config.char_open_delay, defaults.char_open_delay,
+                                    l.t("打开角色界面后等待完全加载的时间", "Wait time for character screen to fully load after opening")),
+                                (l.t("关闭界面", "Close screen"), &mut state.user_config.char_close_delay, defaults.char_close_delay,
+                                    l.t("关闭角色界面后等待返回主界面的时间", "Wait time after closing character screen to return to main view")),
+                                (l.t("面板切换", "Panel switch"), &mut state.user_config.char_tab_delay, defaults.char_tab_delay,
+                                    l.t("切换角色详情标签页（天赋/命座等）后的等待", "Wait after switching character detail tabs (talents/constellations etc.)")),
+                                (l.t("切换角色", "Next character"), &mut state.user_config.char_next_delay, defaults.char_next_delay,
+                                    l.t("切换到下一个角色后等待面板更新的时间", "Wait after switching to next character for panel to update")),
+                            ]);
+                            widgets::inventory_delays(&mut cols[1], state, l);
+                        });
 
-                            // Manager-specific delays
-                            widgets::delay_group(&mut cols[1], "mgr_delays", l.t("管理器", "Manager"), l, &mut [
+                        ui.add_space(4.0);
+                        ui.columns(2, |cols| {
+                            widgets::delay_group(&mut cols[0], "mgr_delays", l.t("管理器", "Manager"), l, &mut [
                                 (l.t("画面切换", "Screen transition"), &mut state.user_config.mgr_transition_delay, defaults.mgr_transition_delay,
                                     l.t("打开/关闭角色面板等大画面切换后的等待", "Wait after major screen transitions like opening/closing character panel")),
                                 (l.t("操作按钮", "Action button"), &mut state.user_config.mgr_action_delay, defaults.mgr_action_delay,
@@ -77,6 +92,8 @@ pub fn show(
                                 (l.t("滚动等待", "Scroll settle"), &mut state.user_config.mgr_scroll_delay, defaults.mgr_scroll_delay,
                                     l.t("翻页后等待物品列表稳定的时间", "Wait after scrolling for item list to stabilize")),
                             ]);
+                            // Second column intentionally empty — 4 delays fit in col[0].
+                            let _ = &mut cols[1];
                         });
                     });
                 });
