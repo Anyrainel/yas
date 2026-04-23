@@ -219,40 +219,23 @@ Two-thread model: HTTP thread (tiny_http) handles requests, execution thread own
 
 ### API Reference
 
-#### `POST /manage` — Lock/unlock artifacts
-Request: `LockManageRequest` (lock + unlock lists of GOOD v3 artifacts).
-Response: 202 `{"jobId":"uuid","total":N}`.
+Endpoints (summary only — full contract, request/response shapes, status codes, and worked examples live in [`docs/MANAGER_API.md`](docs/MANAGER_API.md); update that file when the wire contract changes):
 
-#### `POST /equip` — Equip/unequip artifacts
-Request: `EquipRequest` (list of artifact + target location pairs).
-Response: 202 `{"jobId":"uuid","total":N}`.
-
-#### `POST /scan` — Scan characters/weapons/artifacts via OCR
-Request: `{"characters":true,"weapons":true,"artifacts":true}` (at least one must be true, fields default to false).
-Response: 202 `{"jobId":"uuid","targets":{"characters":true,"weapons":true,"artifacts":true}}`.
-The scan uses the same OCR pipeline as CLI scanning. Progress `total` = number of enabled targets (1–3), `completed` increments per phase.
-
-#### `GET /status` — Poll job progress (shared by all job types)
-Returns lightweight JSON: state + jobId + progress (running) or summary (completed).
-
-#### `GET /result?jobId=xxx` — Full job result
-Returns `ManageResult` with per-instruction results and summary. For scan jobs, each phase (characters/weapons/artifacts) is one result entry with `id` = phase name.
-
-#### `GET /characters?jobId=xxx` — Character scan data
-Returns `Vec<GoodCharacter>` from the latest scan that produced character data. 400 if missing jobId, 404 if jobId doesn't match.
-
-#### `GET /weapons?jobId=xxx` — Weapon scan data
-Returns `Vec<GoodWeapon>`. Same error semantics as `/characters`.
-
-#### `GET /artifacts[?jobId=xxx]` — Artifact data
-Returns `Vec<GoodArtifact>`. Works for both scan results and manage snapshots. `jobId` is optional for backwards compatibility: if provided, must match latest; if omitted, returns latest. 404 if no data or jobId mismatch.
+- `POST /manage` — lock/unlock artifacts. Returns 202 with `jobId`.
+- `POST /equip` — equip/unequip artifacts. Returns 202 with `jobId`.
+- `POST /scan` — OCR scan for characters/weapons/artifacts. Returns 202; one `jobId` covers all requested categories.
+- `GET /status` — poll job state. Manage/equip expose `progress` (linear, per-item). Scan exposes `scanProgress` (per-category, one slot each, `pending`/`running`/`complete`/`aborted`).
+- `GET /result?jobId=xxx` — final per-instruction results + summary.
+- `GET /characters?jobId=xxx`, `GET /weapons?jobId=xxx` — scan data. 503 if that jobId attempted the category but didn't finish.
+- `GET /artifacts[?jobId=xxx]` — scan data or manage snapshot. `jobId` optional for back-compat.
+- `GET /health` — `{status, enabled, busy, gameAlive}`.
 
 #### `GET /health` — Health check
 Returns `{"status":"ok","enabled":bool,"busy":bool,"gameAlive":bool}`.
 
 ### Data Caching
 
-Each data type (characters, weapons, artifacts) has an independent `ScanDataCache<T>` storing the latest `jobId` + data. Scan jobs update only the caches for targets they scanned — a characters-only scan leaves weapons/artifacts caches from a previous scan intact. Manage jobs that produce artifact snapshots update the artifact cache with their jobId. Cache invalidation: manage/equip jobs that modify in-game state clear the artifact cache before execution.
+Each data type (characters, weapons, artifacts) has an independent `ScanDataCache<T>` storing the latest `(jobId, data)` plus an `incomplete_job_id` slot. All-or-nothing: a scan category populates the cache only if it completes in full during that run; if it aborts/errors/is never reached, the jobId is recorded as incomplete and the cache isn't written — queries for that jobId return 503. Categories the client didn't request leave the cache untouched. Manage/equip jobs that modify in-game state invalidate the artifact cache before execution.
 
 ### Key config flow
 

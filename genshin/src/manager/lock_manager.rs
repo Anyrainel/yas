@@ -87,6 +87,7 @@ impl LockManager {
         stop_on_all_matched: bool,
         max_target_level: i32,
         dump_images: bool,
+        progress_fn: Option<&crate::scanner::common::progress::ProgressFn<'_>>,
     ) -> (Vec<InstructionResult>, Vec<(usize, GoodArtifact)>, HashMap<usize, usize>, bool, usize) {
         let mut results: HashMap<String, InstructionResult> = HashMap::new();
         let mut scanned_artifacts: Vec<(usize, GoodArtifact)> = Vec::new();
@@ -194,6 +195,12 @@ impl LockManager {
         let mappings_cb = self.mappings.clone();
         let scaler_cb = scaler.clone();
 
+        // Fire an initial (0, total) tick so polling clients immediately see
+        // the real backpack size rather than the upfront target-count estimate.
+        if let Some(pf) = progress_fn {
+            pf(0, total, "", "锁定变更 / Lock changes");
+        }
+
         let mut bp = BackpackScanner::new(ctrl);
         bp.scan_grid(total, &scan_config, 0, |ctrl_cb, event| {
             match event {
@@ -240,6 +247,13 @@ impl LockManager {
                     if dump_images {
                         let ctx = DumpCtx::new("debug_images", "manager_lock", idx, "");
                         ctx.dump_full(&image);
+                    }
+
+                    // Tick progress per item as we walk through the backpack.
+                    // Reports (idx+1, backpack_total) so clients see a real
+                    // moving number rather than 0/N until the very end.
+                    if let Some(pf) = progress_fn {
+                        pf(idx + 1, total, "", "锁定变更 / Lock changes");
                     }
 
                     // Dispatch helper: spawns a rayon OCR task for one ready item.

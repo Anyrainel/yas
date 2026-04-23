@@ -1059,7 +1059,7 @@ pub fn run_scan_core(
         log_info!("扫描角色...", "Scanning characters...");
         let char_config = GoodScannerApplication::make_char_config(&scanner_config, user_config);
         let scanner = GoodCharacterScanner::new(char_config, mappings.clone())?;
-        let result = try_scan(&token, save_on_cancel, scanner.scan(&mut ctrl, 0, &pools))?;
+        let result = try_scan(&token, save_on_cancel, scanner.scan(&mut ctrl, 0, &pools, None))?;
         characters = Some(result);
 
         if !token.is_cancelled() {
@@ -1073,7 +1073,7 @@ pub fn run_scan_core(
         log_info!("扫描武器...", "Scanning weapons...");
         let weapon_config = GoodScannerApplication::make_weapon_config(&scanner_config, user_config);
         let scanner = GoodWeaponScanner::new(weapon_config, mappings.clone())?;
-        let result = try_scan(&token, save_on_cancel, scanner.scan(&mut ctrl, false, 0, &pools))?;
+        let result = try_scan(&token, save_on_cancel, scanner.scan(&mut ctrl, false, 0, &pools, None))?;
         weapons = Some(result);
     }
 
@@ -1084,7 +1084,7 @@ pub fn run_scan_core(
         let artifact_config = GoodScannerApplication::make_artifact_config(&scanner_config, user_config);
         let skip_open = config.scan_weapons;
         let scanner = GoodArtifactScanner::new(artifact_config, mappings.clone())?;
-        let result = try_scan(&token, save_on_cancel, scanner.scan(&mut ctrl, skip_open, 0, &pools))?;
+        let result = try_scan(&token, save_on_cancel, scanner.scan(&mut ctrl, skip_open, 0, &pools, None))?;
         artifacts = Some(result);
     }
 
@@ -1173,6 +1173,9 @@ pub fn run_server_core(
     };
     let exec_user_config = user_config.clone();
 
+    // Fn closure so the server can retry init on subsequent jobs if the first
+    // attempt fails (e.g. game window not open yet). All captures are cloned
+    // inside the body so each call builds fresh state.
     let init_executor = move || -> anyhow::Result<Box<dyn crate::server::ManageExecutor>> {
 
         crate::manager::ui_actions::set_manager_delays(mgr_delays.clone());
@@ -1186,7 +1189,7 @@ pub fn run_server_core(
             .context("OCR模型加载失败，请确认内存充足（建议8GB以上）\
                      / OCR model load failed — ensure sufficient memory (8 GB+ recommended)")?);
         let manager = crate::manager::orchestrator::ArtifactManager::new(
-            mappings_clone,
+            mappings_clone.clone(),
             pools,
             capture_delay,
             scroll_delay,
@@ -1198,8 +1201,8 @@ pub fn run_server_core(
         Ok(Box::new(crate::server::GameExecutor {
             ctrl,
             manager,
-            user_config: exec_user_config,
-            scan_defaults,
+            user_config: exec_user_config.clone(),
+            scan_defaults: scan_defaults.clone(),
         }))
     };
 

@@ -986,6 +986,7 @@ impl GoodCharacterScanner {
         ctrl: &mut GenshinGameController,
         start_at_char: usize,
         pools: &SharedOcrPools,
+        progress_fn: Option<&crate::scanner::common::progress::ProgressFn<'_>>,
     ) -> Result<Vec<GoodCharacter>> {
         log_debug!("[character] 开始扫描...", "[character] starting scan...");
         let now = SystemTime::now();
@@ -1146,6 +1147,7 @@ impl GoodCharacterScanner {
                         Self::drain_phase1_results(
                             &result_rx, &mut characters, &mut scan_metas,
                             &mut viewed_indices, &pb, self.config.log_progress,
+                            progress_fn,
                         );
                         if viewed_count > 3 && characters.is_empty() {
                             log_error!("[character] 已查看{}个但无结果，停止", "[character] viewed {} but no results, stopping", viewed_count);
@@ -1245,6 +1247,7 @@ impl GoodCharacterScanner {
             Self::drain_phase1_results(
                 &result_rx, &mut characters, &mut scan_metas,
                 &mut viewed_indices, &pb, self.config.log_progress,
+                progress_fn,
             );
 
             // Check limits
@@ -1256,6 +1259,7 @@ impl GoodCharacterScanner {
                 Self::drain_phase1_results(
                     &result_rx, &mut characters, &mut scan_metas,
                     &mut viewed_indices, &pb, self.config.log_progress,
+                    progress_fn,
                 );
                 if characters.is_empty() {
                     log_error!("[character] 已查看{}个但无结果，停止", "[character] viewed {} but no results, stopping", viewed_count);
@@ -1287,6 +1291,13 @@ impl GoodCharacterScanner {
                         pb.tick();
                         characters.push(c);
                         viewed_indices.push(viewed_index);
+                        // Characters has no knowable total up front — emit a
+                        // rolling count (UI should treat total==completed as
+                        // an indeterminate "N scanned" counter).
+                        if let Some(pf) = progress_fn {
+                            let n = characters.len();
+                            pf(n, n, "", "");
+                        }
                     }
                     scan_metas.push(meta);
                 }
@@ -1380,6 +1391,7 @@ impl GoodCharacterScanner {
         viewed_indices: &mut Vec<usize>,
         pb: &ProgressBar,
         log_progress: bool,
+        progress_fn: Option<&crate::scanner::common::progress::ProgressFn<'_>>,
     ) {
         while let Ok(result) = result_rx.try_recv() {
             match result {
@@ -1396,6 +1408,10 @@ impl GoodCharacterScanner {
                         pb.tick();
                         characters.push(c);
                         viewed_indices.push(viewed_index);
+                        if let Some(pf) = progress_fn {
+                            let n = characters.len();
+                            pf(n, n, "", "");
+                        }
                     }
                     scan_metas.push(meta);
                 }

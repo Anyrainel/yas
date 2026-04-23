@@ -9,12 +9,11 @@ use crate::scanner::common::game_controller::GenshinGameController;
 use crate::scanner::common::mappings::MappingManager;
 use crate::scanner::common::models::GoodArtifact;
 use crate::scanner::common::ocr_pool::SharedOcrPools;
+pub use crate::scanner::common::progress::ProgressFn;
 
 use super::equip_manager::{EquipManager, EquipTarget};
 use super::lock_manager::LockManager;
 use super::models::*;
-
-pub type ProgressFn = dyn Fn(usize, usize, &str, &str) + Send + Sync;
 
 /// A single lock/unlock target: the artifact to match + desired lock state.
 pub struct LockTarget {
@@ -59,7 +58,7 @@ impl ArtifactManager {
         &self,
         ctrl: &mut GenshinGameController,
         request: LockManageRequest,
-        progress_fn: Option<&ProgressFn>,
+        progress_fn: Option<&ProgressFn<'_>>,
         cancel_token: CancelToken,
     ) -> (ManageResult, Option<Vec<GoodArtifact>>) {
         // Build targets — validation is done at the server layer (400 on any invalid entry).
@@ -122,6 +121,7 @@ impl ArtifactManager {
             self.stop_on_all_matched,
             max_target_level,
             self.dump_images,
+            progress_fn,
         );
 
         for r in &lock_results {
@@ -176,7 +176,7 @@ impl ArtifactManager {
         &self,
         ctrl: &mut GenshinGameController,
         request: EquipRequest,
-        progress_fn: Option<&ProgressFn>,
+        progress_fn: Option<&ProgressFn<'_>>,
         cancel_token: CancelToken,
     ) -> ManageResult {
         let mut targets: Vec<EquipTarget> = Vec::new();
@@ -208,7 +208,7 @@ impl ArtifactManager {
             self.pools.clone(),
             self.dump_images,
         );
-        let results = equip_mgr.execute(ctrl, &targets);
+        let results = equip_mgr.execute(ctrl, &targets, progress_fn);
 
         report(results.len(), "装备变更 / Equip changes");
 

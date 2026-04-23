@@ -49,11 +49,19 @@ impl EquipManager {
         &self,
         ctrl: &mut GenshinGameController,
         targets: &[EquipTarget],
+        progress_fn: Option<&crate::scanner::common::progress::ProgressFn<'_>>,
     ) -> Vec<InstructionResult> {
         let ocr = self.pools.v4().get();
 
         let scaler = ctrl.scaler.clone();
         let mut results: HashMap<String, InstructionResult> = HashMap::new();
+        let total = targets.len();
+        let report = |completed: usize, id: &str| {
+            if let Some(pf) = progress_fn {
+                pf(completed, total, id, "装备变更 / Equip changes");
+            }
+        };
+        report(0, "");
 
         // Separate unequip and equip targets — always attempt equip (don't trust location field)
         let unequip_targets: Vec<&EquipTarget> = targets.iter()
@@ -79,16 +87,18 @@ impl EquipManager {
                     id: target.result_id.clone(),
                     status: InstructionStatus::Aborted,
                 });
+                report(results.len(), &target.result_id);
                 continue;
             }
             let result = self.do_unequip(ctrl, target, &target.artifact.location, &ocr);
             results.insert(target.result_id.clone(), result);
+            report(results.len(), &target.result_id);
         }
 
         // Process equip targets by scanning character roster in order
         if !char_groups.is_empty() {
             self.process_equip_by_roster_scan(
-                ctrl, &char_groups, &ocr, &scaler, &mut results,
+                ctrl, &char_groups, &ocr, &scaler, &mut results, progress_fn, total,
             );
         }
 
@@ -113,7 +123,14 @@ impl EquipManager {
         ocr: &dyn yas::ocr::ImageToText<image::RgbImage>,
         scaler: &CoordScaler,
         results: &mut HashMap<String, InstructionResult>,
+        progress_fn: Option<&crate::scanner::common::progress::ProgressFn<'_>>,
+        total: usize,
     ) {
+        let report = |completed: usize, id: &str| {
+            if let Some(pf) = progress_fn {
+                pf(completed, total, id, "装备变更 / Equip changes");
+            }
+        };
         // Open character screen (same logic as ensure_character_screen used by tests)
         ctrl.return_to_main_ui(8);
         yas::utils::sleep(d_action() * 5 / 8);
@@ -184,6 +201,7 @@ impl EquipManager {
                     if !slot_targets.is_empty() {
                         self.equip_character_slots(ctrl, &slot_targets, ocr, scaler, results);
                         remaining_chars -= 1;
+                        report(results.len(), &char_key);
                     }
                 }
 
@@ -209,6 +227,7 @@ impl EquipManager {
                 }
             }
         }
+        report(results.len(), "");
     }
 
     /// Try to match the OCR'd character name against any of the target character keys.

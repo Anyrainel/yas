@@ -423,6 +423,7 @@ impl GoodWeaponScanner {
         skip_open_backpack: bool,
         start_at: usize,
         pools: &SharedOcrPools,
+        progress_fn: Option<&crate::scanner::common::progress::ProgressFn<'_>>,
     ) -> Result<Vec<GoodWeapon>> {
         log_debug!("[weapon] 开始扫描...", "[weapon] starting scan...");
         let now = SystemTime::now();
@@ -558,6 +559,10 @@ impl GoodWeaponScanner {
         };
 
         let total = total_count as usize;
+        // Initial (0, total) tick so the polling client sees the real backpack size.
+        if let Some(pf) = progress_fn {
+            pf(0, total, "", "");
+        }
         let mut voter: PagedGridVoter<()> = PagedGridVoter::new(total, GridMode::Weapon);
 
         let emit_ready = |ready: Vec<ReadyItem<()>>,
@@ -586,6 +591,9 @@ impl GoodWeaponScanner {
             GridEvent::Item { idx, image, .. } => {
                 if worker_handle.stop_requested() {
                     return ScanAction::Stop;
+                }
+                if let Some(pf) = progress_fn {
+                    pf(idx + 1, total, "", "");
                 }
                 if pixel_utils::weapon_below_min_rarity(&image, &scaler, self.config.min_rarity) {
                     let ready = voter.early_stop_flush(&image, idx, &scaler);

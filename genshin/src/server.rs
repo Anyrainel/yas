@@ -65,11 +65,25 @@ enum JobRequest {
     Scan(ScanRequest),
 }
 
-/// Result of a scan execution.
+/// Result of a single scan phase.
+///
+/// A phase is `Complete` only if every instance in the category was scanned
+/// in this run. Any abort (user RMB, cancel token, errors mid-scan) yields
+/// `Incomplete` so no data is published.
+pub enum PhaseResult<T> {
+    /// Phase was not requested by the client.
+    NotAttempted,
+    /// Phase was requested but did not finish (aborted, errored, or never started because an earlier phase aborted).
+    Incomplete,
+    /// Phase finished successfully with full data.
+    Complete(Vec<T>),
+}
+
+/// Result of a scan execution. Each category reports Complete/Incomplete/NotAttempted.
 pub struct ScanResult {
-    pub characters: Option<Vec<GoodCharacter>>,
-    pub weapons: Option<Vec<GoodWeapon>>,
-    pub artifacts: Option<Vec<GoodArtifact>>,
+    pub characters: PhaseResult<GoodCharacter>,
+    pub weapons: PhaseResult<GoodWeapon>,
+    pub artifacts: PhaseResult<GoodArtifact>,
 }
 
 /// Abstraction over game interaction for testability.
@@ -77,21 +91,21 @@ pub trait ManageExecutor {
     fn execute(
         &mut self,
         request: LockManageRequest,
-        progress_fn: Option<&ProgressFn>,
+        progress_fn: Option<&ProgressFn<'_>>,
         cancel_token: yas::cancel::CancelToken,
     ) -> (ManageResult, Option<Vec<GoodArtifact>>);
 
     fn execute_equip(
         &mut self,
         request: EquipRequest,
-        progress_fn: Option<&ProgressFn>,
+        progress_fn: Option<&ProgressFn<'_>>,
         cancel_token: yas::cancel::CancelToken,
     ) -> ManageResult;
 
     fn execute_scan(
         &mut self,
         request: &ScanRequest,
-        progress_fn: Option<&dyn Fn(usize, usize)>,
+        progress_fn: Option<&crate::scanner::common::progress::ProgressFn<'_>>,
         cancel_token: yas::cancel::CancelToken,
     ) -> anyhow::Result<ScanResult>;
 }
@@ -108,7 +122,7 @@ impl ManageExecutor for GameExecutor {
     fn execute(
         &mut self,
         request: LockManageRequest,
-        progress_fn: Option<&ProgressFn>,
+        progress_fn: Option<&ProgressFn<'_>>,
         cancel_token: yas::cancel::CancelToken,
     ) -> (ManageResult, Option<Vec<GoodArtifact>>) {
         self.manager.execute(&mut self.ctrl, request, progress_fn, cancel_token)
@@ -117,7 +131,7 @@ impl ManageExecutor for GameExecutor {
     fn execute_equip(
         &mut self,
         request: EquipRequest,
-        progress_fn: Option<&ProgressFn>,
+        progress_fn: Option<&ProgressFn<'_>>,
         cancel_token: yas::cancel::CancelToken,
     ) -> ManageResult {
         self.manager.execute_equip(&mut self.ctrl, request, progress_fn, cancel_token)
@@ -126,7 +140,7 @@ impl ManageExecutor for GameExecutor {
     fn execute_scan(
         &mut self,
         request: &ScanRequest,
-        progress_fn: Option<&dyn Fn(usize, usize)>,
+        progress_fn: Option<&crate::scanner::common::progress::ProgressFn<'_>>,
         cancel_token: yas::cancel::CancelToken,
     ) -> anyhow::Result<ScanResult> {
         use crate::cli::GoodScannerApplication;
@@ -138,47 +152,104 @@ impl ManageExecutor for GameExecutor {
         let mappings = self.manager.mappings().clone();
         let pools = self.manager.pools().clone();
 
-        self.ctrl.set_cancel_token(cancel_token.clone());
+        // Match manager/equip order: focus the game window first, then arm the cancel token.
         self.ctrl.focus_game_window();
+        self.ctrl.set_cancel_token(cancel_token.clone());
 
-        let total = request.characters as usize + request.weapons as usize + request.artifacts as usize;
-        let mut completed = 0usize;
-        let report = |c: usize| { if let Some(f) = progress_fn { f(c, total); } };
-        report(0);
+        // Per-category wrapper: scanners emit progress_fn(c, t, id, "").
+        // We rewrite the phase string to the category key so the server
+        // dispatch routes each tick into the right PhaseProgress slot.
+        let chars_progress = |c: usize, t: usize, id: &str, _phase: &str| {
+            if let Some(outer) = progress_fn {
+                outer(c, t, id, "characters");
+            }
+        };
+        let weapons_progress = |c: usize, t: usize, id: &str, _phase: &str| {
+            if let Some(outer) = progress_fn {
+                outer(c, t, id, "weapons");
+            }
+        };
+        let artifacts_progress = |c: usize, t: usize, id: &str, _phase: &str| {
+            if let Some(outer) = progress_fn {
+                outer(c, t, id, "artifacts");
+            }
+        };
 
-        let mut characters = None;
-        let mut weapons = None;
-        let mut artifacts = None;
+        let mut characters: PhaseResult<GoodCharacter> = PhaseResult::NotAttempted;
+        let mut weapons: PhaseResult<GoodWeapon> = PhaseResult::NotAttempted;
+        let mut artifacts: PhaseResult<GoodArtifact> = PhaseResult::NotAttempted;
 
         if request.characters {
-            let cfg = GoodScannerApplication::make_char_config(&scanner_config, &self.user_config);
-            let scanner = GoodCharacterScanner::new(cfg, mappings.clone())?;
-            let result = scanner.scan(&mut self.ctrl, 0, &pools)?;
-            characters = Some(result);
-            completed += 1;
-            report(completed);
-            if !cancel_token.is_cancelled() {
-                self.ctrl.return_to_main_ui(4);
-            }
+            characters = if cancel_token.is_cancelled() {
+                PhaseResult::Incomplete
+            } else {
+                let cfg = GoodScannerApplication::make_char_config(&scanner_config, &self.user_config);
+                let scan_result = match GoodCharacterScanner::new(cfg, mappings.clone()) {
+                    Ok(scanner) => scanner.scan(
+                        &mut self.ctrl, 0, &pools,
+                        Some(&chars_progress),
+                    ),
+                    Err(e) => Err(e),
+                };
+                if let Err(ref e) = scan_result {
+                    log_warn!("[scan] 角色阶段失败: {:#}", "[scan] character phase failed: {:#}", e);
+                }
+                let phase = match scan_result {
+                    Ok(data) if !cancel_token.is_cancelled() => PhaseResult::Complete(data),
+                    _ => PhaseResult::Incomplete,
+                };
+                if matches!(phase, PhaseResult::Complete(_)) && !cancel_token.is_cancelled() {
+                    self.ctrl.return_to_main_ui(4);
+                }
+                phase
+            };
         }
 
-        if request.weapons && !cancel_token.is_cancelled() {
-            let cfg = GoodScannerApplication::make_weapon_config(&scanner_config, &self.user_config);
-            let scanner = GoodWeaponScanner::new(cfg, mappings.clone())?;
-            let result = scanner.scan(&mut self.ctrl, false, 0, &pools)?;
-            weapons = Some(result);
-            completed += 1;
-            report(completed);
+        if request.weapons {
+            weapons = if cancel_token.is_cancelled() {
+                PhaseResult::Incomplete
+            } else {
+                let cfg = GoodScannerApplication::make_weapon_config(&scanner_config, &self.user_config);
+                let scan_result = match GoodWeaponScanner::new(cfg, mappings.clone()) {
+                    Ok(scanner) => scanner.scan(
+                        &mut self.ctrl, false, 0, &pools,
+                        Some(&weapons_progress),
+                    ),
+                    Err(e) => Err(e),
+                };
+                if let Err(ref e) = scan_result {
+                    log_warn!("[scan] 武器阶段失败: {:#}", "[scan] weapon phase failed: {:#}", e);
+                }
+                match scan_result {
+                    Ok(data) if !cancel_token.is_cancelled() => PhaseResult::Complete(data),
+                    _ => PhaseResult::Incomplete,
+                }
+            };
         }
 
-        if request.artifacts && !cancel_token.is_cancelled() {
-            let cfg = GoodScannerApplication::make_artifact_config(&scanner_config, &self.user_config);
-            let skip_open = request.weapons;
-            let scanner = GoodArtifactScanner::new(cfg, mappings.clone())?;
-            let result = scanner.scan(&mut self.ctrl, skip_open, 0, &pools)?;
-            artifacts = Some(result);
-            completed += 1;
-            report(completed);
+        if request.artifacts {
+            artifacts = if cancel_token.is_cancelled() {
+                PhaseResult::Incomplete
+            } else {
+                let cfg = GoodScannerApplication::make_artifact_config(&scanner_config, &self.user_config);
+                // Only skip the open-backpack step if the weapons phase fully completed
+                // (i.e. the backpack is reliably open). Otherwise reopen from scratch.
+                let skip_open = matches!(weapons, PhaseResult::Complete(_));
+                let scan_result = match GoodArtifactScanner::new(cfg, mappings.clone()) {
+                    Ok(scanner) => scanner.scan(
+                        &mut self.ctrl, skip_open, 0, &pools,
+                        Some(&artifacts_progress),
+                    ),
+                    Err(e) => Err(e),
+                };
+                if let Err(ref e) = scan_result {
+                    log_warn!("[scan] 圣遗物阶段失败: {:#}", "[scan] artifact phase failed: {:#}", e);
+                }
+                match scan_result {
+                    Ok(data) if !cancel_token.is_cancelled() => PhaseResult::Complete(data),
+                    _ => PhaseResult::Incomplete,
+                }
+            };
         }
 
         Ok(ScanResult { characters, weapons, artifacts })
@@ -190,24 +261,36 @@ const MAX_BODY_SIZE: usize = 5 * 1024 * 1024;
 
 /// Generic scan data cache: stores the latest results for a given data type
 /// along with the jobId that produced them.
+///
+/// `incomplete_job_id` records the most recent job that attempted to populate
+/// this cache but failed to complete (aborted by user, errored, or stopped
+/// before reaching this category). Queries matching that id return 503 so the
+/// client can distinguish "scan was aborted" from "no such job".
 struct ScanDataCache<T> {
     job_id: Option<String>,
     data: Option<Vec<T>>,
+    incomplete_job_id: Option<String>,
 }
 
 impl<T> ScanDataCache<T> {
     fn empty() -> Self {
-        Self { job_id: None, data: None }
+        Self { job_id: None, data: None, incomplete_job_id: None }
     }
 
     fn set(&mut self, job_id: String, data: Vec<T>) {
         self.job_id = Some(job_id);
         self.data = Some(data);
+        self.incomplete_job_id = None;
+    }
+
+    fn mark_incomplete(&mut self, job_id: String) {
+        self.incomplete_job_id = Some(job_id);
     }
 
     fn invalidate(&mut self) {
         self.data = None;
         self.job_id = None;
+        self.incomplete_job_id = None;
     }
 }
 
@@ -318,7 +401,7 @@ pub fn run_server<F>(
     shutdown: Arc<AtomicBool>,
 ) -> Result<()>
 where
-    F: FnOnce() -> anyhow::Result<Box<dyn ManageExecutor>>,
+    F: FnMut() -> anyhow::Result<Box<dyn ManageExecutor>>,
 {
     let addr = format!("127.0.0.1:{}", port);
     let server = Server::http(&addr)
@@ -543,7 +626,7 @@ where
     // Game controller + manager are created lazily on first job to avoid
     // focusing the game window at server startup.
     let mut executor: Option<Box<dyn ManageExecutor>> = None;
-    let mut init_executor = Some(init_executor);
+    let mut init_executor = init_executor;
 
     while let Ok((job_id, request)) = job_rx.recv() {
         if shutdown.load(Ordering::Relaxed) {
@@ -560,39 +643,40 @@ where
         // before the game window is focused and takes over the screen.
         yas::utils::sleep(1000);
 
-        // Lazy init: create executor on first job
+        // Lazy init: create executor if we don't have one yet. On failure we
+        // do NOT poison the server — the next job gets a fresh attempt, since
+        // init_executor is FnMut and the user may have just needed to open
+        // the game window.
         if executor.is_none() {
-            if let Some(init_fn) = init_executor.take() {
-                match init_fn() {
-                    Ok(e) => {
-                        executor = Some(e);
-                    }
-                    Err(e) => {
-                        log_error!(
-                            "[job {}] 游戏初始化失败:\n{:#}",
-                            "[job {}] Game init failed:\n{:#}",
-                            job_id, e
-                        );
-                        let mut state = job_state.lock().unwrap();
-                        let total_count = match &request {
-                            JobRequest::Manage(r) => r.lock.len() + r.unlock.len(),
-                            JobRequest::Equip(r) => r.equip.len(),
-                            JobRequest::Scan(r) => r.characters as usize + r.weapons as usize + r.artifacts as usize,
-                        };
-                        let err_results: Vec<_> = (0..total_count).map(|idx| {
-                            crate::manager::models::InstructionResult {
-                                id: format!("item_{}", idx),
-                                status: crate::manager::models::InstructionStatus::UiError,
-                            }
-                        }).collect();
-                        let summary = crate::manager::models::ManageSummary::from_results(&err_results);
-                        let result = crate::manager::models::ManageResult {
-                            results: err_results,
-                            summary,
-                        };
-                        *state = JobState::completed(job_id.clone(), result);
-                        continue;
-                    }
+            match init_executor() {
+                Ok(e) => {
+                    executor = Some(e);
+                }
+                Err(e) => {
+                    log_error!(
+                        "[job {}] 游戏初始化失败:\n{:#}",
+                        "[job {}] Game init failed:\n{:#}",
+                        job_id, e
+                    );
+                    let mut state = job_state.lock().unwrap();
+                    let total_count = match &request {
+                        JobRequest::Manage(r) => r.lock.len() + r.unlock.len(),
+                        JobRequest::Equip(r) => r.equip.len(),
+                        JobRequest::Scan(r) => r.characters as usize + r.weapons as usize + r.artifacts as usize,
+                    };
+                    let err_results: Vec<_> = (0..total_count).map(|idx| {
+                        crate::manager::models::InstructionResult {
+                            id: format!("item_{}", idx),
+                            status: crate::manager::models::InstructionStatus::UiError,
+                        }
+                    }).collect();
+                    let summary = crate::manager::models::ManageSummary::from_results(&err_results);
+                    let result = crate::manager::models::ManageResult {
+                        results: err_results,
+                        summary,
+                    };
+                    *state = JobState::completed(job_id.clone(), result);
+                    continue;
                 }
             }
         }
@@ -615,15 +699,39 @@ where
             }
         }
 
-        let progress_state = job_state.clone();
-        let progress_fn = move |completed: usize, total: usize, current_id: &str, phase: &str| {
-            if let Ok(mut state) = progress_state.lock() {
+        // Linear progress_fn for manage/equip: writes into JobState.progress.
+        let linear_state = job_state.clone();
+        let linear_progress_fn = move |completed: usize, total: usize, current_id: &str, phase: &str| {
+            if let Ok(mut state) = linear_state.lock() {
                 state.progress = Some(JobProgress {
                     completed,
                     total,
                     current_id: current_id.to_string(),
                     phase: phase.to_string(),
                 });
+            }
+        };
+
+        // Scan progress_fn: `phase` is the category key ("characters" /
+        // "weapons" / "artifacts"). Updates the per-category slot in
+        // JobState.scan_progress. Transitions phase state to Running on the
+        // first tick; Complete/Aborted are set when execute_scan returns.
+        let scan_state = job_state.clone();
+        let scan_progress_fn = move |completed: usize, total: usize, _id: &str, phase: &str| {
+            if let Ok(mut state) = scan_state.lock() {
+                if let Some(ref mut sp) = state.scan_progress {
+                    let slot = match phase {
+                        "characters" => sp.characters.as_mut(),
+                        "weapons" => sp.weapons.as_mut(),
+                        "artifacts" => sp.artifacts.as_mut(),
+                        _ => None,
+                    };
+                    if let Some(pp) = slot {
+                        pp.completed = completed;
+                        pp.total = total;
+                        pp.state = PhaseState::Running;
+                    }
+                }
             }
         };
 
@@ -643,27 +751,15 @@ where
             std::panic::AssertUnwindSafe(|| match request {
                 JobRequest::Manage(manage_req) => {
                     let has_lock = !manage_req.lock.is_empty() || !manage_req.unlock.is_empty();
-                    let (result, snapshot) = exec.execute(manage_req, Some(&progress_fn), cancel_token);
+                    let (result, snapshot) = exec.execute(manage_req, Some(&linear_progress_fn), cancel_token);
                     JobOutcome::ManageEquip { result, artifact_snapshot: snapshot, invalidates_cache: has_lock }
                 }
                 JobRequest::Equip(equip_req) => {
-                    let result = exec.execute_equip(equip_req, Some(&progress_fn), cancel_token);
+                    let result = exec.execute_equip(equip_req, Some(&linear_progress_fn), cancel_token);
                     JobOutcome::ManageEquip { result, artifact_snapshot: None, invalidates_cache: true }
                 }
                 JobRequest::Scan(scan_req) => {
-                    let scan_progress_state = job_state.clone();
-                    let total = scan_req.characters as usize + scan_req.weapons as usize + scan_req.artifacts as usize;
-                    let scan_progress = move |completed: usize, _total: usize| {
-                        if let Ok(mut state) = scan_progress_state.lock() {
-                            state.progress = Some(JobProgress {
-                                completed,
-                                total,
-                                current_id: String::new(),
-                                phase: "扫描 / Scanning".to_string(),
-                            });
-                        }
-                    };
-                    JobOutcome::Scan(exec.execute_scan(&scan_req, Some(&scan_progress), cancel_token))
+                    JobOutcome::Scan(exec.execute_scan(&scan_req, Some(&scan_progress_fn), cancel_token))
                 }
             })
         ) {
@@ -712,33 +808,79 @@ where
             JobOutcome::Scan(scan_result) => {
                 match scan_result {
                     Ok(sr) => {
-                        let mut phases_done = 0usize;
+                        // Per-phase: Complete populates the cache; Incomplete marks the
+                        // cache as incomplete-for-this-jobId (so /characters /weapons
+                        // /artifacts queries with this jobId return 503); NotAttempted
+                        // leaves the cache untouched.
                         let mut results = Vec::new();
-                        if let Some(chars) = sr.characters {
-                            character_cache.lock().unwrap().set(job_id.clone(), chars);
-                            phases_done += 1;
-                            results.push(InstructionResult {
-                                id: "characters".to_string(),
-                                status: InstructionStatus::Success,
-                            });
+                        let mut phases_complete = 0usize;
+                        let mut phases_incomplete = 0usize;
+
+                        match sr.characters {
+                            PhaseResult::Complete(data) => {
+                                character_cache.lock().unwrap().set(job_id.clone(), data);
+                                phases_complete += 1;
+                                results.push(InstructionResult {
+                                    id: "characters".to_string(),
+                                    status: InstructionStatus::Success,
+                                });
+                            }
+                            PhaseResult::Incomplete => {
+                                character_cache.lock().unwrap().mark_incomplete(job_id.clone());
+                                phases_incomplete += 1;
+                                results.push(InstructionResult {
+                                    id: "characters".to_string(),
+                                    status: InstructionStatus::Aborted,
+                                });
+                            }
+                            PhaseResult::NotAttempted => {}
                         }
-                        if let Some(wpns) = sr.weapons {
-                            weapon_cache.lock().unwrap().set(job_id.clone(), wpns);
-                            phases_done += 1;
-                            results.push(InstructionResult {
-                                id: "weapons".to_string(),
-                                status: InstructionStatus::Success,
-                            });
+
+                        match sr.weapons {
+                            PhaseResult::Complete(data) => {
+                                weapon_cache.lock().unwrap().set(job_id.clone(), data);
+                                phases_complete += 1;
+                                results.push(InstructionResult {
+                                    id: "weapons".to_string(),
+                                    status: InstructionStatus::Success,
+                                });
+                            }
+                            PhaseResult::Incomplete => {
+                                weapon_cache.lock().unwrap().mark_incomplete(job_id.clone());
+                                phases_incomplete += 1;
+                                results.push(InstructionResult {
+                                    id: "weapons".to_string(),
+                                    status: InstructionStatus::Aborted,
+                                });
+                            }
+                            PhaseResult::NotAttempted => {}
                         }
-                        if let Some(arts) = sr.artifacts {
-                            artifact_cache.lock().unwrap().set(job_id.clone(), arts);
-                            phases_done += 1;
-                            results.push(InstructionResult {
-                                id: "artifacts".to_string(),
-                                status: InstructionStatus::Success,
-                            });
+
+                        match sr.artifacts {
+                            PhaseResult::Complete(data) => {
+                                artifact_cache.lock().unwrap().set(job_id.clone(), data);
+                                phases_complete += 1;
+                                results.push(InstructionResult {
+                                    id: "artifacts".to_string(),
+                                    status: InstructionStatus::Success,
+                                });
+                            }
+                            PhaseResult::Incomplete => {
+                                artifact_cache.lock().unwrap().mark_incomplete(job_id.clone());
+                                phases_incomplete += 1;
+                                results.push(InstructionResult {
+                                    id: "artifacts".to_string(),
+                                    status: InstructionStatus::Aborted,
+                                });
+                            }
+                            PhaseResult::NotAttempted => {}
                         }
-                        log_info!("[job {}] 扫描完成（{} 个阶段）", "[job {}] Scan completed ({} phases)", job_id, phases_done);
+
+                        log_info!(
+                            "[job {}] 扫描结束（{} 完成, {} 中断）",
+                            "[job {}] Scan finished ({} complete, {} aborted)",
+                            job_id, phases_complete, phases_incomplete
+                        );
                         let summary = ManageSummary::from_results(&results);
                         let result = ManageResult { results, summary };
                         let mut state = job_state.lock().unwrap();
@@ -800,6 +942,11 @@ fn parse_job_id(url: &str) -> Option<&str> {
 
 /// Serve a typed data cache endpoint (GET /characters, /weapons, /artifacts).
 /// Requires `?jobId=xxx` query parameter.
+///
+/// 200: cached data for matching jobId.
+/// 503: the requested jobId attempted to populate this cache but didn't finish.
+/// 404: unknown jobId (never seen, or overwritten by a later scan).
+/// 400: jobId query parameter missing.
 fn serve_cache<T: serde::Serialize>(
     request: tiny_http::Request,
     url: &str,
@@ -815,27 +962,37 @@ fn serve_cache<T: serde::Serialize>(
         }
         Some(requested_id) => {
             let c = cache.lock().unwrap();
-            match (&c.job_id, &c.data) {
-                (Some(cached_id), Some(data)) if cached_id == requested_id => {
+            if let (Some(cached_id), Some(data)) = (&c.job_id, &c.data) {
+                if cached_id == requested_id {
                     let json = serde_json::to_string(data).unwrap_or_else(|_| {
                         r#"{"error":"serialization failed"}"#.to_string()
                     });
                     drop(c);
                     respond_json(request, 200, &json, cors_origin);
-                }
-                _ => {
-                    drop(c);
-                    respond_json(request, 404,
-                        &format!(r#"{{"error":"no {} data for this jobId"}}"#, label),
-                        cors_origin);
+                    return;
                 }
             }
+            if c.incomplete_job_id.as_deref() == Some(requested_id) {
+                drop(c);
+                respond_json(request, 503,
+                    &format!(r#"{{"error":"{} scan incomplete for this jobId"}}"#, label),
+                    cors_origin);
+                return;
+            }
+            drop(c);
+            respond_json(request, 404,
+                &format!(r#"{{"error":"no {} data for this jobId"}}"#, label),
+                cors_origin);
         }
     }
 }
 
 /// Serve the artifact cache with optional jobId (backwards compatible).
 /// If jobId is provided, it must match. If omitted, returns the latest data.
+///
+/// 200: cached data matching jobId (or latest, if jobId omitted).
+/// 503: the requested jobId attempted to populate the artifact cache but didn't finish.
+/// 404: no cached data, or jobId specified but not recognized.
 fn serve_artifact_cache(
     request: tiny_http::Request,
     url: &str,
@@ -844,32 +1001,32 @@ fn serve_artifact_cache(
 ) {
     let query_job_id = parse_job_id(url);
     let c = cache.lock().unwrap();
-    match (&c.job_id, &c.data) {
-        (Some(cached_id), Some(data)) => {
-            // If jobId provided, it must match
-            if let Some(requested_id) = query_job_id {
-                if cached_id != requested_id {
-                    drop(c);
-                    respond_json(request, 404,
-                        r#"{"error":"no artifacts data for this jobId"}"#, cors_origin);
-                    return;
-                }
-            }
+    if let (Some(cached_id), Some(data)) = (&c.job_id, &c.data) {
+        // If jobId provided, it must match; otherwise serve the latest.
+        if query_job_id.map_or(true, |q| q == cached_id) {
             let json = serde_json::to_string(data).unwrap_or_else(|_| {
                 r#"{"error":"serialization failed"}"#.to_string()
             });
             drop(c);
             respond_json(request, 200, &json, cors_origin);
-        }
-        _ => {
-            drop(c);
-            respond_json(request, 404,
-                &format!(r#"{{"error":"{}"}}"#, yas::lang::localize(
-                    "没有可用的圣遗物数据 / No artifact data available"
-                )),
-                cors_origin);
+            return;
         }
     }
+    if let Some(requested_id) = query_job_id {
+        if c.incomplete_job_id.as_deref() == Some(requested_id) {
+            drop(c);
+            respond_json(request, 503,
+                r#"{"error":"artifacts scan incomplete for this jobId"}"#,
+                cors_origin);
+            return;
+        }
+    }
+    drop(c);
+    respond_json(request, 404,
+        &format!(r#"{{"error":"{}"}}"#, yas::lang::localize(
+            "没有可用的圣遗物数据 / No artifact data available"
+        )),
+        cors_origin);
 }
 
 /// Handle POST /manage: validate origin, check busy, enforce size limit, submit job.
@@ -1234,7 +1391,6 @@ fn handle_scan(
     let scan_chars = scan_request.characters;
     let scan_wpns = scan_request.weapons;
     let scan_arts = scan_request.artifacts;
-    let total = scan_chars as usize + scan_wpns as usize + scan_arts as usize;
     let job_id = uuid::Uuid::new_v4().to_string();
 
     log_info!(
@@ -1245,7 +1401,7 @@ fn handle_scan(
 
     {
         let mut s = state.lock().unwrap();
-        *s = JobState::running(job_id.clone(), total);
+        *s = JobState::running_scan(job_id.clone(), scan_chars, scan_wpns, scan_arts);
     }
 
     if job_tx.send((job_id.clone(), JobRequest::Scan(scan_request))).is_err() {
@@ -1290,23 +1446,39 @@ mod tests {
         fn execute(
             &mut self,
             _request: LockManageRequest,
-            _progress_fn: Option<&ProgressFn>,
+            progress_fn: Option<&ProgressFn<'_>>,
             _cancel_token: yas::cancel::CancelToken,
         ) -> (ManageResult, Option<Vec<GoodArtifact>>) {
-            if self.delay_ms > 0 {
-                std::thread::sleep(Duration::from_millis(self.delay_ms));
-            }
-            self.responses
+            let (result, snapshot) = self
+                .responses
                 .lock()
                 .unwrap()
                 .pop_front()
-                .expect("FakeExecutor: no more responses queued")
+                .expect("FakeExecutor: no more responses queued");
+
+            // Report per-item progress spread across delay_ms so polling clients
+            // can observe intermediate values. Mirrors real orchestrator behaviour
+            // of reporting `completed` ticks from 0 to N.
+            let total = result.results.len();
+            if let Some(pf) = progress_fn {
+                pf(0, total, "", "锁定变更 / Lock changes");
+            }
+            let per_item_delay = if total > 0 { self.delay_ms / total as u64 } else { self.delay_ms };
+            for (idx, r) in result.results.iter().enumerate() {
+                if per_item_delay > 0 {
+                    std::thread::sleep(Duration::from_millis(per_item_delay));
+                }
+                if let Some(pf) = progress_fn {
+                    pf(idx + 1, total, &r.id, "锁定变更 / Lock changes");
+                }
+            }
+            (result, snapshot)
         }
 
         fn execute_equip(
             &mut self,
             _request: EquipRequest,
-            _progress_fn: Option<&ProgressFn>,
+            _progress_fn: Option<&ProgressFn<'_>>,
             _cancel_token: yas::cancel::CancelToken,
         ) -> ManageResult {
             let results = Vec::new();
@@ -1317,17 +1489,48 @@ mod tests {
         fn execute_scan(
             &mut self,
             _request: &ScanRequest,
-            _progress_fn: Option<&dyn Fn(usize, usize)>,
+            progress_fn: Option<&crate::scanner::common::progress::ProgressFn<'_>>,
             _cancel_token: yas::cancel::CancelToken,
         ) -> anyhow::Result<ScanResult> {
-            if self.delay_ms > 0 {
-                std::thread::sleep(Duration::from_millis(self.delay_ms));
-            }
-            self.scan_responses
+            let outcome = self
+                .scan_responses
                 .lock()
                 .unwrap()
                 .pop_front()
-                .expect("FakeExecutor: no more scan responses queued")
+                .expect("FakeExecutor: no more scan responses queued");
+
+            // Emit per-category per-item ticks spread across delay_ms. Each
+            // requested phase gets a fake "total = 10" and ticks through 10 items
+            // so polling clients can observe intermediate (completed, total)
+            // values inside each category bar.
+            let phases: Vec<(&'static str, bool)> = match &outcome {
+                Ok(sr) => vec![
+                    ("characters", !matches!(sr.characters, PhaseResult::NotAttempted)),
+                    ("weapons", !matches!(sr.weapons, PhaseResult::NotAttempted)),
+                    ("artifacts", !matches!(sr.artifacts, PhaseResult::NotAttempted)),
+                ],
+                Err(_) => vec![],
+            };
+            let active_phases: Vec<&'static str> = phases.iter()
+                .filter_map(|(k, active)| if *active { Some(*k) } else { None })
+                .collect();
+            let fake_total: usize = 10;
+            let total_ticks = active_phases.len() * fake_total;
+            let per_tick_delay = if total_ticks > 0 { self.delay_ms / total_ticks as u64 } else { 0 };
+            for phase_key in &active_phases {
+                if let Some(pf) = progress_fn {
+                    pf(0, fake_total, "", phase_key);
+                }
+                for i in 0..fake_total {
+                    if per_tick_delay > 0 {
+                        std::thread::sleep(Duration::from_millis(per_tick_delay));
+                    }
+                    if let Some(pf) = progress_fn {
+                        pf(i + 1, fake_total, "", phase_key);
+                    }
+                }
+            }
+            outcome
         }
     }
 
@@ -1420,8 +1623,8 @@ mod tests {
         let handle = std::thread::spawn(move || {
             let init = move || -> anyhow::Result<Box<dyn ManageExecutor>> {
                 Ok(Box::new(FakeExecutor {
-                    responses: responses_clone,
-                    scan_responses: scan_responses_clone,
+                    responses: responses_clone.clone(),
+                    scan_responses: scan_responses_clone.clone(),
                     delay_ms,
                 }))
             };
@@ -2089,31 +2292,40 @@ mod tests {
         let manage_responses = VecDeque::new();
         let mut scan_responses: VecDeque<anyhow::Result<ScanResult>> = VecDeque::new();
 
-        // Scan 1: all three targets
+        // Scan 1: all three targets complete
         scan_responses.push_back(Ok(ScanResult {
-            characters: Some(vec![
+            characters: PhaseResult::Complete(vec![
                 make_character("Furina", 90),
                 make_character("RaidenShogun", 80),
             ]),
-            weapons: Some(vec![
+            weapons: PhaseResult::Complete(vec![
                 make_weapon("SkywardHarp", 90),
             ]),
-            artifacts: Some(vec![
+            artifacts: PhaseResult::Complete(vec![
                 make_artifact("GladiatorsFinale", "flower", 20, true),
             ]),
         }));
 
         // Scan 2: characters only
         scan_responses.push_back(Ok(ScanResult {
-            characters: Some(vec![
+            characters: PhaseResult::Complete(vec![
                 make_character("Nahida", 90),
             ]),
-            weapons: None,
-            artifacts: None,
+            weapons: PhaseResult::NotAttempted,
+            artifacts: PhaseResult::NotAttempted,
         }));
 
         // Scan 3: scan error
         scan_responses.push_back(Err(anyhow::anyhow!("Game window not found")));
+
+        // Scan 4: characters complete, weapons aborted, artifacts never reached
+        scan_responses.push_back(Ok(ScanResult {
+            characters: PhaseResult::Complete(vec![
+                make_character("Furina", 90),
+            ]),
+            weapons: PhaseResult::Incomplete,
+            artifacts: PhaseResult::Incomplete,
+        }));
 
         let (port, shutdown, handle) = start_test_server_with_scans(
             manage_responses, scan_responses, 0,
@@ -2290,6 +2502,329 @@ mod tests {
         assert_eq!(resp.status().as_u16(), 200);
         let resp = client.get(format!("{}/weapons?jobId={}", base, scan1_id)).send().unwrap();
         assert_eq!(resp.status().as_u16(), 200);
+
+        // === Scan 4: characters complete, weapons + artifacts aborted ===
+
+        let resp = client
+            .post(format!("{}/scan", base))
+            .header("Content-Type", "application/json")
+            .body(r#"{"characters":true,"weapons":true,"artifacts":true}"#)
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 202);
+        let body: serde_json::Value = resp.json().unwrap();
+        let scan4_id = body["jobId"].as_str().unwrap().to_string();
+
+        poll_until_completed(port);
+
+        // /result: 1 success (characters) + 2 aborted (weapons, artifacts)
+        let resp = client.get(format!("{}/result?jobId={}", base, scan4_id)).send().unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        let body: serde_json::Value = resp.json().unwrap();
+        assert_eq!(body["summary"]["success"], 1);
+        assert_eq!(body["summary"]["aborted"], 2);
+
+        // Completed phase: /characters returns 200 for scan4
+        let resp = client.get(format!("{}/characters?jobId={}", base, scan4_id)).send().unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        let body: serde_json::Value = resp.json().unwrap();
+        assert_eq!(body[0]["key"], "Furina");
+
+        // Aborted phases: /weapons and /artifacts return 503 for scan4
+        let resp = client.get(format!("{}/weapons?jobId={}", base, scan4_id)).send().unwrap();
+        assert_eq!(resp.status().as_u16(), 503);
+        let resp = client.get(format!("{}/artifacts?jobId={}", base, scan4_id)).send().unwrap();
+        assert_eq!(resp.status().as_u16(), 503);
+
+        // Old jobIds are no longer the cached id for characters (overwritten by scan4);
+        // nothing was written for weapons/artifacts in scan4, so scan1 data is still served.
+        let resp = client.get(format!("{}/characters?jobId={}", base, scan2_id)).send().unwrap();
+        assert_eq!(resp.status().as_u16(), 404);
+        let resp = client.get(format!("{}/weapons?jobId={}", base, scan1_id)).send().unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        let resp = client.get(format!("{}/artifacts?jobId={}", base, scan1_id)).send().unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+
+        // Unknown jobId still returns 404 (not 503).
+        let resp = client.get(format!("{}/weapons?jobId=nonexistent", base)).send().unwrap();
+        assert_eq!(resp.status().as_u16(), 404);
+
+        stop_server(&shutdown, handle);
+    }
+
+    /// While a manage job is running, GET /status must expose intermediate
+    /// `completed` values (not just 0 and N). Guards the full plumbing:
+    /// `LockManager::execute` → progress_fn → JobState.progress →
+    /// status_json → client response.
+    #[test]
+    fn test_manage_progress_visible_mid_run() {
+        let _guard = SERVER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let mut responses = VecDeque::new();
+        responses.push_back((
+            make_result(&[
+                ("a", InstructionStatus::Success),
+                ("b", InstructionStatus::Success),
+                ("c", InstructionStatus::Success),
+                ("d", InstructionStatus::Success),
+                ("e", InstructionStatus::Success),
+            ]),
+            None,
+        ));
+
+        // 1500ms total → 300ms between ticks. Gives the client plenty of time
+        // to observe intermediate values with a tight poll loop.
+        let (port, shutdown, handle) = start_test_server(responses, 1500);
+        let client = reqwest::blocking::Client::new();
+        let base = format!("http://127.0.0.1:{}", port);
+
+        let resp = client
+            .post(format!("{}/manage", base))
+            .header("Content-Type", "application/json")
+            .body(make_manage_body(&["a", "b", "c", "d", "e"]))
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 202);
+
+        // Poll for up to ~4s (1s pre-delay + 1.5s execution + slack).
+        let mut observed: Vec<(u64, u64)> = Vec::new();
+        let mut total_observed: Option<u64> = None;
+        for _ in 0..80 {
+            std::thread::sleep(Duration::from_millis(50));
+            let resp = client.get(format!("{}/status", base)).send().unwrap();
+            let body: serde_json::Value = resp.json().unwrap();
+            if body["state"] == "running" {
+                if let (Some(c), Some(t)) = (
+                    body["progress"]["completed"].as_u64(),
+                    body["progress"]["total"].as_u64(),
+                ) {
+                    if observed.last() != Some(&(c, t)) {
+                        observed.push((c, t));
+                    }
+                    total_observed = Some(t);
+                }
+            } else if body["state"] == "completed" {
+                break;
+            }
+        }
+
+        poll_until_completed(port);
+
+        // Every running snapshot must have reported total=5.
+        assert_eq!(total_observed, Some(5),
+            "total field not reported through /status; observed: {:?}", observed);
+
+        // Must observe at least one intermediate tick (completed > 0 && < total).
+        // If we only see [0] and [5] the client has no per-item feedback.
+        let has_intermediate = observed.iter().any(|&(c, t)| c > 0 && c < t);
+        assert!(has_intermediate,
+            "expected /status to expose intermediate completed values (per-item progress); observed: {:?}",
+            observed);
+
+        // Completed must monotonically increase.
+        for w in observed.windows(2) {
+            assert!(w[1].0 >= w[0].0,
+                "completed regressed: {:?} -> {:?}", w[0], w[1]);
+        }
+
+        stop_server(&shutdown, handle);
+    }
+
+    /// Scan's per-category progress must flow through /status.scanProgress.
+    /// Each of the 3 categories has its own (completed, total, state) and all
+    /// three move independently — this is what lets the client draw 3 bars.
+    #[test]
+    fn test_scan_progress_visible_mid_run() {
+        let _guard = SERVER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let mut scan_responses: VecDeque<anyhow::Result<ScanResult>> = VecDeque::new();
+        scan_responses.push_back(Ok(ScanResult {
+            characters: PhaseResult::Complete(vec![make_character("Furina", 90)]),
+            weapons: PhaseResult::Complete(vec![make_weapon("SkywardHarp", 90)]),
+            artifacts: PhaseResult::Complete(vec![
+                make_artifact("GladiatorsFinale", "flower", 20, true),
+            ]),
+        }));
+
+        // 1500ms across 30 ticks (3 phases × 10 items each) → 50ms per tick.
+        let (port, shutdown, handle) = start_test_server_with_scans(
+            VecDeque::new(), scan_responses, 1500,
+        );
+        let client = reqwest::blocking::Client::new();
+        let base = format!("http://127.0.0.1:{}", port);
+
+        let resp = client
+            .post(format!("{}/scan", base))
+            .header("Content-Type", "application/json")
+            .body(r#"{"characters":true,"weapons":true,"artifacts":true}"#)
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 202);
+
+        #[derive(Clone, Debug)]
+        struct CatObs {
+            completed: u64,
+            total: u64,
+            state: String,
+        }
+        let mut chars_obs: Vec<CatObs> = Vec::new();
+        let mut weapons_obs: Vec<CatObs> = Vec::new();
+        let mut artifacts_obs: Vec<CatObs> = Vec::new();
+
+        let record = |obs: &mut Vec<CatObs>, node: &serde_json::Value| {
+            if let (Some(c), Some(t), Some(s)) = (
+                node["completed"].as_u64(),
+                node["total"].as_u64(),
+                node["state"].as_str(),
+            ) {
+                let entry = CatObs { completed: c, total: t, state: s.to_string() };
+                if obs.last().map(|p| (p.completed, p.total, p.state.as_str())
+                    == (entry.completed, entry.total, entry.state.as_str())) != Some(true) {
+                    obs.push(entry);
+                }
+            }
+        };
+
+        for _ in 0..120 {
+            std::thread::sleep(Duration::from_millis(30));
+            let resp = client.get(format!("{}/status", base)).send().unwrap();
+            let body: serde_json::Value = resp.json().unwrap();
+            if body["state"] == "running" {
+                let sp = &body["scanProgress"];
+                // progress.* should NOT be populated for scan jobs.
+                assert!(body["progress"].is_null(),
+                    "scan should use scanProgress, not the linear progress field; body={}",
+                    body);
+                if sp.is_object() {
+                    record(&mut chars_obs, &sp["characters"]);
+                    record(&mut weapons_obs, &sp["weapons"]);
+                    record(&mut artifacts_obs, &sp["artifacts"]);
+                }
+            } else if body["state"] == "completed" {
+                break;
+            }
+        }
+
+        poll_until_completed(port);
+
+        // All three categories must have been observed.
+        assert!(!chars_obs.is_empty(), "no characters progress observed");
+        assert!(!weapons_obs.is_empty(), "no weapons progress observed");
+        assert!(!artifacts_obs.is_empty(), "no artifacts progress observed");
+
+        // Each category must report intermediate completed values (not just 0 and total).
+        let has_mid = |obs: &[CatObs]| obs.iter().any(|o| o.completed > 0 && o.completed < o.total);
+        assert!(has_mid(&chars_obs),
+            "expected intermediate characters progress; observed: {:?}", chars_obs);
+        assert!(has_mid(&weapons_obs),
+            "expected intermediate weapons progress; observed: {:?}", weapons_obs);
+        assert!(has_mid(&artifacts_obs),
+            "expected intermediate artifacts progress; observed: {:?}", artifacts_obs);
+
+        // Each category transitioned from pending → running (FakeExecutor emits
+        // running ticks; pending is only visible if we poll before that category
+        // starts, which isn't guaranteed at these timing but the terminal state
+        // we care about is Running).
+        assert!(chars_obs.iter().any(|o| o.state == "running"));
+        assert!(weapons_obs.iter().any(|o| o.state == "running"));
+        assert!(artifacts_obs.iter().any(|o| o.state == "running"));
+
+        // Completed must monotonically increase within each category.
+        for obs in [&chars_obs, &weapons_obs, &artifacts_obs] {
+            for w in obs.windows(2) {
+                assert!(w[1].completed >= w[0].completed,
+                    "completed regressed: {:?}", obs);
+            }
+        }
+
+        stop_server(&shutdown, handle);
+    }
+
+    /// Init failure must not poison the server: the second job gets a fresh
+    /// attempt. This guards against `init_executor.take()` semantics where a
+    /// single failure would leave `executor = None` forever.
+    #[test]
+    fn test_init_failure_does_not_poison_server() {
+        let _guard = SERVER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Custom init closure that fails the first two attempts, then succeeds.
+        let responses: VecDeque<(ManageResult, Option<Vec<GoodArtifact>>)> = {
+            let mut q = VecDeque::new();
+            q.push_back((make_result(&[("a", InstructionStatus::Success)]), None));
+            q
+        };
+        let responses = Arc::new(Mutex::new(responses));
+        let scan_responses: Arc<Mutex<VecDeque<anyhow::Result<ScanResult>>>> =
+            Arc::new(Mutex::new(VecDeque::new()));
+
+        let port = next_port();
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = shutdown.clone();
+        let attempt_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let attempt_count_inner = attempt_count.clone();
+        let responses_inner = responses.clone();
+        let scan_responses_inner = scan_responses.clone();
+
+        let handle = std::thread::spawn(move || {
+            let init = move || -> anyhow::Result<Box<dyn ManageExecutor>> {
+                let n = attempt_count_inner.fetch_add(1, Ordering::SeqCst);
+                if n < 2 {
+                    Err(anyhow::anyhow!("simulated init failure #{}", n))
+                } else {
+                    Ok(Box::new(FakeExecutor {
+                        responses: responses_inner.clone(),
+                        scan_responses: scan_responses_inner.clone(),
+                        delay_ms: 0,
+                    }))
+                }
+            };
+            let _ = run_server(port, init, Arc::new(AtomicBool::new(true)), shutdown_clone);
+        });
+
+        // Wait for server to come up.
+        let client = reqwest::blocking::Client::new();
+        let health_url = format!("http://127.0.0.1:{}/health", port);
+        for _ in 0..50 {
+            if client.get(&health_url).send().is_ok() { break; }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let base = format!("http://127.0.0.1:{}", port);
+
+        // Job 1: init fails. Summary shows 1 error, server stays usable.
+        let resp = client.post(format!("{}/manage", base))
+            .header("Content-Type", "application/json")
+            .body(make_manage_body(&["x"]))
+            .send().unwrap();
+        assert_eq!(resp.status().as_u16(), 202);
+        poll_until_completed(port);
+        let body: serde_json::Value = client.get(format!("{}/status", base))
+            .send().unwrap().json().unwrap();
+        assert_eq!(body["summary"]["errors"], 1);
+
+        // Job 2: init fails again — same 1 error summary, not a panic.
+        let resp = client.post(format!("{}/manage", base))
+            .header("Content-Type", "application/json")
+            .body(make_manage_body(&["y"]))
+            .send().unwrap();
+        assert_eq!(resp.status().as_u16(), 202);
+        poll_until_completed(port);
+        let body: serde_json::Value = client.get(format!("{}/status", base))
+            .send().unwrap().json().unwrap();
+        assert_eq!(body["summary"]["errors"], 1);
+
+        // Job 3: init succeeds — job runs and reports Success.
+        let resp = client.post(format!("{}/manage", base))
+            .header("Content-Type", "application/json")
+            .body(make_manage_body(&["a"]))
+            .send().unwrap();
+        assert_eq!(resp.status().as_u16(), 202);
+        poll_until_completed(port);
+        let body: serde_json::Value = client.get(format!("{}/status", base))
+            .send().unwrap().json().unwrap();
+        assert_eq!(body["summary"]["success"], 1);
+
+        // Init was attempted 3 times (two failures + one success).
+        assert_eq!(attempt_count.load(Ordering::SeqCst), 3);
 
         stop_server(&shutdown, handle);
     }

@@ -120,10 +120,14 @@ impl GenshinGameController {
 impl GenshinGameController {
     /// Focus the game window using Win32 SetForegroundWindow.
     /// Ensures subsequent keyboard events go to Genshin, not the terminal.
+    ///
+    /// If the window isn't found, logs an error and returns WITHOUT moving
+    /// the mouse. Clicking/typing into whatever window is currently focused
+    /// was previously masquerading as "navigation" and caused random input
+    /// to unrelated apps.
     pub fn focus_game_window(&mut self) {
         #[cfg(target_os = "windows")]
         {
-            // Re-find the window handle and bring it to front
             let window_names = ["\u{539F}\u{795E}", "Genshin Impact"]; // 原神
             let handles = utils::iterate_window();
             for hwnd in &handles {
@@ -136,12 +140,22 @@ impl GenshinGameController {
                     }
                 }
             }
+            yas::log_error!(
+                "游戏窗口未找到，无法切换焦点；将跳过本次聚焦（点击可能落在错误窗口上）",
+                "Game window not found; skipping focus (further clicks may hit the wrong window)"
+            );
+            return;
         }
-        // Fallback: just move mouse to game area
-        let center_x = self.game_info.window.left + self.game_info.window.width / 2;
-        let center_y = self.game_info.window.top + self.game_info.window.height / 2;
-        self.system_control.mouse_move_to(center_x, center_y).unwrap();
-        utils::sleep(300);
+        #[cfg(not(target_os = "windows"))]
+        {
+            // Non-Windows: no focus API available. Move mouse into the game
+            // area as a best-effort hint (on Linux/macOS this tends to work
+            // for focus-follows-mouse setups).
+            let center_x = self.game_info.window.left + self.game_info.window.width / 2;
+            let center_y = self.game_info.window.top + self.game_info.window.height / 2;
+            let _ = self.system_control.mouse_move_to(center_x, center_y);
+            utils::sleep(300);
+        }
     }
 }
 

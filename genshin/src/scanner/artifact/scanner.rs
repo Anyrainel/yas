@@ -1288,6 +1288,7 @@ impl GoodArtifactScanner {
         skip_open_backpack: bool,
         start_at: usize,
         pools: &SharedOcrPools,
+        progress_fn: Option<&crate::scanner::common::progress::ProgressFn<'_>>,
     ) -> Result<Vec<GoodArtifact>> {
         log_debug!("[artifact] 开始扫描...", "[artifact] starting scan...");
         let now = SystemTime::now();
@@ -1424,6 +1425,9 @@ impl GoodArtifactScanner {
 
         // Per-page 3-pass voting state (shared across artifact / weapon / manager).
         let total = total_count as usize;
+        if let Some(pf) = progress_fn {
+            pf(0, total, "", "");
+        }
         let mut voter: PagedGridVoter<()> = PagedGridVoter::new(total, GridMode::Artifact);
 
         // Helper to emit a batch of ready items to the worker channel.
@@ -1465,6 +1469,10 @@ impl GoodArtifactScanner {
                         // Check if worker has signaled stop (e.g., too many errors)
                         if worker_handle.stop_requested() {
                             return ScanAction::Stop;
+                        }
+
+                        if let Some(pf) = progress_fn {
+                            pf(idx + 1, total, "", "");
                         }
 
                         // Quick rarity check on main thread to stop early.

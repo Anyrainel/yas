@@ -140,7 +140,7 @@ pub enum JobPhase {
     Completed,
 }
 
-/// Progress of a running job.
+/// Linear progress for single-phase jobs (manage, equip).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobProgress {
     pub completed: usize,
@@ -152,7 +152,56 @@ pub struct JobProgress {
     pub phase: String,
 }
 
-/// Shared state for an async manage job, polled via GET /status.
+/// State of one scan category.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PhaseState {
+    /// Category was requested but hasn't started yet.
+    Pending,
+    /// Category is currently being scanned.
+    Running,
+    /// Category finished successfully.
+    Complete,
+    /// Category stopped before finishing (user abort, error, or never reached).
+    Aborted,
+}
+
+/// Progress of one scan category.
+///
+/// For weapons/artifacts `total` is the backpack item count (known once the
+/// bag opens). For characters the game doesn't expose a total, so `total`
+/// stays equal to `completed` and the UI should render as an indeterminate
+/// counter rather than a percentage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PhaseProgress {
+    pub completed: usize,
+    pub total: usize,
+    pub state: PhaseState,
+}
+
+impl PhaseProgress {
+    pub fn pending() -> Self {
+        Self { completed: 0, total: 0, state: PhaseState::Pending }
+    }
+}
+
+/// Per-category progress for a scan job. `None` means the client didn't
+/// request that category; otherwise the struct tracks its lifecycle.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ScanProgress {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub characters: Option<PhaseProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weapons: Option<PhaseProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<PhaseProgress>,
+}
+
+/// Shared state for an async job, polled via GET /status.
+///
+/// `progress` is populated for manage/equip jobs (single-phase).
+/// `scan_progress` is populated for scan jobs (per-category).
+/// Exactly one of the two is `Some` while the job is running.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobState {
     pub state: JobPhase,
@@ -160,15 +209,21 @@ pub struct JobState {
     pub job_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<JobProgress>,
+    #[serde(rename = "scanProgress", skip_serializing_if = "Option::is_none")]
+    pub scan_progress: Option<ScanProgress>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<ManageResult>,
 }
 
 impl JobState {
     pub fn idle() -> Self {
-        Self { state: JobPhase::Idle, job_id: None, progress: None, result: None }
+        Self {
+            state: JobPhase::Idle, job_id: None,
+            progress: None, scan_progress: None, result: None,
+        }
     }
 
+    /// Running state for manage/equip — linear progress.
     pub fn running(job_id: String, total: usize) -> Self {
         Self {
             state: JobPhase::Running,
@@ -179,6 +234,29 @@ impl JobState {
                 current_id: String::new(),
                 phase: String::new(),
             }),
+            scan_progress: None,
+            result: None,
+        }
+    }
+
+    /// Running state for scan — per-category progress. Only categories in
+    /// `requested` get a `Pending` slot; unrequested ones stay `None`.
+    pub fn running_scan(
+        job_id: String,
+        scan_characters: bool,
+        scan_weapons: bool,
+        scan_artifacts: bool,
+    ) -> Self {
+        let sp = ScanProgress {
+            characters: if scan_characters { Some(PhaseProgress::pending()) } else { None },
+            weapons: if scan_weapons { Some(PhaseProgress::pending()) } else { None },
+            artifacts: if scan_artifacts { Some(PhaseProgress::pending()) } else { None },
+        };
+        Self {
+            state: JobPhase::Running,
+            job_id: Some(job_id),
+            progress: None,
+            scan_progress: Some(sp),
             result: None,
         }
     }
@@ -188,6 +266,7 @@ impl JobState {
             state: JobPhase::Completed,
             job_id: Some(job_id),
             progress: None,
+            scan_progress: None,
             result: Some(result),
         }
     }
@@ -205,9 +284,18 @@ impl JobState {
             JobPhase::Running => {
                 let job_id = self.job_id.as_deref().unwrap_or("");
                 if let Some(ref p) = self.progress {
+                    let cid = escape_json_string(&p.current_id);
+                    let phase = escape_json_string(&p.phase);
                     format!(
-                        r#"{{"state":"running","jobId":"{}","progress":{{"completed":{},"total":{}}}}}"#,
-                        job_id, p.completed, p.total
+                        r#"{{"state":"running","jobId":"{}","progress":{{"completed":{},"total":{},"currentId":"{}","phase":"{}"}}}}"#,
+                        job_id, p.completed, p.total, cid, phase
+                    )
+                } else if let Some(ref sp) = self.scan_progress {
+                    let body = serde_json::to_string(sp)
+                        .unwrap_or_else(|_| "{}".to_string());
+                    format!(
+                        r#"{{"state":"running","jobId":"{}","scanProgress":{}}}"#,
+                        job_id, body
                     )
                 } else {
                     format!(r#"{{"state":"running","jobId":"{}"}}"#, job_id)
@@ -228,6 +316,25 @@ impl JobState {
             }
         }
     }
+}
+
+/// Minimal JSON string escaping for the subset of chars that can appear in
+/// `current_id` / `phase` (IDs, Chinese/English phase names). Covers quotes,
+/// backslashes, and control characters — enough for our fixed inputs.
+fn escape_json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
