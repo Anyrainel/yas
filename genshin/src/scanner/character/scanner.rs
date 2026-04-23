@@ -1005,10 +1005,7 @@ impl GoodCharacterScanner {
         let now = SystemTime::now();
 
         let ocr_pool = pools.v4().clone();
-        // Hold one v5 instance on main thread for name OCR.
-        let name_v5_guard = pools.v5().get();
-        // Hold one v4 instance on main thread for name OCR fallback.
-        let name_v4_guard = ocr_pool.get();
+        let v5_pool = pools.v5().clone();
 
         // Return to main world and open character screen.
         ctrl.focus_game_window();
@@ -1023,11 +1020,16 @@ impl GoodCharacterScanner {
             utils::sleep(self.config.open_delay as u32);
 
             let check_image = ctrl.capture_game()?;
-            let (check_name, _, _) = self.read_name_from_image(
-                Some(&name_v5_guard as &dyn ImageToText<RgbImage>),
-                &name_v4_guard as &dyn ImageToText<RgbImage>,
-                &check_image, &ctrl.scaler,
-            );
+            let check_name = {
+                let v5 = v5_pool.get();
+                let v4 = ocr_pool.get();
+                let (n, _, _) = self.read_name_from_image(
+                    Some(&v5 as &dyn ImageToText<RgbImage>),
+                    &v4 as &dyn ImageToText<RgbImage>,
+                    &check_image, &ctrl.scaler,
+                );
+                n
+            };
             if check_name.is_some() {
                 log_debug!("[character] 角色界面已检测到，第{}次尝试", "[character] character screen detected on attempt {}", attempt + 1);
                 screen_opened = true;
@@ -1087,7 +1089,6 @@ impl GoodCharacterScanner {
 
         let mut first_name: Option<String> = None;
         let mut viewed_count: usize = 0;
-        let mut sent_count: usize = 0;
         let mut consecutive_failures: usize = 0;
         let mut reverse = false;
 
@@ -1114,11 +1115,15 @@ impl GoodCharacterScanner {
             // The character name/element header is visible on ALL tabs,
             // so we can OCR it from whichever image we capture first.
             let first_image = ctrl.capture_game()?;
-            let (name, element, raw_text) = self.read_name_from_image(
-                Some(&name_v5_guard as &dyn ImageToText<RgbImage>),
-                &name_v4_guard as &dyn ImageToText<RgbImage>,
-                &first_image, &ctrl.scaler,
-            );
+            let (name, element, raw_text) = {
+                let v5 = v5_pool.get();
+                let v4 = ocr_pool.get();
+                self.read_name_from_image(
+                    Some(&v5 as &dyn ImageToText<RgbImage>),
+                    &v4 as &dyn ImageToText<RgbImage>,
+                    &first_image, &ctrl.scaler,
+                )
+            };
 
             // Retry once on name failure
             let (name, element, raw_text, first_image) = if name.is_none() {
@@ -1126,11 +1131,15 @@ impl GoodCharacterScanner {
                     "[character] first name match failed: \u{300C}{}\u{300D}, retrying...", raw_text);
                 utils::sleep(1000);
                 let retry_image = ctrl.capture_game()?;
-                let (n2, e2, r2) = self.read_name_from_image(
-                    Some(&name_v5_guard as &dyn ImageToText<RgbImage>),
-                    &name_v4_guard as &dyn ImageToText<RgbImage>,
-                    &retry_image, &ctrl.scaler,
-                );
+                let (n2, e2, r2) = {
+                    let v5 = v5_pool.get();
+                    let v4 = ocr_pool.get();
+                    self.read_name_from_image(
+                        Some(&v5 as &dyn ImageToText<RgbImage>),
+                        &v4 as &dyn ImageToText<RgbImage>,
+                        &retry_image, &ctrl.scaler,
+                    )
+                };
                 (n2, e2, r2, retry_image)
             } else {
                 (name, element, raw_text, first_image)
@@ -1162,11 +1171,6 @@ impl GoodCharacterScanner {
                             &mut viewed_indices, &pb, self.config.log_progress,
                             progress_fn,
                         );
-                        if viewed_count > 3 && characters.is_empty() {
-                            log_error!("[character] 已查看{}个但无结果，停止", "[character] viewed {} but no results, stopping", viewed_count);
-                            log_info!("{}", "{}", DELAY_TIP);
-                            break;
-                        }
                         if consecutive_failures >= 5 {
                             log_error!("[character] 连续{}次失败，停止扫描", "[character] {} consecutive failures, stopping scan", consecutive_failures);
                             log_info!("{}", "{}", DELAY_TIP);
@@ -1248,7 +1252,6 @@ impl GoodCharacterScanner {
                 log_error!("[character] 工作通道已关闭", "[character] worker channel closed");
                 break;
             }
-            sent_count += 1;
 
             // Navigate to next character
             ctrl.click_at(CHAR_NEXT_POS.0, CHAR_NEXT_POS.1);
@@ -1267,18 +1270,6 @@ impl GoodCharacterScanner {
             if self.config.max_count > 0 && characters.len() >= self.config.max_count {
                 log_info!("[character] 已达到最大数量={}，停止", "[character] reached max_count={}, stopping", self.config.max_count);
                 break;
-            }
-            if viewed_count > 3 && characters.is_empty() && sent_count > 3 {
-                Self::drain_phase1_results(
-                    &result_rx, &mut characters, &mut scan_metas,
-                    &mut viewed_indices, &pb, self.config.log_progress,
-                    progress_fn,
-                );
-                if characters.is_empty() {
-                    log_error!("[character] 已查看{}个但无结果，停止", "[character] viewed {} but no results, stopping", viewed_count);
-                    log_info!("{}", "{}", DELAY_TIP);
-                    break;
-                }
             }
             if consecutive_failures >= 5 {
                 log_error!("[character] 连续{}次失败，停止扫描", "[character] {} consecutive failures, stopping scan", consecutive_failures);
@@ -1350,7 +1341,7 @@ impl GoodCharacterScanner {
                 "[character] second pass: re-reading {} characters for accuracy",
                 suspicious.len()
             );
-            self.run_phase2(ctrl, &name_v4_guard as &dyn ImageToText<RgbImage>, &work_tx, &result_rx, &mut characters, &suspicious);
+            self.run_phase2(ctrl, &ocr_pool, &work_tx, &result_rx, &mut characters, &suspicious);
         }
 
         // Signal worker to exit
@@ -1439,7 +1430,7 @@ impl GoodCharacterScanner {
     fn run_phase2(
         &self,
         ctrl: &mut GenshinGameController,
-        ocr: &dyn ImageToText<RgbImage>,
+        ocr_pool: &OcrPool,
         work_tx: &crossbeam_channel::Sender<CharacterWork>,
         result_rx: &crossbeam_channel::Receiver<CharacterResult>,
         characters: &mut Vec<GoodCharacter>,
@@ -1452,7 +1443,8 @@ impl GoodCharacterScanner {
             ctrl.key_press(enigo::Key::Layout('c'));
             utils::sleep(self.config.open_delay as u32);
             if let Ok(img) = ctrl.capture_game() {
-                let text = Self::ocr_image_region(ocr, &img, CHAR_NAME_RECT, &ctrl.scaler)
+                let ocr = ocr_pool.get();
+                let text = Self::ocr_image_region(&ocr as &dyn ImageToText<RgbImage>, &img, CHAR_NAME_RECT, &ctrl.scaler)
                     .unwrap_or_default();
                 if !text.trim().is_empty() {
                     screen_opened = true;
@@ -1517,24 +1509,30 @@ impl GoodCharacterScanner {
             utils::sleep(td as u32);
             let talent_overview_image = ctrl.capture_game().unwrap_or_else(|_| RgbImage::new(1, 1));
 
-            // 3. OCR the overview on the main thread with the v4 guard we already
-            // hold. If all three values land and match the phase-1 result, the
-            // overview is consistent — skip the detail clicks. Otherwise fall
-            // through to click each detail for disambiguation.
+            // 3. OCR the overview on the main thread. Acquire a v4 guard for the
+            // three calls, then release so the rescan worker can use the pool.
+            // If all three values land and match the phase-1 result, the overview
+            // is consistent — skip the detail clicks. Otherwise fall through to
+            // click each detail for disambiguation.
             let burst_rect = if has_special {
                 CHAR_TALENT_OVERVIEW_BURST_SPECIAL
             } else {
                 CHAR_TALENT_OVERVIEW_BURST
             };
-            let ov_auto = Self::ocr_image_region(
-                ocr, &talent_overview_image, CHAR_TALENT_OVERVIEW_AUTO, &ctrl.scaler,
-            ).ok().map(|t| Self::parse_lv_text(&t)).unwrap_or(0);
-            let ov_skill = Self::ocr_image_region(
-                ocr, &talent_overview_image, CHAR_TALENT_OVERVIEW_SKILL, &ctrl.scaler,
-            ).ok().map(|t| Self::parse_lv_text(&t)).unwrap_or(0);
-            let ov_burst = Self::ocr_image_region(
-                ocr, &talent_overview_image, burst_rect, &ctrl.scaler,
-            ).ok().map(|t| Self::parse_lv_text(&t)).unwrap_or(0);
+            let (ov_auto, ov_skill, ov_burst) = {
+                let ocr = ocr_pool.get();
+                let ocr_ref = &ocr as &dyn ImageToText<RgbImage>;
+                let a = Self::ocr_image_region(
+                    ocr_ref, &talent_overview_image, CHAR_TALENT_OVERVIEW_AUTO, &ctrl.scaler,
+                ).ok().map(|t| Self::parse_lv_text(&t)).unwrap_or(0);
+                let s = Self::ocr_image_region(
+                    ocr_ref, &talent_overview_image, CHAR_TALENT_OVERVIEW_SKILL, &ctrl.scaler,
+                ).ok().map(|t| Self::parse_lv_text(&t)).unwrap_or(0);
+                let b = Self::ocr_image_region(
+                    ocr_ref, &talent_overview_image, burst_rect, &ctrl.scaler,
+                ).ok().map(|t| Self::parse_lv_text(&t)).unwrap_or(0);
+                (a, s, b)
+            };
 
             // Compare to phase-1 values. Match = overview is stable; skip details.
             // Require all three > 0 (OCR actually landed) AND equal to phase-1.

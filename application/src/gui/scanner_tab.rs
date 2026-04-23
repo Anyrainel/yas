@@ -105,6 +105,25 @@ pub fn show(
                     });
 
                     ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(l.t(
+                            "OCR池数量 (0=按内存自动):",
+                            "OCR pool size (0=auto by RAM):",
+                        ));
+                        ui.add_space(8.0);
+                        ui.label("v5:");
+                        pool_size_field(ui, &mut state.user_config.ocr_pool_v5_override);
+                        ui.add_space(8.0);
+                        ui.label("v4:");
+                        pool_size_field(ui, &mut state.user_config.ocr_pool_v4_override);
+                        ui.add_space(8.0);
+                        ui.colored_label(
+                            egui::Color32::from_rgb(160, 160, 160),
+                            l.t("下次扫描生效", "Applied on next scan"),
+                        );
+                    });
+
+                    ui.add_space(4.0);
                     state.mappings_refresh.poll();
                     ui.horizontal(|ui| {
                         let busy = state.mappings_refresh.is_running();
@@ -226,6 +245,14 @@ fn max_count_field(ui: &mut egui::Ui, value: &mut usize) {
     ui.add(
         egui::DragValue::new(value)
             .range(0..=2000)
+            .speed(0.0),
+    );
+}
+
+fn pool_size_field(ui: &mut egui::Ui, value: &mut usize) {
+    ui.add(
+        egui::DragValue::new(value)
+            .range(0..=8)
             .speed(0.0),
     );
 }

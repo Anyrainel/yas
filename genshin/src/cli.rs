@@ -483,6 +483,13 @@ pub struct GoodUserConfig {
     pub server_port: u16,
     #[serde(default = "default_true")]
     pub update_inventory: bool,
+
+    /// Advanced: force OCR v5 pool size. 0 = auto-detect from RAM. Non-zero forces that size.
+    #[serde(default)]
+    pub ocr_pool_v5_override: usize,
+    /// Advanced: force OCR v4 pool size. 0 = auto-detect from RAM. Non-zero forces that size.
+    #[serde(default)]
+    pub ocr_pool_v4_override: usize,
 }
 
 impl GoodUserConfig {
@@ -499,6 +506,27 @@ impl GoodUserConfig {
         }
     }
 
+    /// Resolve OCR pool sizes: auto-detect from RAM, then apply any non-zero user overrides.
+    pub fn resolve_ocr_pool_config(&self) -> OcrPoolConfig {
+        let mut cfg = OcrPoolConfig::detect();
+        if self.ocr_pool_v5_override > 0 {
+            log_info!(
+                "OCR v5 池大小手动覆盖: {} → {}",
+                "OCR v5 pool size manually overridden: {} → {}",
+                cfg.v5_count, self.ocr_pool_v5_override,
+            );
+            cfg.v5_count = self.ocr_pool_v5_override;
+        }
+        if self.ocr_pool_v4_override > 0 {
+            log_info!(
+                "OCR v4 池大小手动覆盖: {} → {}",
+                "OCR v4 pool size manually overridden: {} → {}",
+                cfg.v4_count, self.ocr_pool_v4_override,
+            );
+            cfg.v4_count = self.ocr_pool_v4_override;
+        }
+        cfg
+    }
 }
 
 impl Default for GoodUserConfig {
@@ -536,6 +564,8 @@ impl Default for GoodUserConfig {
             artifact_max_count: 0,
             server_port: default_server_port(),
             update_inventory: true,
+            ocr_pool_v5_override: 0,
+            ocr_pool_v4_override: 0,
         }
     }
 }
@@ -1024,7 +1054,7 @@ pub fn run_scan_core(
 
     // Create shared OCR pools for all scanners
     report("加载OCR模型 / Loading OCR models...");
-    let pool_config = OcrPoolConfig::detect();
+    let pool_config = user_config.resolve_ocr_pool_config();
     let ocr_backend = config.ocr_backend.as_deref().unwrap_or("ppocrv5");
     let substat_backend = config.artifact_substat_ocr.as_str();
     let pools = SharedOcrPools::new(pool_config, ocr_backend, substat_backend)?;
@@ -1184,7 +1214,7 @@ pub fn run_server_core(
         log_info!("初始化屏幕截图...", "Initializing screen capture...");
         let ctrl = GenshinGameController::new(game_info)?;
         log_info!("加载OCR模型...", "Loading OCR models...");
-        let pool_config = OcrPoolConfig::detect();
+        let pool_config = exec_user_config.resolve_ocr_pool_config();
         let pools = Arc::new(SharedOcrPools::new(pool_config, &ocr_be, &substat_ocr)
             .context("OCR模型加载失败，请确认内存充足（建议8GB以上）\
                      / OCR model load failed — ensure sufficient memory (8 GB+ recommended)")?);
@@ -1248,7 +1278,7 @@ pub fn run_manage_json(
     let token = cancel_token.unwrap_or_else(yas::cancel::CancelToken::new);
 
     let ocr_be = ocr_backend.unwrap_or("ppocrv5");
-    let pool_config = OcrPoolConfig::detect();
+    let pool_config = user_config.resolve_ocr_pool_config();
     let pools = Arc::new(SharedOcrPools::new(pool_config, ocr_be, artifact_substat_ocr)?);
     let manager = crate::manager::orchestrator::ArtifactManager::new(
         mappings,

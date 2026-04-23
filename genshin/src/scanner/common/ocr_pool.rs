@@ -94,26 +94,36 @@ impl OcrPoolConfig {
     /// Detect available memory and choose pool sizes.
     pub fn detect() -> Self {
         const EIGHT_GB: u64 = 8 * 1024 * 1024 * 1024;
+        const FOUR_GB: u64 = 4 * 1024 * 1024 * 1024;
 
         let available = yas::utils::available_memory_bytes();
         let (v5_count, v4_count) = match available {
-            Some(bytes) if bytes < EIGHT_GB => {
+            Some(bytes) if bytes >= EIGHT_GB => {
                 let gb = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
                 log_debug!(
-                    "可用内存 {:.1} GB < 8 GB，使用小型OCR池 (1×v5 + 1×v4)",
-                    "Available memory {:.1} GB < 8 GB, using small OCR pool (1×v5 + 1×v4)",
+                    "可用内存 {:.1} GB ≥ 8 GB，使用大型OCR池 (2×v5 + 4×v4)",
+                    "Available memory {:.1} GB ≥ 8 GB, using large OCR pool (2×v5 + 4×v4)",
                     gb,
                 );
-                (1, 1)
+                (2, 4)
+            }
+            Some(bytes) if bytes >= FOUR_GB => {
+                let gb = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                log_debug!(
+                    "可用内存 {:.1} GB ≥ 4 GB，使用中型OCR池 (2×v5 + 2×v4)",
+                    "Available memory {:.1} GB ≥ 4 GB, using medium OCR pool (2×v5 + 2×v4)",
+                    gb,
+                );
+                (2, 2)
             }
             Some(bytes) => {
                 let gb = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
                 log_debug!(
-                    "可用内存 {:.1} GB，使用标准OCR池 (2×v5 + 4×v4)",
-                    "Available memory {:.1} GB, using normal OCR pool (2×v5 + 4×v4)",
+                    "可用内存 {:.1} GB < 4 GB，使用小型OCR池 (1×v5 + 1×v4)",
+                    "Available memory {:.1} GB < 4 GB, using small OCR pool (1×v5 + 1×v4)",
                     gb,
                 );
-                (2, 4)
+                (1, 1)
             }
             None => {
                 log_debug!(
