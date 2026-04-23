@@ -191,7 +191,7 @@ All help text is bilingual (Chinese + English). Flags are grouped into four sect
 ## Dependencies & Platform
 
 - **OCR**: ONNX Runtime (`ort` crate) with PaddleOCR models (embedded via `include_bytes!`)
-- **Screen capture**: `screenshots` crate + `windows-capture` on Windows
+- **Screen capture**: `screenshots` crate (with Win32 BitBlt primary path on Windows)
 - **Input simulation**: `enigo` crate
 - **Remote mappings**: `reqwest` (blocking HTTP to ggartifact.com)
 - **Windows only**: Requires admin, uses Win32 APIs for window detection

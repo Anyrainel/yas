@@ -7,8 +7,6 @@ use yas::{log_debug, log_warn};
 
 use yas::cancel::CancelToken;
 use yas::capture::{Capturer, GenericCapturer};
-#[cfg(target_os = "windows")]
-use yas::capture::WgcCapturer;
 use yas::game_info::GameInfo;
 use yas::ocr::ImageToText;
 use yas::positioning::Rect;
@@ -63,32 +61,7 @@ impl GenshinGameController {
         })
     }
 
-    fn create_capturer(game_info: &GameInfo) -> Result<Rc<dyn Capturer<RgbImage>>> {
-        #[cfg(target_os = "windows")]
-        {
-            match WgcCapturer::new(
-                game_info.hwnd,
-                game_info.window.left,
-                game_info.window.top,
-                game_info.window.width as u32,
-                game_info.window.height as u32,
-            ) {
-                Ok(wgc) => {
-                    log_debug!(
-                        "使用WGC截图（绕过夜灯/色彩滤镜）",
-                        "Using WGC capturer (bypasses Night Light / color filters)"
-                    );
-                    return Ok(Rc::new(wgc));
-                }
-                Err(e) => {
-                    log_warn!(
-                        "WGC截图不可用({}), 回退到GDI截图",
-                        "WGC capturer unavailable ({}), falling back to GDI",
-                        e
-                    );
-                }
-            }
-        }
+    fn create_capturer(_game_info: &GameInfo) -> Result<Rc<dyn Capturer<RgbImage>>> {
         Ok(Rc::new(GenericCapturer::new()?))
     }
 }

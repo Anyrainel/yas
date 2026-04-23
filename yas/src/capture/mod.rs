@@ -11,16 +11,12 @@ mod stream_capturer;
 #[cfg(target_os = "windows")]
 mod screenshots_capturer;
 #[cfg(target_os = "windows")]
-mod wgc_capturer;
-#[cfg(target_os = "windows")]
 mod winapi_capturer;
 #[cfg(target_os = "windows")]
 mod windows_capturer;
 
 #[cfg(target_os = "windows")]
 pub use screenshots_capturer::ScreenshotsCapturer;
-#[cfg(target_os = "windows")]
-pub use wgc_capturer::WgcCapturer;
 #[cfg(target_os = "windows")]
 pub use winapi_capturer::WinapiCapturer;
 #[cfg(target_os = "windows")]
