@@ -269,30 +269,6 @@ pub fn show(
                         ui.label(*step);
                     }
                 });
-
-            egui::CollapsingHeader::new(l.t("杀毒软件误报说明", "Antivirus false positive info"))
-                .default_open(false)
-                .show(ui, |ui| {
-                    ui.label(l.t(
-                        "本程序使用网络抓包（pktmon）来读取游戏数据。\n\
-                         某些杀毒软件可能会将此行为标记为可疑。\n\
-                         这是误报——本程序不会修改游戏文件或内存，\n\
-                         仅被动读取网络流量。",
-                        "This program uses packet capture (pktmon) to read game data.\n\
-                         Some antivirus software may flag this behavior as suspicious.\n\
-                         This is a false positive — the program does not modify game\n\
-                         files or memory; it only passively reads network traffic.",
-                    ));
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(l.t(
-                            "如果被拦截，请将本程序添加到杀毒软件的白名单中。",
-                            "If blocked, please add this program to your antivirus whitelist.",
-                        ))
-                        .weak()
-                        .size(11.0),
-                    );
-                });
         });
 }
 

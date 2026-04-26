@@ -44,6 +44,7 @@ pub fn show(
             .default_open(true)
             .show(ui, |ui| {
                 ui.add_enabled_ui(!is_scanning, |ui| {
+                    ui.label(l.t("请先清除背包内的过滤选项。", "Please clear up filters in inventory first."));
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut state.scan_characters, l.t("角色", "Characters"));
                         ui.add_space(12.0);
