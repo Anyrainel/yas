@@ -475,6 +475,8 @@ pub struct GoodUserConfig {
     #[serde(default)]
     pub dump_images: bool,
     #[serde(default)]
+    pub hdr_mode: bool,
+    #[serde(default)]
     pub dump_job_data: bool,
     #[serde(default)]
     pub save_on_cancel: bool,
@@ -563,6 +565,7 @@ impl Default for GoodUserConfig {
             verbose: false,
             continue_on_failure: false,
             dump_images: false,
+            hdr_mode: false,
             dump_job_data: false,
             save_on_cancel: false,
             char_max_count: 0,
@@ -719,6 +722,11 @@ pub struct GoodScannerConfig {
           help_heading = "通用选项 / Global Options")]
     pub dump_images: bool,
 
+    /// HDR显示模式 / HDR display mode
+    #[arg(long = "hdr-mode", help = "使用HDR像素阈值（默认使用SDR阈值）\nUse HDR pixel thresholds (default uses SDR thresholds)",
+          help_heading = "通用选项 / Global Options")]
+    pub hdr_mode: bool,
+
     // === Scanner config ===
 
     /// 最低武器稀有度 / Min weapon rarity
@@ -861,6 +869,7 @@ impl GoodScannerApplication {
             continue_on_failure: config.continue_on_failure,
             log_progress: config.log_progress,
             dump_images: config.dump_images,
+            hdr_mode: config.hdr_mode || user_config.hdr_mode,
             output_dir: config.output_dir.clone(),
             ocr_backend: config.ocr_backend.clone(),
             artifact_substat_ocr: config.artifact_substat_ocr.clone(),
@@ -946,6 +955,7 @@ pub struct ScanCoreConfig {
     pub continue_on_failure: bool,
     pub log_progress: bool,
     pub dump_images: bool,
+    pub hdr_mode: bool,
     pub output_dir: String,
     pub ocr_backend: Option<String>,
     pub artifact_substat_ocr: String,
@@ -968,6 +978,7 @@ impl Default for ScanCoreConfig {
             continue_on_failure: false,
             log_progress: false,
             dump_images: false,
+            hdr_mode: false,
             output_dir: ".".to_string(),
             ocr_backend: None,
             artifact_substat_ocr: "ppocrv4".to_string(),
@@ -993,6 +1004,7 @@ impl ScanCoreConfig {
             output_dir: self.output_dir.clone(),
             ocr_backend: self.ocr_backend.clone(),
             dump_images: self.dump_images,
+            hdr_mode: self.hdr_mode,
             weapon_min_rarity: self.weapon_min_rarity,
             artifact_min_rarity: self.artifact_min_rarity,
             char_max_count: self.char_max_count,
@@ -1015,6 +1027,7 @@ pub fn run_scan_core(
 ) -> Result<String> {
     init_rayon_pool();
     crate::scanner::common::annotator::init(config.dump_images);
+    crate::scanner::common::pixel_profile::set_hdr_mode(config.hdr_mode);
 
     let report = |msg: &str| {
         if let Some(f) = status_fn { f(msg); }
@@ -1022,9 +1035,7 @@ pub fn run_scan_core(
 
     #[cfg(target_os = "windows")]
     {
-        if !yas::utils::is_admin() {
-            return Err(anyhow!("需要管理员权限，请右键点击程序选择「以管理员身份运行」/ Administrator privileges required. Right-click the program and select 'Run as administrator'."));
-        }
+        yas::utils::ensure_admin()?;
     }
 
     // Fetch and load mappings
@@ -1124,12 +1135,11 @@ pub fn run_server_core(
 ) -> Result<()> {
     init_rayon_pool();
     crate::scanner::common::annotator::init(dump_images);
+    crate::scanner::common::pixel_profile::set_hdr_mode(user_config.hdr_mode);
 
     #[cfg(target_os = "windows")]
     {
-        if !yas::utils::is_admin() {
-            return Err(anyhow!("需要管理员权限，请右键点击程序选择「以管理员身份运行」/ Administrator privileges required. Right-click the program and select 'Run as administrator'."));
-        }
+        yas::utils::ensure_admin()?;
     }
 
     log_info!("加载映射数据...", "Loading mappings...");
@@ -1211,9 +1221,7 @@ pub fn run_manage_json(
 ) -> Result<crate::manager::models::ManageResult> {
     #[cfg(target_os = "windows")]
     {
-        if !yas::utils::is_admin() {
-            return Err(anyhow!("需要管理员权限，请右键点击程序选择「以管理员身份运行」/ Administrator privileges required. Right-click the program and select 'Run as administrator'."));
-        }
+        yas::utils::ensure_admin()?;
     }
 
     crate::manager::ui_actions::set_manager_delays(crate::manager::ui_actions::ManagerDelays {

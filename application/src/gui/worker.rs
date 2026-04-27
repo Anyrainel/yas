@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
 
 use super::log_bridge;
-use super::state::{AppState, Lang, LogSource, TaskStatus};
+use super::state::{AppState, LogSource, TaskStatus, UiText};
 
 // ── Windows SEH guard ────────────────────────────────────────────
 //
@@ -22,7 +22,7 @@ use super::state::{AppState, Lang, LogSource, TaskStatus};
 mod seh_guard {
     use std::sync::{Arc, Mutex, Once};
 
-    use super::TaskStatus;
+    use super::{TaskStatus, UiText};
 
     // ── thread-local context set by spawn_with_safety_net ──────────
     thread_local! {
@@ -130,7 +130,7 @@ mod seh_guard {
                 if let Ok(mut st) = status.try_lock() {
                     if matches!(*st, TaskStatus::Running(_)) {
                         // Use the static description only (no heap-allocating format!).
-                        *st = TaskStatus::Failed(yas::lang::localize(desc));
+                        *st = TaskStatus::Failed(UiText::from_bilingual(desc));
                     }
                 }
                 true
@@ -203,11 +203,16 @@ fn spawn_with_safety_net(
 
         if let Err(panic_info) = result {
             let msg = panic_message(&panic_info);
-            yas::log_error!("{} 崩溃: {}", "{} crashed: {}", task_name_for_crash, msg);
+            yas::log_error!(
+                "{} 崩溃: {}",
+                "{} crashed: {}",
+                task_name_for_crash,
+                msg
+            );
             if let Ok(mut guard) = status_for_crash.lock() {
                 // Only overwrite if still Running — don't clobber a proper Failed/Completed
                 if matches!(*guard, TaskStatus::Running(_)) {
-                    *guard = TaskStatus::Failed(localize(&msg));
+                    *guard = TaskStatus::Failed(msg);
                 }
             }
         }
@@ -226,7 +231,7 @@ pub struct TaskHandle {
     /// notice the cancel token.
     status: Arc<Mutex<TaskStatus>>,
     /// Message shown immediately on stop, in the active UI language.
-    stopping_msg: String,
+    stopping_msg: UiText,
 }
 
 impl TaskHandle {
@@ -262,19 +267,14 @@ impl TaskHandle {
     }
 }
 
-/// Pick the correct language half from a bilingual "中文 / English" string.
-fn localize(msg: &str) -> String {
-    yas::lang::localize(msg)
-}
-
 /// Extract a human-readable message from a caught panic payload.
-fn panic_message(info: &Box<dyn std::any::Any + Send>) -> String {
+fn panic_message(info: &Box<dyn std::any::Any + Send>) -> UiText {
     if let Some(s) = info.downcast_ref::<&str>() {
-        format!("内部错误: {} / Internal error: {}", s, s)
+        UiText::new(format!("内部错误: {}", s), format!("Internal error: {}", s))
     } else if let Some(s) = info.downcast_ref::<String>() {
-        format!("内部错误: {} / Internal error: {}", s, s)
+        UiText::new(format!("内部错误: {}", s), format!("Internal error: {}", s))
     } else {
-        "内部错误 (未知) / Internal error (unknown)".to_string()
+        UiText::new("内部错误 (未知)", "Internal error (unknown)")
     }
 }
 
@@ -283,27 +283,23 @@ pub fn spawn_scan(state: &AppState) -> TaskHandle {
     let status = state.scan_status.clone();
     let user_config = state.user_config.clone();
     let scan_config = state.to_scan_config();
-    let lang = state.lang;
-
     let token = yas::cancel::CancelToken::new();
     let stop_token = token.clone();
     let cancel_for_result = token.clone();
-    *status.lock().unwrap() =
-        TaskStatus::Running(lang.t("正在初始化...", "Initializing...").into());
+    *status.lock().unwrap() = TaskStatus::Running(UiText::new("正在初始化...", "Initializing..."));
 
     // Check ONNX runtime before spawning
     #[cfg(target_os = "windows")]
     {
         if !genshin_scanner::cli::check_onnxruntime() {
-            *status.lock().unwrap() = TaskStatus::Running(
-                lang.t("正在下载 ONNX Runtime...", "Downloading ONNX Runtime...")
-                    .into(),
-            );
+            *status.lock().unwrap() = TaskStatus::Running(UiText::new(
+                "正在下载 ONNX Runtime...",
+                "Downloading ONNX Runtime...",
+            ));
         }
     }
 
-    let abort_hint = lang.t("鼠标右键终止", "Right-click to abort");
-    let stopping_msg = lang.t("正在停止扫描...", "Stopping scan...").to_string();
+    let stopping_msg = UiText::new("正在停止扫描...", "Stopping scan...");
 
     let handle = spawn_with_safety_net(
         "Scanner",
@@ -314,7 +310,8 @@ pub fn spawn_scan(state: &AppState) -> TaskHandle {
             #[cfg(target_os = "windows")]
             {
                 if let Err(e) = genshin_scanner::cli::check_vcpp_runtime() {
-                    *status.lock().unwrap() = TaskStatus::Failed(localize(&format!("{}", e)));
+                    *status.lock().unwrap() =
+                        TaskStatus::Failed(UiText::from_bilingual(format!("{}", e)));
                     return;
                 }
             }
@@ -324,7 +321,8 @@ pub fn spawn_scan(state: &AppState) -> TaskHandle {
             {
                 if !genshin_scanner::cli::check_onnxruntime() {
                     if let Err(e) = genshin_scanner::cli::download_onnxruntime() {
-                        *status.lock().unwrap() = TaskStatus::Failed(localize(&format!("{}", e)));
+                        *status.lock().unwrap() =
+                            TaskStatus::Failed(UiText::from_bilingual(format!("{}", e)));
                         return;
                     }
                 }
@@ -334,14 +332,20 @@ pub fn spawn_scan(state: &AppState) -> TaskHandle {
             // Once the cancel token is tripped, don't let deeper phases
             // overwrite the "Stopping..." message with their own progress.
             let cancel_for_cb = cancel_for_result.clone();
-            let stopping_msg_cb = lang.t("正在停止扫描...", "Stopping scan...").to_string();
+            let stopping_msg_cb = UiText::new("正在停止扫描...", "Stopping scan...");
             let status_fn = move |msg: &str| {
                 if cancel_for_cb.is_cancelled() {
                     *status_for_cb.lock().unwrap() = TaskStatus::Running(stopping_msg_cb.clone());
                     return;
                 }
-                let localized = localize(msg);
-                let display = format!("{}  ({})", localized, abort_hint);
+                let phase = UiText::from_bilingual(msg);
+                let display = UiText::new(
+                    format!("{}  (鼠标右键终止)", phase.text(super::state::Lang::Zh)),
+                    format!(
+                        "{}  (Right-click to abort)",
+                        phase.text(super::state::Lang::En)
+                    ),
+                );
                 *status_for_cb.lock().unwrap() = TaskStatus::Running(display);
             };
 
@@ -354,15 +358,12 @@ pub fn spawn_scan(state: &AppState) -> TaskHandle {
             match result {
                 Ok(path) => {
                     let msg = if cancel_for_result.is_cancelled() {
-                        match lang {
-                            Lang::Zh => format!("已停止，部分数据已导出至 {}", path),
-                            Lang::En => format!("Stopped; partial data exported to {}", path),
-                        }
+                        UiText::new(
+                            format!("已停止，部分数据已导出至 {}", path),
+                            format!("Stopped; partial data exported to {}", path),
+                        )
                     } else {
-                        match lang {
-                            Lang::Zh => format!("已导出至 {}", path),
-                            Lang::En => format!("Exported to {}", path),
-                        }
+                        UiText::new(format!("已导出至 {}", path), format!("Exported to {}", path))
                     };
                     *status.lock().unwrap() = TaskStatus::Completed(msg);
                 },
@@ -372,9 +373,10 @@ pub fn spawn_scan(state: &AppState) -> TaskHandle {
                         // fail immediately after a cancel before any data is
                         // gathered — still surface as a clean stop, not an error.
                         *status.lock().unwrap() =
-                            TaskStatus::Completed(lang.t("已停止", "Stopped").into());
+                            TaskStatus::Completed(UiText::new("已停止", "Stopped"));
                     } else {
-                        *status.lock().unwrap() = TaskStatus::Failed(localize(&format!("{}", e)));
+                        *status.lock().unwrap() =
+                            TaskStatus::Failed(UiText::from_bilingual(format!("{}", e)));
                     }
                 },
             }
@@ -399,14 +401,13 @@ pub fn spawn_server(state: &AppState) -> TaskHandle {
     let stop_on_all_matched = !state.update_inventory;
     let dump_images = state.dump_images;
     let dump_job_data = state.dump_job_data;
-    let lang = state.lang;
     let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
 
-    let msg = match lang {
-        Lang::Zh => format!("服务器运行中，端口 {}", port),
-        Lang::En => format!("Server running on port {}", port),
-    };
+    let msg = UiText::new(
+        format!("服务器运行中，端口 {}", port),
+        format!("Server running on port {}", port),
+    );
     *status.lock().unwrap() = TaskStatus::Running(msg);
 
     let handle = spawn_with_safety_net(
@@ -418,7 +419,8 @@ pub fn spawn_server(state: &AppState) -> TaskHandle {
             #[cfg(target_os = "windows")]
             {
                 if let Err(e) = genshin_scanner::cli::check_vcpp_runtime() {
-                    *status.lock().unwrap() = TaskStatus::Failed(localize(&format!("{}", e)));
+                    *status.lock().unwrap() =
+                        TaskStatus::Failed(UiText::from_bilingual(format!("{}", e)));
                     return;
                 }
             }
@@ -428,7 +430,8 @@ pub fn spawn_server(state: &AppState) -> TaskHandle {
             {
                 if !genshin_scanner::cli::check_onnxruntime() {
                     if let Err(e) = genshin_scanner::cli::download_onnxruntime() {
-                        *status.lock().unwrap() = TaskStatus::Failed(localize(&format!("{}", e)));
+                        *status.lock().unwrap() =
+                            TaskStatus::Failed(UiText::from_bilingual(format!("{}", e)));
                         return;
                     }
                 }
@@ -447,18 +450,17 @@ pub fn spawn_server(state: &AppState) -> TaskHandle {
             ) {
                 Ok(()) => {
                     *status.lock().unwrap() =
-                        TaskStatus::Completed(lang.t("服务器已停止", "Server stopped").into());
+                        TaskStatus::Completed(UiText::new("服务器已停止", "Server stopped"));
                 },
                 Err(e) => {
-                    *status.lock().unwrap() = TaskStatus::Failed(localize(&format!("{}", e)));
+                    *status.lock().unwrap() =
+                        TaskStatus::Failed(UiText::from_bilingual(format!("{}", e)));
                 },
             }
         },
     );
 
-    let stopping_msg = lang
-        .t("正在停止服务器...", "Stopping server...")
-        .to_string();
+    let stopping_msg = UiText::new("正在停止服务器...", "Stopping server...");
     TaskHandle {
         _handle: handle,
         shutdown: Some(shutdown),

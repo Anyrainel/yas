@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 
 use eframe::egui;
 
-use super::state::{AppState, RefreshState, TaskStatus};
+use super::state::{AppState, RefreshState, TaskStatus, UiText};
 use super::widgets;
 use super::worker::{self, TaskHandle};
 
@@ -100,6 +100,7 @@ pub fn show(
                         ui.horizontal_wrapped(|ui| {
                             ui.checkbox(&mut state.verbose, l.t("详细信息", "Verbose"));
                             ui.checkbox(&mut state.dump_images, l.t("保存OCR截图", "Dump OCR images"));
+                            ui.checkbox(&mut state.hdr_mode, l.t("HDR模式", "HDR mode"));
                             ui.checkbox(&mut state.dump_job_data, l.t("保存任务数据", "Dump job data"));
                         });
 
@@ -113,7 +114,7 @@ pub fn show(
                                 state.mappings_refresh = RefreshState::Running(
                                     std::thread::spawn(|| {
                                         genshin_scanner::scanner::common::mappings::force_refresh()
-                                            .map_err(|e| format!("{}", e))
+                                            .map_err(|e| UiText::from_bilingual(format!("{}", e)))
                                     }),
                                 );
                             }
@@ -122,7 +123,7 @@ pub fn show(
                                     ui.colored_label(egui::Color32::GREEN, "OK");
                                 }
                                 RefreshState::Failed(msg) => {
-                                    ui.colored_label(egui::Color32::RED, msg.as_str());
+                                    ui.colored_label(egui::Color32::RED, msg.text(l));
                                 }
                                 RefreshState::Running(_) => {
                                     ui.spinner();
@@ -180,7 +181,7 @@ fn action_bar(
             let status = state.server_status.lock().unwrap().clone();
             if let TaskStatus::Running(ref phase) = status {
                 ui.spinner();
-                ui.label(phase);
+                ui.label(phase.text(l));
             } else {
                 ui.colored_label(
                     egui::Color32::from_rgb(100, 200, 100),
@@ -196,13 +197,18 @@ fn action_bar(
                 .button(l.t("▶ 启动HTTP服务器", "▶ Start HTTP Server"))
                 .clicked()
             {
-                state.server_enabled.store(true, Ordering::Relaxed);
-                // Force immediate save before starting server
-                if let Err(e) = genshin_scanner::cli::save_config(&state.user_config) {
-                    yas::log_warn!("配置保存失败: {}", "Config save failed: {}", e);
+                if let Err(e) = super::privilege::ensure_admin_for_action() {
+                    *state.server_status.lock().unwrap() =
+                        TaskStatus::Failed(UiText::from_bilingual(format!("{}", e)));
+                } else {
+                    state.server_enabled.store(true, Ordering::Relaxed);
+                    // Force immediate save before starting server
+                    if let Err(e) = genshin_scanner::cli::save_config(&state.user_config) {
+                        yas::log_warn!("配置保存失败: {}", "Config save failed: {}", e);
+                    }
+                    state.config_dirty_since = None;
+                    *server_handle = Some(worker::spawn_server(state));
                 }
-                state.config_dirty_since = None;
-                *server_handle = Some(worker::spawn_server(state));
             }
         }
     });
@@ -212,10 +218,10 @@ fn action_bar(
         let status = state.server_status.lock().unwrap().clone();
         match status {
             TaskStatus::Failed(ref msg) => {
-                ui.colored_label(egui::Color32::from_rgb(255, 100, 100), msg);
+                ui.colored_label(egui::Color32::from_rgb(255, 100, 100), msg.text(l));
             },
             TaskStatus::Completed(ref msg) => {
-                ui.colored_label(egui::Color32::from_rgb(150, 150, 150), msg);
+                ui.colored_label(egui::Color32::from_rgb(150, 150, 150), msg.text(l));
             },
             _ => {},
         }

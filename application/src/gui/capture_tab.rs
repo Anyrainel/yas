@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 
-use super::state::{self, Lang};
+use super::state::{self, Lang, UiText};
 
 use genshin_scanner::capture::monitor::{CaptureCommand, CaptureState};
 use genshin_scanner::capture::player_data::CaptureExportSettings;
@@ -41,9 +41,9 @@ enum Phase {
     /// All data received — auto-exporting.
     Exporting,
     /// Done — file written.
-    Done { summary: String, path: String },
+    Done { summary: UiText, path: String },
     /// Something failed.
-    Failed(String),
+    Failed(UiText),
 }
 
 /// State specific to the capture tab (lives in GuiApp, not AppState).
@@ -108,7 +108,7 @@ fn spawn_capture(
                 Err(e) => {
                     yas::log_error!("创建运行时失败: {}", "Failed to create runtime: {}", e);
                     if let Ok(mut s) = state.lock() {
-                        s.error = Some(format!("{}", e));
+                        s.error = Some(format!("创建运行时失败: {} / Failed to create runtime: {}", e, e));
                     }
                     return;
                 },
@@ -127,7 +127,10 @@ fn spawn_capture(
                             e
                         );
                         if let Ok(mut s) = state.lock() {
-                            s.error = Some(format!("{}", e));
+                            s.error = Some(format!(
+                                "初始化抓包监控失败: {} / Failed to initialize capture monitor: {}",
+                                e, e
+                            ));
                         }
                         return;
                     },
@@ -142,11 +145,11 @@ fn spawn_capture(
 
         if let Err(panic_info) = result {
             let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                format!("Capture crashed: {}", s)
+                format!("抓包崩溃: {} / Capture crashed: {}", s, s)
             } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                format!("Capture crashed: {}", s)
+                format!("抓包崩溃: {} / Capture crashed: {}", s, s)
             } else {
-                "Capture crashed (unknown panic)".to_string()
+                "抓包崩溃（未知panic） / Capture crashed (unknown panic)".to_string()
             };
             yas::log_error!("抓包崩溃: {}", "Capture crashed: {}", msg);
             if let Ok(mut s) = state_for_crash.lock() {
@@ -219,7 +222,7 @@ pub fn show(ui: &mut egui::Ui, l: Lang, tab: &mut CaptureTabState, game_busy: bo
                             tab.data_cache_refresh = state::RefreshState::Running(
                                 std::thread::spawn(|| {
                                     genshin_scanner::capture::data_cache::force_refresh()
-                                        .map_err(|e| format!("{}", e))
+                                        .map_err(|e| UiText::from_bilingual(format!("{}", e)))
                                 }),
                             );
                         }
@@ -228,7 +231,7 @@ pub fn show(ui: &mut egui::Ui, l: Lang, tab: &mut CaptureTabState, game_busy: bo
                                 ui.colored_label(egui::Color32::GREEN, "OK");
                             }
                             state::RefreshState::Failed(msg) => {
-                                ui.colored_label(egui::Color32::RED, msg.as_str());
+                                ui.colored_label(egui::Color32::RED, msg.text(l));
                             }
                             state::RefreshState::Running(_) => {
                                 ui.spinner();
@@ -285,15 +288,19 @@ fn action_bar(ui: &mut egui::Ui, l: Lang, tab: &mut CaptureTabState, game_busy: 
                     )
                     .clicked()
                 {
-                    tab.capture_state = Arc::new(Mutex::new(CaptureState::default()));
-                    let mut cmd_tx = None;
-                    let thread =
-                        spawn_capture(tab.capture_state.clone(), &mut cmd_tx, tab.dump_packets);
-                    tab.handle = Some(CaptureHandle {
-                        _thread: thread,
-                        cmd_tx: cmd_tx.unwrap(),
-                    });
-                    tab.phase = Phase::Initializing;
+                    if let Err(e) = super::privilege::ensure_admin_for_action() {
+                        tab.phase = Phase::Failed(UiText::from_bilingual(format!("{}", e)));
+                    } else {
+                        tab.capture_state = Arc::new(Mutex::new(CaptureState::default()));
+                        let mut cmd_tx = None;
+                        let thread =
+                            spawn_capture(tab.capture_state.clone(), &mut cmd_tx, tab.dump_packets);
+                        tab.handle = Some(CaptureHandle {
+                            _thread: thread,
+                            cmd_tx: cmd_tx.unwrap(),
+                        });
+                        tab.phase = Phase::Initializing;
+                    }
                 }
             });
         },
@@ -390,7 +397,7 @@ fn action_bar(ui: &mut egui::Ui, l: Lang, tab: &mut CaptureTabState, game_busy: 
                     tab.phase = Phase::Idle;
                     tab.handle = None;
                 }
-                ui.colored_label(egui::Color32::from_rgb(100, 200, 100), &summary);
+                ui.colored_label(egui::Color32::from_rgb(100, 200, 100), summary.text(l));
             });
             ui.label(egui::RichText::new(format!("→ {}", path)).size(11.0).weak());
         },
@@ -402,14 +409,14 @@ fn action_bar(ui: &mut egui::Ui, l: Lang, tab: &mut CaptureTabState, game_busy: 
                     tab.phase = Phase::Idle;
                     tab.handle = None;
                 }
-                ui.colored_label(egui::Color32::from_rgb(255, 100, 100), &msg);
+                ui.colored_label(egui::Color32::from_rgb(255, 100, 100), msg.text(l));
             });
         },
     }
 }
 
 /// Drive phase transitions based on shared capture state.
-fn update_phase(tab: &mut CaptureTabState, l: Lang) {
+fn update_phase(tab: &mut CaptureTabState, _l: Lang) {
     // Poll pending export
     if let Some(ref mut pending) = tab.pending_export {
         match pending.rx.try_recv() {
@@ -423,15 +430,13 @@ fn update_phase(tab: &mut CaptureTabState, l: Lang) {
                             let cc = export.characters.as_ref().map_or(0, |v| v.len());
                             let wc = export.weapons.as_ref().map_or(0, |v| v.len());
                             let ac = export.artifacts.as_ref().map_or(0, |v| v.len());
-                            let summary = match l {
-                                Lang::Zh => {
-                                    format!("已导出: {} 角色, {} 武器, {} 圣遗物", cc, wc, ac)
-                                },
-                                Lang::En => format!(
+                            let summary = UiText::new(
+                                format!("已导出: {} 角色, {} 武器, {} 圣遗物", cc, wc, ac),
+                                format!(
                                     "Exported: {} characters, {} weapons, {} artifacts",
                                     cc, wc, ac
                                 ),
-                            };
+                            );
                             yas::log_info!("{} → {}", "{} → {}", summary, path.display());
                             tab.phase = Phase::Done {
                                 summary,
@@ -439,18 +444,18 @@ fn update_phase(tab: &mut CaptureTabState, l: Lang) {
                             };
                         },
                         Err(e) => {
-                            tab.phase = Phase::Failed(format!(
-                                "{}: {}",
-                                l.t("写入文件失败", "Failed to write file"),
-                                e
+                            tab.phase = Phase::Failed(UiText::with_error(
+                                "写入文件失败",
+                                "Failed to write file",
+                                e,
                             ));
                         },
                     },
                     Err(e) => {
-                        tab.phase = Phase::Failed(format!(
-                            "{}: {}",
-                            l.t("序列化失败", "Serialization failed"),
-                            e
+                        tab.phase = Phase::Failed(UiText::with_error(
+                            "序列化失败",
+                            "Serialization failed",
+                            e,
                         ));
                     },
                 }
@@ -458,7 +463,7 @@ fn update_phase(tab: &mut CaptureTabState, l: Lang) {
                 return;
             },
             Ok(Err(e)) => {
-                tab.phase = Phase::Failed(format!("{}: {}", l.t("导出失败", "Export failed"), e));
+                tab.phase = Phase::Failed(UiText::with_error("导出失败", "Export failed", e));
                 tab.pending_export = None;
                 return;
             },
@@ -466,7 +471,7 @@ fn update_phase(tab: &mut CaptureTabState, l: Lang) {
                 return; // still waiting
             },
             Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                tab.phase = Phase::Failed(l.t("导出通道关闭", "Export channel closed").into());
+                tab.phase = Phase::Failed(UiText::new("导出通道关闭", "Export channel closed"));
                 tab.pending_export = None;
                 return;
             },
@@ -477,7 +482,7 @@ fn update_phase(tab: &mut CaptureTabState, l: Lang) {
     if matches!(tab.phase, Phase::Initializing | Phase::Waiting) {
         if let Ok(cs) = tab.capture_state.lock() {
             if let Some(ref err) = cs.error {
-                tab.phase = Phase::Failed(err.clone());
+                tab.phase = Phase::Failed(UiText::from_bilingual(err));
                 return;
             }
         }
@@ -489,10 +494,10 @@ fn update_phase(tab: &mut CaptureTabState, l: Lang) {
                 .lock()
                 .map_or(false, |s| s.error.is_some());
             if !has_error {
-                tab.phase = Phase::Failed(
-                    l.t("抓包进程意外退出", "Capture process exited unexpectedly")
-                        .into(),
-                );
+                tab.phase = Phase::Failed(UiText::new(
+                    "抓包进程意外退出",
+                    "Capture process exited unexpectedly",
+                ));
             }
             return;
         }

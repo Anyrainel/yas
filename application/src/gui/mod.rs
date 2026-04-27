@@ -4,6 +4,7 @@ pub mod credits;
 pub mod log_bridge;
 pub mod log_panel;
 pub mod manager_tab;
+mod privilege;
 pub mod scanner_tab;
 pub mod state;
 pub mod update_banner;

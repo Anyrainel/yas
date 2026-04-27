@@ -102,6 +102,11 @@ pub struct CaptureMonitor {
 impl CaptureMonitor {
     /// Initialize the monitor: load data cache, set up sniffer.
     pub fn new(state: Arc<Mutex<CaptureState>>, dump_packets: bool) -> Result<Self> {
+        #[cfg(target_os = "windows")]
+        {
+            yas::utils::ensure_admin()?;
+        }
+
         let data_cache = load_data_cache()?;
         let player_data = PlayerData::new(data_cache);
         let keys = load_keys()?;

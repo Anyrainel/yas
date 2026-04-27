@@ -36,13 +36,70 @@ impl Lang {
     }
 }
 
+/// Bilingual text intended for visible GUI state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UiText {
+    zh: String,
+    en: String,
+}
+
+impl UiText {
+    pub fn new(zh: impl Into<String>, en: impl Into<String>) -> Self {
+        Self {
+            zh: zh.into(),
+            en: en.into(),
+        }
+    }
+
+    pub fn from_bilingual(msg: impl AsRef<str>) -> Self {
+        let msg = msg.as_ref();
+        if let Some(idx) = msg.find(" / ") {
+            Self::new(&msg[..idx], &msg[idx + 3..])
+        } else {
+            Self::new(msg, msg)
+        }
+    }
+
+    pub fn with_error(
+        zh_prefix: impl AsRef<str>,
+        en_prefix: impl AsRef<str>,
+        error: impl std::fmt::Display,
+    ) -> Self {
+        let error = format!("{}", error);
+        if let Some(idx) = error.find(" / ") {
+            Self::new(
+                format!("{}: {}", zh_prefix.as_ref(), &error[..idx]),
+                format!("{}: {}", en_prefix.as_ref(), &error[idx + 3..]),
+            )
+        } else {
+            Self::new(
+                format!("{}: {}", zh_prefix.as_ref(), error),
+                format!("{}: {}", en_prefix.as_ref(), error),
+            )
+        }
+    }
+
+    pub fn text(&self, lang: Lang) -> &str {
+        match lang {
+            Lang::Zh => &self.zh,
+            Lang::En => &self.en,
+        }
+    }
+}
+
+impl std::fmt::Display for UiText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if yas::lang::is_en() { &self.en } else { &self.zh })
+    }
+}
+
 /// Status of a background operation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TaskStatus {
     Idle,
-    Running(String),
-    Completed(String),
-    Failed(String),
+    Running(UiText),
+    Completed(UiText),
+    Failed(UiText),
 }
 
 /// Which tab a log entry belongs to.
@@ -80,15 +137,15 @@ pub enum UpdateState {
     /// Already on the latest version (or dev build).
     None,
     /// Check or download failed (non-fatal).
-    Failed(String),
+    Failed(UiText),
 }
 
 /// State of a one-shot data refresh operation.
 pub enum RefreshState {
     Idle,
-    Running(std::thread::JoinHandle<Result<(), String>>),
+    Running(std::thread::JoinHandle<Result<(), UiText>>),
     Ok,
-    Failed(String),
+    Failed(UiText),
 }
 
 impl RefreshState {
@@ -101,7 +158,10 @@ impl RefreshState {
                 match h.join() {
                     Ok(Ok(())) => *self = RefreshState::Ok,
                     Ok(Err(msg)) => *self = RefreshState::Failed(msg),
-                    Err(_) => *self = RefreshState::Failed("thread panicked".into()),
+                    Err(_) => *self = RefreshState::Failed(UiText::new(
+                        "后台线程崩溃",
+                        "Background thread panicked",
+                    )),
                 }
             }
         }
@@ -128,6 +188,7 @@ pub struct AppState {
     pub verbose: bool,
     pub continue_on_failure: bool,
     pub dump_images: bool,
+    pub hdr_mode: bool,
     pub dump_job_data: bool,
     pub save_on_cancel: bool,
     pub output_dir: String,
@@ -177,6 +238,7 @@ impl AppState {
             verbose: user_config.verbose,
             continue_on_failure: user_config.continue_on_failure,
             dump_images: user_config.dump_images,
+            hdr_mode: user_config.hdr_mode,
             dump_job_data: user_config.dump_job_data,
             save_on_cancel: user_config.save_on_cancel,
             char_max_count: user_config.char_max_count,
@@ -213,6 +275,7 @@ impl AppState {
         super::log_bridge::set_verbose(self.verbose);
         self.user_config.continue_on_failure = self.continue_on_failure;
         self.user_config.dump_images = self.dump_images;
+        self.user_config.hdr_mode = self.hdr_mode;
         self.user_config.dump_job_data = self.dump_job_data;
         self.user_config.save_on_cancel = self.save_on_cancel;
         self.user_config.char_max_count = self.char_max_count;
@@ -254,6 +317,7 @@ impl AppState {
             continue_on_failure: self.continue_on_failure,
             log_progress: true,
             dump_images: self.dump_images,
+            hdr_mode: self.hdr_mode,
             save_on_cancel: self.save_on_cancel,
             output_dir: self.output_dir.clone(),
             ocr_backend: None,

@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 
-use super::state::{Lang, UpdateState};
+use super::state::{Lang, UiText, UpdateState};
 
 /// Show the update notification banner when an update is available.
 ///
@@ -43,7 +43,8 @@ pub fn show(ctx: &egui::Context, l: Lang, update_state: &Arc<Mutex<UpdateState>>
                                 show_restart_dialog(exe_path, arc, lang);
                             },
                             Err(e) => {
-                                *arc.lock().unwrap() = UpdateState::Failed(format!("{}", e));
+                                *arc.lock().unwrap() =
+                                    UpdateState::Failed(UiText::from_bilingual(format!("{}", e)));
                             },
                         },
                     );
@@ -84,8 +85,8 @@ pub fn show(ctx: &egui::Context, l: Lang, update_state: &Arc<Mutex<UpdateState>>
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(l.t(
-                        &format!("更新失败: {}", msg),
-                        &format!("Update failed: {}", msg),
+                        &format!("更新失败: {}", msg.text(Lang::Zh)),
+                        &format!("Update failed: {}", msg.text(Lang::En)),
                     ))
                     .color(egui::Color32::from_rgb(255, 100, 100)),
                 );

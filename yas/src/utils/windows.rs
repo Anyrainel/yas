@@ -14,6 +14,7 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use windows_sys::Win32::System::SystemServices::*;
 use windows_sys::Win32::System::LibraryLoader::*;
+use windows_sys::Win32::System::Threading::*;
 use crate::positioning::Rect;
 
 pub fn encode_lpcstr(s: &str) -> Vec<u8> {
@@ -107,7 +108,12 @@ pub fn get_client_rect(hwnd: HWND) -> Result<Rect<i32>> {
     unsafe { get_client_rect_unsafe(hwnd) }
 }
 
-unsafe fn is_admin_unsafe() -> bool {
+fn admin_check_os_error(context_zh: &str, context_en: &str) -> anyhow::Error {
+    let os_error = std::io::Error::last_os_error();
+    anyhow!("{}: {} / {}: {}", context_zh, os_error, context_en, os_error)
+}
+
+unsafe fn is_admin_unsafe() -> Result<bool> {
     let mut authority: SID_IDENTIFIER_AUTHORITY = SID_IDENTIFIER_AUTHORITY {
         Value: [0, 0, 0, 0, 0, 5],
     };
@@ -125,19 +131,80 @@ unsafe fn is_admin_unsafe() -> bool {
         0,
         &mut group as *mut PSID,
     );
-    if b != 0 {
-        let r = CheckTokenMembership(null_mut(), group, &mut b as *mut BOOL);
-        if r == 0 {
-            b = 0;
-        }
-        FreeSid(group);
+    if b == 0 {
+        return Err(admin_check_os_error(
+            "创建管理员组标识失败",
+            "AllocateAndInitializeSid failed",
+        ));
     }
 
-    b != 0
+    let r = CheckTokenMembership(null_mut(), group, &mut b as *mut BOOL);
+    let check_result = if r == 0 {
+        Err(admin_check_os_error(
+            "检查管理员组成员身份失败",
+            "CheckTokenMembership failed",
+        ))
+    } else {
+        Ok(b != 0)
+    };
+    FreeSid(group);
+    check_result
+}
+
+unsafe fn process_token_is_elevated_unsafe() -> Result<bool> {
+    let mut token: HANDLE = null_mut();
+    if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token as *mut HANDLE) == 0 {
+        return Err(admin_check_os_error(
+            "打开进程令牌失败",
+            "OpenProcessToken failed",
+        ));
+    }
+
+    let mut elevation = TOKEN_ELEVATION { TokenIsElevated: 0 };
+    let mut returned_len: u32 = 0;
+    let ok = GetTokenInformation(
+        token,
+        TokenElevation,
+        &mut elevation as *mut TOKEN_ELEVATION as *mut _,
+        std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+        &mut returned_len as *mut u32,
+    );
+    let get_result = if ok == 0 {
+        Err(admin_check_os_error(
+            "读取进程提权状态失败",
+            "GetTokenInformation(TokenElevation) failed",
+        ))
+    } else {
+        Ok(elevation.TokenIsElevated != 0)
+    };
+    CloseHandle(token);
+    get_result
+}
+
+pub fn admin_status() -> Result<bool> {
+    unsafe {
+        let is_effective_admin = is_admin_unsafe()?;
+        if !is_effective_admin {
+            return Ok(false);
+        }
+
+        // CheckTokenMembership verifies the effective token has an enabled
+        // Administrators SID. TokenElevation is an independent UAC sanity
+        // check; any API failure becomes a hard denial.
+        process_token_is_elevated_unsafe()
+    }
 }
 
 pub fn is_admin() -> bool {
-    unsafe { is_admin_unsafe() }
+    admin_status().unwrap_or(false)
+}
+
+pub fn ensure_admin() -> Result<()> {
+    match admin_status() {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(anyhow!("需要管理员权限，请右键点击程序选择「以管理员身份运行」/ Administrator privileges required. Right-click the program and select 'Run as administrator'.")),
+        Err(e) => Err(anyhow!("无法确认管理员权限，已阻止操作: {} / Cannot verify administrator privileges; action blocked: {}", e, e)),
+    }
 }
 
 pub fn set_dpi_awareness() {
