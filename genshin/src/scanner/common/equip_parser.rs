@@ -17,24 +17,79 @@ pub fn parse_equip_location(text: &str, char_map: &HashMap<String, String>) -> S
     };
 
     if let Some(marker) = equip_marker {
-        let char_name = text
-            .replace(marker, "")
-            .replace(['\u{5907}', ':', '\u{FF1A}', ' '], "") // also strip stray 备
-            .trim()
-            .to_string();
+        return parse_equip_owner_name(text.replace(marker, ""), char_map);
+    }
+    String::new()
+}
 
-        // Strip leading ASCII noise (c, Y, n, etc.) and emojis from OCR
-        let cleaned: String = char_name
-            .trim_start_matches(|c: char| c.is_ascii() || !c.is_alphanumeric())
-            .to_string();
+/// Parse an equipped owner name from a selection-view owner label.
+///
+/// Unlike `parse_equip_location`, this accepts OCR text without the explicit
+/// "已装备" marker because the manager only needs to know whether the selected
+/// artifact is owned by the currently processed character.
+pub fn parse_equip_owner(text: &str, char_map: &HashMap<String, String>) -> String {
+    parse_equip_owner_name(strip_equip_markers(text), char_map)
+}
 
-        for name in [&cleaned, &char_name] {
-            if !name.is_empty() {
-                if let Some(key) = fuzzy_match_map(name, char_map) {
-                    return key;
-                }
+fn strip_equip_markers(text: &str) -> String {
+    text.replace("\u{5DF2}\u{88C5}\u{5907}", "") // 已装备
+        .replace("\u{5DF2}\u{88C5}", "") // 已装
+        .replace("\u{88C5}\u{5907}", "") // 装备
+        .replace(['\u{5907}', '\u{5DF2}'], "")
+}
+
+fn parse_equip_owner_name(text: String, char_map: &HashMap<String, String>) -> String {
+    let char_name = text
+        .replace([':', '\u{FF1A}', ' ', '\n', '\r', '\t'], "")
+        .trim()
+        .to_string();
+
+    // Strip leading ASCII noise (c, Y, n, etc.) and emojis from OCR.
+    let cleaned: String = char_name
+        .trim_start_matches(|c: char| c.is_ascii() || !c.is_alphanumeric())
+        .to_string();
+
+    for name in [&cleaned, &char_name] {
+        if !name.is_empty() {
+            if let Some(key) = fuzzy_match_map(name, char_map) {
+                return key;
             }
         }
     }
+
     String::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn char_map() -> HashMap<String, String> {
+        HashMap::from([
+            ("叶洛亚".to_string(), "Aloy".to_string()),
+            ("菈乌玛".to_string(), "Lauma".to_string()),
+            ("胡桃".to_string(), "HuTao".to_string()),
+        ])
+    }
+
+    #[test]
+    fn parses_owner_with_equip_marker() {
+        assert_eq!(parse_equip_owner("叶洛亚已装备", &char_map()), "Aloy");
+    }
+
+    #[test]
+    fn parses_owner_without_equip_marker() {
+        assert_eq!(parse_equip_owner("叶洛亚", &char_map()), "Aloy");
+    }
+
+    #[test]
+    fn parses_owner_through_fuzzy_normalization() {
+        assert_eq!(parse_equip_owner("拉鸟玛已装备", &char_map()), "Lauma");
+    }
+
+    #[test]
+    fn strict_location_parser_still_requires_marker() {
+        assert_eq!(parse_equip_location("胡桃", &char_map()), "");
+        assert_eq!(parse_equip_location("胡桃已装备", &char_map()), "HuTao");
+    }
 }

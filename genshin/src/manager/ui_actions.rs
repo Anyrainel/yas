@@ -15,8 +15,9 @@ use yas::ocr::ImageToText;
 
 use crate::scanner::common::constants::*;
 use crate::scanner::common::coord_scaler::CoordScaler;
-use crate::scanner::common::game_controller::GenshinGameController;
+use crate::scanner::common::equip_parser;
 use crate::scanner::common::fuzzy_match::fuzzy_match_map;
+use crate::scanner::common::game_controller::GenshinGameController;
 use crate::scanner::common::mappings::MappingManager;
 use crate::scanner::common::models::{GoodArtifact, GoodSubStat};
 use crate::scanner::common::roll_solver::{self, OcrCandidate, SolverInput};
@@ -99,6 +100,9 @@ const SEL_FIRST_Y: f64 = 130.0;
 const SEL_OFFSET_X: f64 = 141.0;
 const SEL_OFFSET_Y: f64 = 167.0;
 
+/// Temporary fixed delay for per-artifact clicks in character selection grid.
+const SEL_GRID_CELL_DELAY_MS: u32 = 60;
+
 /// Scroll ticks per page in the selection grid.
 /// Matches backpack SCROLL_TICKS_PER_PAGE (49 for 5 rows).
 const SEL_SCROLL_TICKS: i32 = 49;
@@ -112,6 +116,10 @@ const SEL_ACTION_BUTTON_Y: f64 = 1025.0;
 
 /// OCR region for the action button text ("卸下" vs "装备").
 const SEL_ACTION_BUTTON_RECT: (f64, f64, f64, f64) = (1476.0, 992.0, 165.0, 45.0);
+
+/// Owner label in selection view, e.g. "叶洛亚已装备".
+/// 4K coordinates (3036, 1830) - (3500, 1910), divided by 2 for 1080p base.
+const SEL_EQUIP_OWNER_RECT: (f64, f64, f64, f64) = (1518.0, 915.0, 232.0, 40.0);
 
 /// Confirmation dialog "确认" button when equipping an artifact already on another character.
 /// 4K coordinates (2356, 1510) → 1080p = (1178, 755).
@@ -947,6 +955,38 @@ pub fn check_current_artifact_matches(
     full_match_detail_panel(ctrl, target, ocr, mappings, "check_current")
 }
 
+/// OCR the selected artifact's owner label in the selection view.
+///
+/// Returns `(raw_ocr_text, GOOD_character_key)`. The key is empty when the
+/// label is absent or cannot be matched to a known character.
+pub fn read_selected_artifact_owner(
+    ctrl: &GenshinGameController,
+    ocr: &dyn ImageToText<RgbImage>,
+    mappings: &MappingManager,
+) -> Result<(String, String)> {
+    let raw_text = ocr_region_enhanced(ctrl, ocr, SEL_EQUIP_OWNER_RECT).unwrap_or_default();
+    let owner_key = equip_parser::parse_equip_owner(&raw_text, &mappings.character_name_map);
+    log_debug!(
+        "[selection] 当前圣遗物归属OCR='{}' -> '{}'",
+        "[selection] selected artifact owner OCR='{}' -> '{}'",
+        raw_text,
+        owner_key
+    );
+    Ok((raw_text, owner_key))
+}
+
+/// Equip the currently selected artifact in the selection view.
+///
+/// Returns `Ok(true)` when the equip/replace button was clicked. Returns
+/// `Ok(false)` when the button is "卸下", meaning it is already on this character.
+pub fn equip_selected_artifact(
+    ctrl: &mut GenshinGameController,
+    ocr: &dyn ImageToText<RgbImage>,
+    tag: &str,
+) -> Result<bool> {
+    click_equip_button_safe_at(ctrl, ocr, tag, None)
+}
+
 /// Click a slot tab in the artifact selection view (without re-opening the selection).
 ///
 /// Use this when already in the selection view to switch between slot tabs.
@@ -983,7 +1023,7 @@ pub struct GridCellDebug {
 /// Assumes the set filter and slot tab are already applied.
 ///
 /// **Async design**: Within each page (20 cells), the main thread clicks cells
-/// and captures the detail panel image (100ms per cell). A background OCR thread
+/// and captures the detail panel image (60ms per cell). A background OCR thread
 /// processes captures concurrently:
 /// - OCR the level first (fast reject for non-matching levels)
 /// - For level-matched cells (or row 0 for fingerprint): full OCR + match
@@ -1213,7 +1253,7 @@ fn find_artifact_in_grid_inner(
                         let x = SEL_FIRST_X + col as f64 * SEL_OFFSET_X;
                         let y = SEL_FIRST_Y + row as f64 * SEL_OFFSET_Y;
                         ctrl.click_at(x, y);
-                        yas::utils::sleep(d_cell());
+                        yas::utils::sleep(SEL_GRID_CELL_DELAY_MS);
 
                         match ctrl.capture_region(SEL_PANEL_X, SEL_PANEL_Y, SEL_PANEL_W, SEL_PANEL_H) {
                             Ok(img) => {
@@ -1642,13 +1682,29 @@ fn click_equip_button_safe(
     row: usize,
     col: usize,
 ) -> Result<bool> {
+    click_equip_button_safe_at(ctrl, ocr, tag, Some((page, row, col)))
+}
+
+fn click_equip_button_safe_at(
+    ctrl: &mut GenshinGameController,
+    ocr: &dyn ImageToText<RgbImage>,
+    tag: &str,
+    grid_pos: Option<(usize, usize, usize)>,
+) -> Result<bool> {
     let btn_text = ctrl.ocr_region(ocr, SEL_ACTION_BUTTON_RECT).unwrap_or_default();
     let btn_clean: String = btn_text.chars().filter(|c| !c.is_whitespace()).collect();
+    let pos_msg = grid_pos
+        .map(|(page, row, col)| format!(" at p{}_r{}_c{}", page, row, col))
+        .unwrap_or_default();
 
     if btn_clean.contains("卸") {
         log_debug!(
-            "[{}] 按钮='{}' (卸下) p{}_r{}_c{}，已装备",
-            "[{}] button='{}' (unequip) at p{}_r{}_c{}, already equipped", tag, btn_clean, page, row, col);
+            "[{}] 按钮='{}' (卸下){}，已装备",
+            "[{}] button='{}' (unequip){}, already equipped",
+            tag,
+            btn_clean,
+            pos_msg
+        );
         return Ok(false);
     }
 
@@ -1663,18 +1719,25 @@ fn click_equip_button_safe(
 
     // Neither detected — save debug image and bail
     log_warn!(
-        "[{}] 按钮OCR='{}' p{}_r{}_c{}，预期为「装备」或「卸下」",
-        "[{}] button OCR='{}' at p{}_r{}_c{}, expected '装备' or '卸下'", tag, btn_clean, page, row, col);
+        "[{}] 按钮OCR='{}'{}，预期为「装备」或「卸下」",
+        "[{}] button OCR='{}'{}, expected '装备' or '卸下'",
+        tag,
+        btn_clean,
+        pos_msg
+    );
     let dir = std::path::Path::new("debug_images/grid_scan");
     let _ = std::fs::create_dir_all(dir);
+    let suffix = grid_pos
+        .map(|(page, row, col)| format!("p{}_r{}_c{}", page, row, col))
+        .unwrap_or_else(|| "selected".to_string());
     if let Ok(btn_img) = ctrl.capture_region(
         SEL_ACTION_BUTTON_RECT.0, SEL_ACTION_BUTTON_RECT.1,
         SEL_ACTION_BUTTON_RECT.2, SEL_ACTION_BUTTON_RECT.3,
     ) {
-        let _ = btn_img.save(dir.join(format!("btn_p{}_r{}_c{}.png", page, row, col)));
+        let _ = btn_img.save(dir.join(format!("btn_{}.png", suffix)));
     }
     if let Ok(full) = ctrl.capture_game() {
-        let _ = full.save(dir.join(format!("btn_full_p{}_r{}_c{}.png", page, row, col)));
+        let _ = full.save(dir.join(format!("btn_full_{}.png", suffix)));
     }
     bail!("button OCR failed: '{}', debug images saved", btn_clean)
 }

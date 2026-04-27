@@ -5,7 +5,7 @@
 echo "Running tests before push..."
 
 # Run tests for the main crate (with capture feature for full coverage)
-cargo test --lib -p yas_scanner_genshin --features capture 2>&1
+cargo test --lib -p genshin_scanner --features capture 2>&1
 RESULT=$?
 
 if [ $RESULT -ne 0 ]; then

@@ -378,11 +378,58 @@ impl EquipManager {
             // Check if the currently equipped artifact already matches (live OCR check)
             match ui_actions::check_current_artifact_matches(ctrl, &target.artifact, ocr, &self.mappings) {
                 Ok(true) => {
-                    log_info!("[equip_slot] {} 已正确装备", "[equip_slot] {} already correct", target.result_id);
-                    results.insert(target.result_id.clone(), InstructionResult {
-                        id: target.result_id.clone(),
-                        status: InstructionStatus::AlreadyCorrect,
-                    });
+                    let owner_key = match ui_actions::read_selected_artifact_owner(ctrl, ocr, &self.mappings) {
+                        Ok((_raw_text, owner_key)) => owner_key,
+                        Err(e) => {
+                            log_debug!(
+                                "[equip_slot] 读取当前圣遗物归属失败: {}",
+                                "[equip_slot] read selected artifact owner failed: {}",
+                                e
+                            );
+                            String::new()
+                        }
+                    };
+
+                    if owner_key == target.target_location {
+                        log_info!("[equip_slot] {} 已正确装备", "[equip_slot] {} already correct", target.result_id);
+                        results.insert(target.result_id.clone(), InstructionResult {
+                            id: target.result_id.clone(),
+                            status: InstructionStatus::AlreadyCorrect,
+                        });
+                        continue;
+                    }
+
+                    log_info!(
+                        "[equip_slot] {} 匹配当前选中圣遗物，但归属='{}'，直接装备",
+                        "[equip_slot] {} matches selected artifact but owner='{}'; equipping it",
+                        target.result_id,
+                        owner_key
+                    );
+                    match ui_actions::equip_selected_artifact(ctrl, ocr, "check_current") {
+                        Ok(true) => {
+                            results.insert(target.result_id.clone(), InstructionResult {
+                                id: target.result_id.clone(),
+                                status: InstructionStatus::Success,
+                            });
+                        }
+                        Ok(false) => {
+                            results.insert(target.result_id.clone(), InstructionResult {
+                                id: target.result_id.clone(),
+                                status: InstructionStatus::AlreadyCorrect,
+                            });
+                        }
+                        Err(e) => {
+                            log_warn!(
+                                "[equip_slot] 装备当前选中圣遗物失败: {}",
+                                "[equip_slot] equip selected artifact failed: {}",
+                                e
+                            );
+                            results.insert(target.result_id.clone(), InstructionResult {
+                                id: target.result_id.clone(),
+                                status: InstructionStatus::UiError,
+                            });
+                        }
+                    }
                     continue;
                 }
                 Ok(false) => { /* need to find the artifact */ }
