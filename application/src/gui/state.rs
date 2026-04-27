@@ -2,7 +2,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use yas_genshin::cli::{GoodUserConfig, ScanCoreConfig};
+use genshin_scanner::cli::{GoodUserConfig, ScanCoreConfig};
 
 /// UI language.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -13,7 +13,11 @@ pub enum Lang {
 
 impl Lang {
     pub fn from_str(s: &str) -> Self {
-        if s == "en" { Lang::En } else { Lang::Zh }
+        if s == "en" {
+            Lang::En
+        } else {
+            Lang::Zh
+        }
     }
 
     pub fn to_str(self) -> &'static str {
@@ -124,6 +128,7 @@ pub struct AppState {
     pub verbose: bool,
     pub continue_on_failure: bool,
     pub dump_images: bool,
+    pub dump_job_data: bool,
     pub save_on_cancel: bool,
     pub output_dir: String,
     pub char_max_count: usize,
@@ -161,7 +166,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new() -> Self {
-        let user_config = yas_genshin::cli::load_config_or_default();
+        let user_config = genshin_scanner::cli::load_config_or_default();
         let lang = Lang::from_str(&user_config.lang);
         let config_snapshot = serde_json::to_string(&user_config).unwrap_or_default();
         Self {
@@ -172,6 +177,7 @@ impl AppState {
             verbose: user_config.verbose,
             continue_on_failure: user_config.continue_on_failure,
             dump_images: user_config.dump_images,
+            dump_job_data: user_config.dump_job_data,
             save_on_cancel: user_config.save_on_cancel,
             char_max_count: user_config.char_max_count,
             weapon_max_count: user_config.weapon_max_count,
@@ -180,7 +186,7 @@ impl AppState {
             update_inventory: user_config.update_inventory,
             user_config,
             update_state: Arc::new(Mutex::new(UpdateState::Checking)),
-            output_dir: yas_genshin::cli::exe_dir().display().to_string(),
+            output_dir: genshin_scanner::cli::exe_dir().display().to_string(),
             names_need_attention: false,
             config_snapshot,
             config_dirty_since: None,
@@ -207,6 +213,7 @@ impl AppState {
         super::log_bridge::set_verbose(self.verbose);
         self.user_config.continue_on_failure = self.continue_on_failure;
         self.user_config.dump_images = self.dump_images;
+        self.user_config.dump_job_data = self.dump_job_data;
         self.user_config.save_on_cancel = self.save_on_cancel;
         self.user_config.char_max_count = self.char_max_count;
         self.user_config.weapon_max_count = self.weapon_max_count;
@@ -227,7 +234,7 @@ impl AppState {
         }
         if let Some(since) = self.config_dirty_since {
             if since.elapsed() >= std::time::Duration::from_millis(300) {
-                if let Err(e) = yas_genshin::cli::save_config(&self.user_config) {
+                if let Err(e) = genshin_scanner::cli::save_config(&self.user_config) {
                     yas::log_warn!("配置自动保存失败: {}", "Config auto-save failed: {}", e);
                 }
                 self.config_dirty_since = None;

@@ -60,13 +60,13 @@ pub fn show(
             //
             // Scan API runs the same character/weapon/artifact scanners as the
             // scanner tab, so all their delays apply when the server executes a
-            // scan job. Layout: character + inventory on row 1, manager on row 2.
+            // scan job. Layout: character + inventory + manager in one row.
             egui::CollapsingHeader::new(l.t("延迟设置", "Timing Delays"))
                 .default_open(false)
                 .show(ui, |ui| {
                     ui.add_enabled_ui(!is_server_running, |ui| {
-                        let defaults = yas_genshin::cli::GoodUserConfig::default();
-                        ui.columns(2, |cols| {
+                        let defaults = genshin_scanner::cli::GoodUserConfig::default();
+                        ui.columns(3, |cols| {
                             widgets::delay_group(&mut cols[0], "char_delays", l.t("角色", "Character"), l, &mut [
                                 (l.t("打开界面", "Open screen"), &mut state.user_config.char_open_delay, defaults.char_open_delay,
                                     l.t("打开角色界面后等待完全加载的时间", "Wait time for character screen to fully load after opening")),
@@ -78,11 +78,7 @@ pub fn show(
                                     l.t("切换到下一个角色后等待面板更新的时间", "Wait after switching to next character for panel to update")),
                             ]);
                             widgets::inventory_delays(&mut cols[1], state, l);
-                        });
-
-                        ui.add_space(4.0);
-                        ui.columns(2, |cols| {
-                            widgets::delay_group(&mut cols[0], "mgr_delays", l.t("管理器", "Manager"), l, &mut [
+                            widgets::delay_group(&mut cols[2], "mgr_delays", l.t("管理器", "Manager"), l, &mut [
                                 (l.t("画面切换", "Screen transition"), &mut state.user_config.mgr_transition_delay, defaults.mgr_transition_delay,
                                     l.t("打开/关闭角色面板等大画面切换后的等待", "Wait after major screen transitions like opening/closing character panel")),
                                 (l.t("操作按钮", "Action button"), &mut state.user_config.mgr_action_delay, defaults.mgr_action_delay,
@@ -92,8 +88,6 @@ pub fn show(
                                 (l.t("滚动等待", "Scroll settle"), &mut state.user_config.mgr_scroll_delay, defaults.mgr_scroll_delay,
                                     l.t("翻页后等待物品列表稳定的时间", "Wait after scrolling for item list to stabilize")),
                             ]);
-                            // Second column intentionally empty — 4 delays fit in col[0].
-                            let _ = &mut cols[1];
                         });
                     });
                 });
@@ -106,6 +100,7 @@ pub fn show(
                         ui.horizontal_wrapped(|ui| {
                             ui.checkbox(&mut state.verbose, l.t("详细信息", "Verbose"));
                             ui.checkbox(&mut state.dump_images, l.t("保存OCR截图", "Dump OCR images"));
+                            ui.checkbox(&mut state.dump_job_data, l.t("保存任务数据", "Dump job data"));
                         });
 
                         ui.add_space(4.0);
@@ -117,7 +112,7 @@ pub fn show(
                             )).clicked() {
                                 state.mappings_refresh = RefreshState::Running(
                                     std::thread::spawn(|| {
-                                        yas_genshin::scanner::common::mappings::force_refresh()
+                                        genshin_scanner::scanner::common::mappings::force_refresh()
                                             .map_err(|e| format!("{}", e))
                                     }),
                                 );
@@ -172,7 +167,10 @@ fn action_bar(
         ui.add_space(12.0);
 
         if scan_running && !is_server_running {
-            ui.add_enabled(false, egui::Button::new(l.t("▶ 启动HTTP服务器", "▶ Start HTTP Server")));
+            ui.add_enabled(
+                false,
+                egui::Button::new(l.t("▶ 启动HTTP服务器", "▶ Start HTTP Server")),
+            );
         } else if is_server_running {
             if ui.button(l.t("■ 停止服务器", "■ Stop Server")).clicked() {
                 if let Some(ref h) = server_handle {
@@ -194,10 +192,13 @@ fn action_bar(
                 );
             }
         } else {
-            if ui.button(l.t("▶ 启动HTTP服务器", "▶ Start HTTP Server")).clicked() {
+            if ui
+                .button(l.t("▶ 启动HTTP服务器", "▶ Start HTTP Server"))
+                .clicked()
+            {
                 state.server_enabled.store(true, Ordering::Relaxed);
                 // Force immediate save before starting server
-                if let Err(e) = yas_genshin::cli::save_config(&state.user_config) {
+                if let Err(e) = genshin_scanner::cli::save_config(&state.user_config) {
                     yas::log_warn!("配置保存失败: {}", "Config save failed: {}", e);
                 }
                 state.config_dirty_since = None;
@@ -212,11 +213,11 @@ fn action_bar(
         match status {
             TaskStatus::Failed(ref msg) => {
                 ui.colored_label(egui::Color32::from_rgb(255, 100, 100), msg);
-            }
+            },
             TaskStatus::Completed(ref msg) => {
                 ui.colored_label(egui::Color32::from_rgb(150, 150, 150), msg);
-            }
-            _ => {}
+            },
+            _ => {},
         }
     }
 }

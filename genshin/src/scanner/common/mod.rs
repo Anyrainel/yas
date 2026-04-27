@@ -18,6 +18,7 @@ pub mod equip_parser;
 pub mod grid_icon_detector;
 pub mod grid_voter;
 pub mod progress;
+pub mod scan_runner;
 
 #[cfg(test)]
 pub(crate) mod test_utils;

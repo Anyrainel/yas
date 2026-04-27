@@ -1,5 +1,5 @@
 [package]
-name = "yas-application"
+name = "good_tools_app"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,12 +9,12 @@ test = false
 [features]
 default = []
 dev-tools = []
-capture = ["yas_genshin/capture", "dep:tokio"]
+capture = ["genshin_scanner/capture", "dep:tokio"]
 
 [dependencies]
 anyhow = "1.0"
 yas = { path = "../yas" , package = "yas_core" }
-yas_genshin = { path = "../genshin", package = "yas_scanner_genshin" }
+genshin_scanner = { path = "../genshin" }
 clap = { version = "4.4", features = ["derive"] }
 log = "0.4"
 enigo = "0.1"

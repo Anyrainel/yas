@@ -19,7 +19,7 @@ use log::info;
 use yas::game_info::{GameInfo, GameInfoBuilder};
 use yas::utils;
 
-use yas_genshin::scanner::common::game_controller::GenshinGameController;
+use genshin_scanner::scanner::common::game_controller::GenshinGameController;
 
 fn save_image(img: &RgbImage, path: &str) {
     img.save(path).unwrap();

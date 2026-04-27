@@ -1658,6 +1658,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "genshin_scanner"
+version = "0.1.16"
+dependencies = [
+ "ab_glyph",
+ "anyhow",
+ "auto-artifactarium",
+ "base64 0.22.1",
+ "clap",
+ "crossbeam-channel",
+ "enigo",
+ "futures",
+ "image 0.24.9",
+ "indexmap",
+ "indicatif 0.17.11",
+ "indicatif-log-bridge",
+ "lazy_static",
+ "log",
+ "pktmon",
+ "protobuf",
+ "rayon",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tiny_http",
+ "tokio",
+ "tokio-util",
+ "uuid",
+ "windows-sys 0.59.0",
+ "yas_core",
+ "zip",
+]
+
+[[package]]
 name = "gethostname"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1795,6 +1829,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c4ee00b289aba7a9e5306d57c2d05499b2e5dc427f84ac708bd2c090212cf3e"
 dependencies = [
  "gl_generator",
+]
+
+[[package]]
+name = "good_tools_app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "eframe",
+ "enigo",
+ "env_logger",
+ "genshin_scanner",
+ "image 0.24.9",
+ "log",
+ "rand 0.8.5",
+ "rfd",
+ "serde",
+ "serde_json",
+ "tokio",
+ "windows-sys 0.59.0",
+ "winres",
+ "yas_core",
 ]
 
 [[package]]
@@ -6132,28 +6188,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "yas-application"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "eframe",
- "enigo",
- "env_logger",
- "image 0.24.9",
- "log",
- "rand 0.8.5",
- "rfd",
- "serde",
- "serde_json",
- "tokio",
- "windows-sys 0.59.0",
- "winres",
- "yas_core",
- "yas_scanner_genshin",
-]
-
-[[package]]
 name = "yas_core"
 version = "0.1.14"
 dependencies = [
@@ -6175,40 +6209,6 @@ dependencies = [
  "serde_json",
  "tract-onnx",
  "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "yas_scanner_genshin"
-version = "0.1.16"
-dependencies = [
- "ab_glyph",
- "anyhow",
- "auto-artifactarium",
- "base64 0.22.1",
- "clap",
- "crossbeam-channel",
- "enigo",
- "futures",
- "image 0.24.9",
- "indexmap",
- "indicatif 0.17.11",
- "indicatif-log-bridge",
- "lazy_static",
- "log",
- "pktmon",
- "protobuf",
- "rayon",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "tiny_http",
- "tokio",
- "tokio-util",
- "uuid",
- "windows-sys 0.59.0",
- "yas_core",
- "zip",
 ]
 
 [[package]]

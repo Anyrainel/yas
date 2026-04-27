@@ -22,11 +22,11 @@ use rand::thread_rng;
 use yas::game_info::GameInfoBuilder;
 use yas::utils;
 
-use yas_genshin::manager::ui_actions;
-use yas_genshin::scanner::common::game_controller::GenshinGameController;
-use yas_genshin::scanner::common::mappings::{MappingManager, NameOverrides};
-use yas_genshin::scanner::common::models::{GoodArtifact, GoodExport};
-use yas_genshin::scanner::common::ocr_factory;
+use genshin_scanner::manager::ui_actions;
+use genshin_scanner::scanner::common::game_controller::GenshinGameController;
+use genshin_scanner::scanner::common::mappings::{MappingManager, NameOverrides};
+use genshin_scanner::scanner::common::models::{GoodArtifact, GoodExport};
+use genshin_scanner::scanner::common::ocr_factory;
 
 fn save_image(img: &RgbImage, path: &str) {
     let (w, h) = (img.width(), img.height());
@@ -327,7 +327,7 @@ fn clean_debug_dir(dir: &Path) {
 // Filter detection test (--test-filters)
 // ================================================================
 
-use yas_genshin::manager::ui_actions::{
+use genshin_scanner::manager::ui_actions::{
     FILTER_FUNNEL_X, FILTER_FUNNEL_Y, FILTER_CLEAR_X, FILTER_CLEAR_Y,
     FILTER_CLOSE_X, FILTER_CLOSE_Y,
 };

@@ -24,9 +24,13 @@ use tiny_http::{Header, Method, Response, Server};
 use crate::cli::{GoodUserConfig, ScanCoreConfig};
 use crate::manager::models::*;
 use crate::manager::orchestrator::ArtifactManager;
-use crate::scanner::common::game_controller::GenshinGameController;
 use crate::manager::orchestrator::ProgressFn;
-use crate::scanner::common::models::{GoodArtifact, GoodCharacter, GoodWeapon};
+use crate::scanner::common::game_controller::GenshinGameController;
+use crate::scanner::common::models::{GoodArtifact, GoodCharacter, GoodExport, GoodWeapon};
+use crate::scanner::common::scan_runner::{
+    run_scan_phases, ScanFailurePolicy, ScanPhaseResult as PhaseResult, ScanRunOptions,
+    ScanRunResult as ScanResult,
+};
 
 // ================================================================
 // File logging: saves request bodies as JSON for replay/debugging
@@ -58,32 +62,53 @@ fn save_request(endpoint: &str, body: &str) {
     }
 }
 
+/// Save a job's produced data as one replayable GOOD file.
+fn save_job_good_export(
+    job_id: &str,
+    kind: &str,
+    characters: Option<Vec<GoodCharacter>>,
+    weapons: Option<Vec<GoodWeapon>>,
+    artifacts: Option<Vec<GoodArtifact>>,
+) {
+    let log_dir = std::path::PathBuf::from("log").join("job_data");
+    if std::fs::create_dir_all(&log_dir).is_err() {
+        return;
+    }
+
+    let export = GoodExport::new(characters, weapons, artifacts);
+    let Ok(json) = serde_json::to_string_pretty(&export) else {
+        log_error!(
+            "[job {}] 无法序列化任务数据",
+            "[job {}] Failed to serialize job data",
+            job_id
+        );
+        return;
+    };
+
+    let filename = format!("{}_{}_{}.json", timestamp_string(), kind, job_id);
+    let path = log_dir.join(&filename);
+    if let Err(e) = std::fs::write(&path, json) {
+        log_error!(
+            "[job {}] 保存任务数据失败: {}",
+            "[job {}] Failed to save job data: {}",
+            job_id,
+            e
+        );
+    } else {
+        log_info!(
+            "[job {}] 任务数据已保存: {}",
+            "[job {}] Job data saved: {}",
+            job_id,
+            path.display()
+        );
+    }
+}
+
 /// Job types that can be submitted to the execution thread.
 enum JobRequest {
     Manage(LockManageRequest),
     Equip(EquipRequest),
     Scan(ScanRequest),
-}
-
-/// Result of a single scan phase.
-///
-/// A phase is `Complete` only if every instance in the category was scanned
-/// in this run. Any abort (user RMB, cancel token, errors mid-scan) yields
-/// `Incomplete` so no data is published.
-pub enum PhaseResult<T> {
-    /// Phase was not requested by the client.
-    NotAttempted,
-    /// Phase was requested but did not finish (aborted, errored, or never started because an earlier phase aborted).
-    Incomplete,
-    /// Phase finished successfully with full data.
-    Complete(Vec<T>),
-}
-
-/// Result of a scan execution. Each category reports Complete/Incomplete/NotAttempted.
-pub struct ScanResult {
-    pub characters: PhaseResult<GoodCharacter>,
-    pub weapons: PhaseResult<GoodWeapon>,
-    pub artifacts: PhaseResult<GoodArtifact>,
 }
 
 /// Abstraction over game interaction for testability.
@@ -143,116 +168,26 @@ impl ManageExecutor for GameExecutor {
         progress_fn: Option<&crate::scanner::common::progress::ProgressFn<'_>>,
         cancel_token: yas::cancel::CancelToken,
     ) -> anyhow::Result<ScanResult> {
-        use crate::cli::GoodScannerApplication;
-        use crate::scanner::artifact::GoodArtifactScanner;
-        use crate::scanner::character::GoodCharacterScanner;
-        use crate::scanner::weapon::GoodWeaponScanner;
+        let mut config = self.scan_defaults.clone();
+        config.scan_characters = request.characters;
+        config.scan_weapons = request.weapons;
+        config.scan_artifacts = request.artifacts;
 
-        let scanner_config = self.scan_defaults.to_scanner_config();
-        let mappings = self.manager.mappings().clone();
-        let pools = self.manager.pools().clone();
-
-        // Match manager/equip order: focus the game window first, then arm the cancel token.
-        self.ctrl.focus_game_window();
-        self.ctrl.set_cancel_token(cancel_token.clone());
-
-        // Per-category wrapper: scanners emit progress_fn(c, t, id, "").
-        // We rewrite the phase string to the category key so the server
-        // dispatch routes each tick into the right PhaseProgress slot.
-        let chars_progress = |c: usize, t: usize, id: &str, _phase: &str| {
-            if let Some(outer) = progress_fn {
-                outer(c, t, id, "characters");
-            }
-        };
-        let weapons_progress = |c: usize, t: usize, id: &str, _phase: &str| {
-            if let Some(outer) = progress_fn {
-                outer(c, t, id, "weapons");
-            }
-        };
-        let artifacts_progress = |c: usize, t: usize, id: &str, _phase: &str| {
-            if let Some(outer) = progress_fn {
-                outer(c, t, id, "artifacts");
-            }
-        };
-
-        let mut characters: PhaseResult<GoodCharacter> = PhaseResult::NotAttempted;
-        let mut weapons: PhaseResult<GoodWeapon> = PhaseResult::NotAttempted;
-        let mut artifacts: PhaseResult<GoodArtifact> = PhaseResult::NotAttempted;
-
-        if request.characters {
-            characters = if cancel_token.is_cancelled() {
-                PhaseResult::Incomplete
-            } else {
-                let cfg = GoodScannerApplication::make_char_config(&scanner_config, &self.user_config);
-                let scan_result = match GoodCharacterScanner::new(cfg, mappings.clone()) {
-                    Ok(scanner) => scanner.scan(
-                        &mut self.ctrl, 0, &pools,
-                        Some(&chars_progress),
-                    ),
-                    Err(e) => Err(e),
-                };
-                if let Err(ref e) = scan_result {
-                    log_warn!("[scan] 角色阶段失败: {:#}", "[scan] character phase failed: {:#}", e);
-                }
-                let phase = match scan_result {
-                    Ok(data) if !cancel_token.is_cancelled() => PhaseResult::Complete(data),
-                    _ => PhaseResult::Incomplete,
-                };
-                if matches!(phase, PhaseResult::Complete(_)) && !cancel_token.is_cancelled() {
-                    self.ctrl.return_to_main_ui(4);
-                }
-                phase
-            };
-        }
-
-        if request.weapons {
-            weapons = if cancel_token.is_cancelled() {
-                PhaseResult::Incomplete
-            } else {
-                let cfg = GoodScannerApplication::make_weapon_config(&scanner_config, &self.user_config);
-                let scan_result = match GoodWeaponScanner::new(cfg, mappings.clone()) {
-                    Ok(scanner) => scanner.scan(
-                        &mut self.ctrl, false, 0, &pools,
-                        Some(&weapons_progress),
-                    ),
-                    Err(e) => Err(e),
-                };
-                if let Err(ref e) = scan_result {
-                    log_warn!("[scan] 武器阶段失败: {:#}", "[scan] weapon phase failed: {:#}", e);
-                }
-                match scan_result {
-                    Ok(data) if !cancel_token.is_cancelled() => PhaseResult::Complete(data),
-                    _ => PhaseResult::Incomplete,
-                }
-            };
-        }
-
-        if request.artifacts {
-            artifacts = if cancel_token.is_cancelled() {
-                PhaseResult::Incomplete
-            } else {
-                let cfg = GoodScannerApplication::make_artifact_config(&scanner_config, &self.user_config);
-                // Only skip the open-backpack step if the weapons phase fully completed
-                // (i.e. the backpack is reliably open). Otherwise reopen from scratch.
-                let skip_open = matches!(weapons, PhaseResult::Complete(_));
-                let scan_result = match GoodArtifactScanner::new(cfg, mappings.clone()) {
-                    Ok(scanner) => scanner.scan(
-                        &mut self.ctrl, skip_open, 0, &pools,
-                        Some(&artifacts_progress),
-                    ),
-                    Err(e) => Err(e),
-                };
-                if let Err(ref e) = scan_result {
-                    log_warn!("[scan] 圣遗物阶段失败: {:#}", "[scan] artifact phase failed: {:#}", e);
-                }
-                match scan_result {
-                    Ok(data) if !cancel_token.is_cancelled() => PhaseResult::Complete(data),
-                    _ => PhaseResult::Incomplete,
-                }
-            };
-        }
-
-        Ok(ScanResult { characters, weapons, artifacts })
+        run_scan_phases(
+            &mut self.ctrl,
+            self.manager.mappings().clone(),
+            self.manager.pools().clone(),
+            &self.user_config,
+            &config,
+            progress_fn,
+            None,
+            cancel_token,
+            ScanRunOptions {
+                save_on_cancel: false,
+                accept_cancelled_success: false,
+                failure_policy: ScanFailurePolicy::ContinueOnError,
+            },
+        )
     }
 }
 
@@ -399,6 +334,7 @@ pub fn run_server<F>(
     init_executor: F,
     enabled: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
+    dump_job_data: bool,
 ) -> Result<()>
 where
     F: FnMut() -> anyhow::Result<Box<dyn ManageExecutor>>,
@@ -789,6 +725,9 @@ where
                 match artifact_snapshot {
                     Some(snapshot) => {
                         let count = snapshot.len();
+                        if dump_job_data {
+                            save_job_good_export(&job_id, "manage", None, None, Some(snapshot.clone()));
+                        }
                         artifact_cache.lock().unwrap().set(job_id.clone(), snapshot);
                         log_info!("[job {}] 圣遗物快照已更新（{} 个）", "[job {}] Artifact snapshot updated ({} items)", job_id, count);
                     }
@@ -815,9 +754,15 @@ where
                         let mut results = Vec::new();
                         let mut phases_complete = 0usize;
                         let mut phases_incomplete = 0usize;
+                        let mut dump_characters: Option<Vec<GoodCharacter>> = None;
+                        let mut dump_weapons: Option<Vec<GoodWeapon>> = None;
+                        let mut dump_artifacts: Option<Vec<GoodArtifact>> = None;
 
                         match sr.characters {
                             PhaseResult::Complete(data) => {
+                                if dump_job_data {
+                                    dump_characters = Some(data.clone());
+                                }
                                 character_cache.lock().unwrap().set(job_id.clone(), data);
                                 phases_complete += 1;
                                 results.push(InstructionResult {
@@ -838,6 +783,9 @@ where
 
                         match sr.weapons {
                             PhaseResult::Complete(data) => {
+                                if dump_job_data {
+                                    dump_weapons = Some(data.clone());
+                                }
                                 weapon_cache.lock().unwrap().set(job_id.clone(), data);
                                 phases_complete += 1;
                                 results.push(InstructionResult {
@@ -858,6 +806,9 @@ where
 
                         match sr.artifacts {
                             PhaseResult::Complete(data) => {
+                                if dump_job_data {
+                                    dump_artifacts = Some(data.clone());
+                                }
                                 artifact_cache.lock().unwrap().set(job_id.clone(), data);
                                 phases_complete += 1;
                                 results.push(InstructionResult {
@@ -874,6 +825,20 @@ where
                                 });
                             }
                             PhaseResult::NotAttempted => {}
+                        }
+
+                        if dump_job_data
+                            && (dump_characters.is_some()
+                                || dump_weapons.is_some()
+                                || dump_artifacts.is_some())
+                        {
+                            save_job_good_export(
+                                &job_id,
+                                "scan",
+                                dump_characters,
+                                dump_weapons,
+                                dump_artifacts,
+                            );
                         }
 
                         log_info!(
@@ -1628,7 +1593,7 @@ mod tests {
                     delay_ms,
                 }))
             };
-            let _ = run_server(port, init, enabled, shutdown_clone);
+            let _ = run_server(port, init, enabled, shutdown_clone, false);
         });
 
         let client = reqwest::blocking::Client::new();
@@ -2225,7 +2190,7 @@ mod tests {
             let init = move || -> anyhow::Result<Box<dyn ManageExecutor>> {
                 Err(anyhow::anyhow!("Game window not found"))
             };
-            let _ = run_server(port, init, enabled, shutdown_clone);
+            let _ = run_server(port, init, enabled, shutdown_clone, false);
         });
 
         let client = reqwest::blocking::Client::new();
@@ -2778,7 +2743,7 @@ mod tests {
                     }))
                 }
             };
-            let _ = run_server(port, init, Arc::new(AtomicBool::new(true)), shutdown_clone);
+            let _ = run_server(port, init, Arc::new(AtomicBool::new(true)), shutdown_clone, false);
         });
 
         // Wait for server to come up.

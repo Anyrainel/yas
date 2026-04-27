@@ -130,9 +130,7 @@ mod seh_guard {
                 if let Ok(mut st) = status.try_lock() {
                     if matches!(*st, TaskStatus::Running(_)) {
                         // Use the static description only (no heap-allocating format!).
-                        *st = TaskStatus::Failed(
-                            yas::lang::localize(desc),
-                        );
+                        *st = TaskStatus::Failed(yas::lang::localize(desc));
                     }
                 }
                 true
@@ -290,20 +288,16 @@ pub fn spawn_scan(state: &AppState) -> TaskHandle {
     let token = yas::cancel::CancelToken::new();
     let stop_token = token.clone();
     let cancel_for_result = token.clone();
-    *status.lock().unwrap() = TaskStatus::Running(
-        lang.t("正在初始化...", "Initializing...").into(),
-    );
+    *status.lock().unwrap() =
+        TaskStatus::Running(lang.t("正在初始化...", "Initializing...").into());
 
     // Check ONNX runtime before spawning
     #[cfg(target_os = "windows")]
     {
-        if !yas_genshin::cli::check_onnxruntime() {
+        if !genshin_scanner::cli::check_onnxruntime() {
             *status.lock().unwrap() = TaskStatus::Running(
-                lang.t(
-                    "正在下载 ONNX Runtime...",
-                    "Downloading ONNX Runtime...",
-                )
-                .into(),
+                lang.t("正在下载 ONNX Runtime...", "Downloading ONNX Runtime...")
+                    .into(),
             );
         }
     }
@@ -311,79 +305,81 @@ pub fn spawn_scan(state: &AppState) -> TaskHandle {
     let abort_hint = lang.t("鼠标右键终止", "Right-click to abort");
     let stopping_msg = lang.t("正在停止扫描...", "Stopping scan...").to_string();
 
-    let handle = spawn_with_safety_net("Scanner", LogSource::Scanner, status.clone(), move |status| {
-        // Check VC++ runtime before loading ONNX
-        #[cfg(target_os = "windows")]
-        {
-            if let Err(e) = yas_genshin::cli::check_vcpp_runtime() {
-                *status.lock().unwrap() = TaskStatus::Failed(localize(&format!("{}", e)));
-                return;
-            }
-        }
-
-        // Ensure ONNX runtime on the worker thread
-        #[cfg(target_os = "windows")]
-        {
-            if !yas_genshin::cli::check_onnxruntime() {
-                if let Err(e) = yas_genshin::cli::download_onnxruntime() {
+    let handle = spawn_with_safety_net(
+        "Scanner",
+        LogSource::Scanner,
+        status.clone(),
+        move |status| {
+            // Check VC++ runtime before loading ONNX
+            #[cfg(target_os = "windows")]
+            {
+                if let Err(e) = genshin_scanner::cli::check_vcpp_runtime() {
                     *status.lock().unwrap() = TaskStatus::Failed(localize(&format!("{}", e)));
                     return;
                 }
             }
-        }
 
-        let status_for_cb = status.clone();
-        // Once the cancel token is tripped, don't let deeper phases
-        // overwrite the "Stopping..." message with their own progress.
-        let cancel_for_cb = cancel_for_result.clone();
-        let stopping_msg_cb = lang.t("正在停止扫描...", "Stopping scan...").to_string();
-        let status_fn = move |msg: &str| {
-            if cancel_for_cb.is_cancelled() {
-                *status_for_cb.lock().unwrap() =
-                    TaskStatus::Running(stopping_msg_cb.clone());
-                return;
-            }
-            let localized = localize(msg);
-            let display = format!("{}  ({})", localized, abort_hint);
-            *status_for_cb.lock().unwrap() = TaskStatus::Running(display);
-        };
-
-        let result = yas_genshin::cli::run_scan_core(
-            &user_config,
-            &scan_config,
-            Some(&status_fn),
-            Some(token),
-        );
-        match result {
-            Ok(path) => {
-                let msg = if cancel_for_result.is_cancelled() {
-                    match lang {
-                        Lang::Zh => format!("已停止，部分数据已导出至 {}", path),
-                        Lang::En => format!("Stopped; partial data exported to {}", path),
+            // Ensure ONNX runtime on the worker thread
+            #[cfg(target_os = "windows")]
+            {
+                if !genshin_scanner::cli::check_onnxruntime() {
+                    if let Err(e) = genshin_scanner::cli::download_onnxruntime() {
+                        *status.lock().unwrap() = TaskStatus::Failed(localize(&format!("{}", e)));
+                        return;
                     }
-                } else {
-                    match lang {
-                        Lang::Zh => format!("已导出至 {}", path),
-                        Lang::En => format!("Exported to {}", path),
-                    }
-                };
-                *status.lock().unwrap() = TaskStatus::Completed(msg);
-            }
-            Err(e) => {
-                if cancel_for_result.is_cancelled() {
-                    // Pre-scan setup (admin check, mappings load, etc.) may
-                    // fail immediately after a cancel before any data is
-                    // gathered — still surface as a clean stop, not an error.
-                    *status.lock().unwrap() = TaskStatus::Completed(
-                        lang.t("已停止", "Stopped").into(),
-                    );
-                } else {
-                    *status.lock().unwrap() =
-                        TaskStatus::Failed(localize(&format!("{}", e)));
                 }
             }
-        }
-    });
+
+            let status_for_cb = status.clone();
+            // Once the cancel token is tripped, don't let deeper phases
+            // overwrite the "Stopping..." message with their own progress.
+            let cancel_for_cb = cancel_for_result.clone();
+            let stopping_msg_cb = lang.t("正在停止扫描...", "Stopping scan...").to_string();
+            let status_fn = move |msg: &str| {
+                if cancel_for_cb.is_cancelled() {
+                    *status_for_cb.lock().unwrap() = TaskStatus::Running(stopping_msg_cb.clone());
+                    return;
+                }
+                let localized = localize(msg);
+                let display = format!("{}  ({})", localized, abort_hint);
+                *status_for_cb.lock().unwrap() = TaskStatus::Running(display);
+            };
+
+            let result = genshin_scanner::cli::run_scan_core(
+                &user_config,
+                &scan_config,
+                Some(&status_fn),
+                Some(token),
+            );
+            match result {
+                Ok(path) => {
+                    let msg = if cancel_for_result.is_cancelled() {
+                        match lang {
+                            Lang::Zh => format!("已停止，部分数据已导出至 {}", path),
+                            Lang::En => format!("Stopped; partial data exported to {}", path),
+                        }
+                    } else {
+                        match lang {
+                            Lang::Zh => format!("已导出至 {}", path),
+                            Lang::En => format!("Exported to {}", path),
+                        }
+                    };
+                    *status.lock().unwrap() = TaskStatus::Completed(msg);
+                },
+                Err(e) => {
+                    if cancel_for_result.is_cancelled() {
+                        // Pre-scan setup (admin check, mappings load, etc.) may
+                        // fail immediately after a cancel before any data is
+                        // gathered — still surface as a clean stop, not an error.
+                        *status.lock().unwrap() =
+                            TaskStatus::Completed(lang.t("已停止", "Stopped").into());
+                    } else {
+                        *status.lock().unwrap() = TaskStatus::Failed(localize(&format!("{}", e)));
+                    }
+                },
+            }
+        },
+    );
 
     TaskHandle {
         _handle: handle,
@@ -402,6 +398,7 @@ pub fn spawn_server(state: &AppState) -> TaskHandle {
     let enabled = state.server_enabled.clone();
     let stop_on_all_matched = !state.update_inventory;
     let dump_images = state.dump_images;
+    let dump_job_data = state.dump_job_data;
     let lang = state.lang;
     let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let shutdown_clone = shutdown.clone();
@@ -412,40 +409,56 @@ pub fn spawn_server(state: &AppState) -> TaskHandle {
     };
     *status.lock().unwrap() = TaskStatus::Running(msg);
 
-    let handle = spawn_with_safety_net("Server", LogSource::Manager, status.clone(), move |status| {
-        // Check VC++ runtime before loading ONNX
-        #[cfg(target_os = "windows")]
-        {
-            if let Err(e) = yas_genshin::cli::check_vcpp_runtime() {
-                *status.lock().unwrap() = TaskStatus::Failed(localize(&format!("{}", e)));
-                return;
-            }
-        }
-
-        // Ensure ONNX runtime
-        #[cfg(target_os = "windows")]
-        {
-            if !yas_genshin::cli::check_onnxruntime() {
-                if let Err(e) = yas_genshin::cli::download_onnxruntime() {
+    let handle = spawn_with_safety_net(
+        "Server",
+        LogSource::Manager,
+        status.clone(),
+        move |status| {
+            // Check VC++ runtime before loading ONNX
+            #[cfg(target_os = "windows")]
+            {
+                if let Err(e) = genshin_scanner::cli::check_vcpp_runtime() {
                     *status.lock().unwrap() = TaskStatus::Failed(localize(&format!("{}", e)));
                     return;
                 }
             }
-        }
 
-        match yas_genshin::cli::run_server_core(&user_config, port, None, "ppocrv4", enabled, shutdown_clone, stop_on_all_matched, dump_images) {
-            Ok(()) => {
-                *status.lock().unwrap() = TaskStatus::Completed(
-                    lang.t("服务器已停止", "Server stopped").into(),
-                );
+            // Ensure ONNX runtime
+            #[cfg(target_os = "windows")]
+            {
+                if !genshin_scanner::cli::check_onnxruntime() {
+                    if let Err(e) = genshin_scanner::cli::download_onnxruntime() {
+                        *status.lock().unwrap() = TaskStatus::Failed(localize(&format!("{}", e)));
+                        return;
+                    }
+                }
             }
-            Err(e) => {
-                *status.lock().unwrap() = TaskStatus::Failed(localize(&format!("{}", e)));
-            }
-        }
-    });
 
-    let stopping_msg = lang.t("正在停止服务器...", "Stopping server...").to_string();
+            match genshin_scanner::cli::run_server_core(
+                &user_config,
+                port,
+                None,
+                "ppocrv4",
+                enabled,
+                shutdown_clone,
+                stop_on_all_matched,
+                dump_images,
+                dump_job_data,
+            ) {
+                Ok(()) => {
+                    *status.lock().unwrap() =
+                        TaskStatus::Completed(lang.t("服务器已停止", "Server stopped").into());
+                },
+                Err(e) => {
+                    *status.lock().unwrap() = TaskStatus::Failed(localize(&format!("{}", e)));
+                },
+            }
+        },
+    );
+
+    let stopping_msg = lang
+        .t("正在停止服务器...", "Stopping server...")
+        .to_string();
     TaskHandle {
         _handle: handle,
         shutdown: Some(shutdown),

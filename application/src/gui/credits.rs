@@ -107,9 +107,7 @@ pub fn show(ui: &mut egui::Ui, l: Lang, set: CreditSet) {
 fn entry(ui: &mut egui::Ui, l: Lang, name: &str, author: &str, url: &str, description: &str) {
     ui.group(|ui| {
         ui.label(egui::RichText::new(name).strong().size(14.0));
-        ui.label(
-            egui::RichText::new(format!("{}: {}", l.t("作者", "Author"), author)).size(12.0),
-        );
+        ui.label(egui::RichText::new(format!("{}: {}", l.t("作者", "Author"), author)).size(12.0));
         ui.label(egui::RichText::new(description).size(12.0));
         ui.hyperlink_to(egui::RichText::new(url).size(11.0), url);
     });

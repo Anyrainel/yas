@@ -9,14 +9,17 @@ use serde::{Deserialize, Serialize};
 
 use yas::game_info::{GameInfo, GameInfoBuilder};
 
-use crate::scanner::artifact::{GoodArtifactScanner, GoodArtifactScannerConfig};
-use crate::scanner::character::{GoodCharacterScanner, GoodCharacterScannerConfig};
+use crate::scanner::artifact::GoodArtifactScannerConfig;
+use crate::scanner::character::GoodCharacterScannerConfig;
 use crate::scanner::common::constants::*;
 use crate::scanner::common::game_controller::GenshinGameController;
 use crate::scanner::common::mappings::{MappingManager, NameOverrides};
 use crate::scanner::common::models::GoodExport;
 use crate::scanner::common::ocr_pool::{OcrPoolConfig, SharedOcrPools};
-use crate::scanner::weapon::{GoodWeaponScanner, GoodWeaponScannerConfig};
+use crate::scanner::common::scan_runner::{
+    run_scan_phases, ScanFailurePolicy, ScanRunOptions,
+};
+use crate::scanner::weapon::GoodWeaponScannerConfig;
 
 /// Config file path relative to the executable directory.
 const CONFIG_FILE_REL: &str = "data/good_config.json";
@@ -472,6 +475,8 @@ pub struct GoodUserConfig {
     #[serde(default)]
     pub dump_images: bool,
     #[serde(default)]
+    pub dump_job_data: bool,
+    #[serde(default)]
     pub save_on_cancel: bool,
     #[serde(default)]
     pub char_max_count: usize,
@@ -558,6 +563,7 @@ impl Default for GoodUserConfig {
             verbose: false,
             continue_on_failure: false,
             dump_images: false,
+            dump_job_data: false,
             save_on_cancel: false,
             char_max_count: 0,
             weapon_max_count: 0,
@@ -1021,8 +1027,6 @@ pub fn run_scan_core(
         }
     }
 
-    let scanner_config = config.to_scanner_config();
-
     // Fetch and load mappings
     report("加载映射数据 / Loading mappings...");
     log_info!("加载映射数据...", "Loading mappings...");
@@ -1045,78 +1049,35 @@ pub fn run_scan_core(
     let mut ctrl = GenshinGameController::new(game_info)
         .context("屏幕截图初始化失败 / Screen capture initialization failed")?;
     let token = cancel_token.unwrap_or_else(yas::cancel::CancelToken::new);
-    ctrl.set_cancel_token(token.clone());
-    ctrl.focus_game_window();
-
-    let mut characters = None;
-    let mut weapons = None;
-    let mut artifacts = None;
 
     // Create shared OCR pools for all scanners
     report("加载OCR模型 / Loading OCR models...");
     let pool_config = user_config.resolve_ocr_pool_config();
     let ocr_backend = config.ocr_backend.as_deref().unwrap_or("ppocrv5");
     let substat_backend = config.artifact_substat_ocr.as_str();
-    let pools = SharedOcrPools::new(pool_config, ocr_backend, substat_backend)?;
+    let pools = Arc::new(SharedOcrPools::new(pool_config, ocr_backend, substat_backend)?);
     log_info!("OCR模型加载完成", "OCR models loaded");
 
     let save_on_cancel = config.save_on_cancel;
+    let scan_result = run_scan_phases(
+        &mut ctrl,
+        mappings,
+        pools,
+        user_config,
+        config,
+        None,
+        status_fn,
+        token.clone(),
+        ScanRunOptions {
+            save_on_cancel,
+            accept_cancelled_success: true,
+            failure_policy: ScanFailurePolicy::StopOnError,
+        },
+    )?;
 
-    // When save_on_cancel is true, swallow cancel errors so partial data
-    // can still be exported. Otherwise let the error propagate normally.
-    fn try_scan<T>(
-        token: &yas::cancel::CancelToken,
-        save_on_cancel: bool,
-        result: Result<Vec<T>>,
-    ) -> Result<Vec<T>> {
-        match result {
-            Ok(v) => Ok(v),
-            Err(e) if save_on_cancel && token.is_cancelled() => {
-                log_info!(
-                    "阶段被用户中断: {}",
-                    "Phase aborted by user: {}",
-                    e
-                );
-                Ok(Vec::new())
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    // Scan characters
-    if config.scan_characters {
-        report("扫描角色 / Scanning characters...");
-        log_info!("扫描角色...", "Scanning characters...");
-        let char_config = GoodScannerApplication::make_char_config(&scanner_config, user_config);
-        let scanner = GoodCharacterScanner::new(char_config, mappings.clone())?;
-        let result = try_scan(&token, save_on_cancel, scanner.scan(&mut ctrl, 0, &pools, None))?;
-        characters = Some(result);
-
-        if !token.is_cancelled() {
-            ctrl.return_to_main_ui(4);
-        }
-    }
-
-    // Scan weapons
-    if config.scan_weapons && !token.is_cancelled() {
-        report("扫描武器 / Scanning weapons...");
-        log_info!("扫描武器...", "Scanning weapons...");
-        let weapon_config = GoodScannerApplication::make_weapon_config(&scanner_config, user_config);
-        let scanner = GoodWeaponScanner::new(weapon_config, mappings.clone())?;
-        let result = try_scan(&token, save_on_cancel, scanner.scan(&mut ctrl, false, 0, &pools, None))?;
-        weapons = Some(result);
-    }
-
-    // Scan artifacts
-    if config.scan_artifacts && !token.is_cancelled() {
-        report("扫描圣遗物 / Scanning artifacts...");
-        log_info!("扫描圣遗物...", "Scanning artifacts...");
-        let artifact_config = GoodScannerApplication::make_artifact_config(&scanner_config, user_config);
-        let skip_open = config.scan_weapons;
-        let scanner = GoodArtifactScanner::new(artifact_config, mappings.clone())?;
-        let result = try_scan(&token, save_on_cancel, scanner.scan(&mut ctrl, skip_open, 0, &pools, None))?;
-        artifacts = Some(result);
-    }
+    let characters = scan_result.characters.into_complete();
+    let weapons = scan_result.weapons.into_complete();
+    let artifacts = scan_result.artifacts.into_complete();
 
     if token.is_cancelled() {
         log_info!("扫描被用户中断", "Scan stopped by user");
@@ -1159,6 +1120,7 @@ pub fn run_server_core(
     shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
     stop_on_all_matched: bool,
     dump_images: bool,
+    dump_job_data: bool,
 ) -> Result<()> {
     init_rayon_pool();
     crate::scanner::common::annotator::init(dump_images);
@@ -1236,7 +1198,7 @@ pub fn run_server_core(
         }))
     };
 
-    crate::server::run_server(server_port, init_executor, enabled, shutdown)
+    crate::server::run_server(server_port, init_executor, enabled, shutdown, dump_job_data)
 }
 
 /// Execute manage instructions from a JSON string.

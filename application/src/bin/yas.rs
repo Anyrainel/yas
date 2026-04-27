@@ -2,7 +2,7 @@
 #![windows_subsystem = "windows"]
 
 use yas::utils::press_any_key_to_continue;
-use yas_genshin::cli::GoodScannerApplication;
+use genshin_scanner::cli::GoodScannerApplication;
 
 /// Attach to the parent process's console (e.g. cmd.exe, PowerShell).
 /// If no parent console exists, allocate a new one.
@@ -27,7 +27,7 @@ fn init_cli() {
     attach_console();
 
     // Set global language from config before logger init
-    let config = yas_genshin::cli::load_config_or_default();
+    let config = genshin_scanner::cli::load_config_or_default();
     yas::lang::set_lang(&config.lang);
 
     let level = if config.verbose { log::LevelFilter::Debug } else { log::LevelFilter::Info };
@@ -54,7 +54,7 @@ fn init_cli() {
 pub fn main() {
     // No CLI args → launch GUI; any args → CLI mode
     if std::env::args().len() == 1 {
-        yas_application::gui::run_gui();
+        good_tools_app::gui::run_gui();
         return;
     }
 

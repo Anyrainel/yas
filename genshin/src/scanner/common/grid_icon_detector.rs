@@ -77,6 +77,13 @@ const WEAPON_CY_OFFSET: f64 = -57.0;
 /// The actual search is ±SEARCH_R scaled to the current resolution.
 const SEARCH_R: f64 = 30.0;
 
+/// Maximum plausible positive artifact Y drift after inventory page scrolling.
+///
+/// The row-edge scorer can lock onto the next lower horizontal edge, which is
+/// almost exactly one icon-slot spacing below the real card origin. Offsets
+/// above this threshold are that false solution in current artifact captures.
+const MAX_POSITIVE_ARTIFACT_GRID_OFF_Y: f64 = 8.0;
+
 // ================================================================
 // Color classification thresholds
 // ================================================================
@@ -352,9 +359,29 @@ pub fn calibrate_grid(
         }
     }
 
-    let off_y = (best_gy - exp_cy) / scaler.factor_y();
+    let raw_off_y = (best_gy - exp_cy) / scaler.factor_y();
+    let off_y = match mode {
+        GridMode::Artifact => normalize_artifact_grid_y_offset(raw_off_y),
+        GridMode::Weapon => raw_off_y,
+    };
+    if (off_y - raw_off_y).abs() > f64::EPSILON {
+        log_debug!(
+            "[grid-cal] Y校准命中下方边缘，修正 {:+.1} -> {:+.1}",
+            "[grid-cal] Y calibration hit lower edge, corrected {:+.1} -> {:+.1}",
+            raw_off_y,
+            off_y
+        );
+    }
 
     (0.0, off_y)
+}
+
+fn normalize_artifact_grid_y_offset(raw_off_y: f64) -> f64 {
+    if raw_off_y > MAX_POSITIVE_ARTIFACT_GRID_OFF_Y {
+        raw_off_y - SLOT_SPACING
+    } else {
+        raw_off_y
+    }
 }
 
 // ================================================================
@@ -517,4 +544,29 @@ fn is_astral_color(color: &(f64, f64, f64)) -> bool {
 fn is_elixir_color(color: &(f64, f64, f64)) -> bool {
     let (_r, g, b) = *color;
     (b - g) > ELIXIR_BG_DIFF_MIN && b > ELIXIR_B_MIN
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_y_normalization_corrects_lower_edge_alias() {
+        // These are the repeated bad page offsets observed in captured 4K
+        // artifact grids. They are one icon-slot spacing below the true grid.
+        assert!((normalize_artifact_grid_y_offset(24.5) - 1.85).abs() < 1e-9);
+        assert!((normalize_artifact_grid_y_offset(18.5) - -4.15).abs() < 1e-9);
+        assert!((normalize_artifact_grid_y_offset(12.5) - -10.15).abs() < 1e-9);
+    }
+
+    #[test]
+    fn grid_y_normalization_preserves_plausible_offsets() {
+        assert_eq!(normalize_artifact_grid_y_offset(-10.5), -10.5);
+        assert_eq!(normalize_artifact_grid_y_offset(-4.5), -4.5);
+        assert_eq!(normalize_artifact_grid_y_offset(1.5), 1.5);
+        assert_eq!(
+            normalize_artifact_grid_y_offset(MAX_POSITIVE_ARTIFACT_GRID_OFF_Y),
+            MAX_POSITIVE_ARTIFACT_GRID_OFF_Y
+        );
+    }
 }

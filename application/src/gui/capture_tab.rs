@@ -4,9 +4,9 @@ use eframe::egui;
 
 use super::state::{self, Lang};
 
-use yas_genshin::capture::monitor::{CaptureCommand, CaptureState};
-use yas_genshin::capture::player_data::CaptureExportSettings;
-use yas_genshin::scanner::common::models::GoodExport;
+use genshin_scanner::capture::monitor::{CaptureCommand, CaptureState};
+use genshin_scanner::capture::player_data::CaptureExportSettings;
+use genshin_scanner::scanner::common::models::GoodExport;
 
 /// Handle to the capture monitor running on a background tokio runtime.
 pub struct CaptureHandle {
@@ -106,20 +106,16 @@ fn spawn_capture(
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,
                 Err(e) => {
-                    yas::log_error!(
-                        "创建运行时失败: {}",
-                        "Failed to create runtime: {}",
-                        e
-                    );
+                    yas::log_error!("创建运行时失败: {}", "Failed to create runtime: {}", e);
                     if let Ok(mut s) = state.lock() {
                         s.error = Some(format!("{}", e));
                     }
                     return;
-                }
+                },
             };
 
             rt.block_on(async {
-                let monitor = match yas_genshin::capture::monitor::CaptureMonitor::new(
+                let monitor = match genshin_scanner::capture::monitor::CaptureMonitor::new(
                     state.clone(),
                     dump_packets,
                 ) {
@@ -134,7 +130,7 @@ fn spawn_capture(
                             s.error = Some(format!("{}", e));
                         }
                         return;
-                    }
+                    },
                 };
 
                 // Initialization succeeded — immediately start capture
@@ -160,12 +156,7 @@ fn spawn_capture(
     })
 }
 
-pub fn show(
-    ui: &mut egui::Ui,
-    l: Lang,
-    tab: &mut CaptureTabState,
-    game_busy: bool,
-) {
+pub fn show(ui: &mut egui::Ui, l: Lang, tab: &mut CaptureTabState, game_busy: bool) {
     // --- Phase transitions driven by shared state ---
     update_phase(tab, l);
 
@@ -227,7 +218,7 @@ pub fn show(
                         )).clicked() {
                             tab.data_cache_refresh = state::RefreshState::Running(
                                 std::thread::spawn(|| {
-                                    yas_genshin::capture::data_cache::force_refresh()
+                                    genshin_scanner::capture::data_cache::force_refresh()
                                         .map_err(|e| format!("{}", e))
                                 }),
                             );
@@ -273,12 +264,7 @@ pub fn show(
 }
 
 /// Top action bar: start/stop button + inline status.
-fn action_bar(
-    ui: &mut egui::Ui,
-    l: Lang,
-    tab: &mut CaptureTabState,
-    game_busy: bool,
-) {
+fn action_bar(ui: &mut egui::Ui, l: Lang, tab: &mut CaptureTabState, game_busy: bool) {
     match &tab.phase {
         Phase::Idle => {
             if game_busy {
@@ -301,7 +287,8 @@ fn action_bar(
                 {
                     tab.capture_state = Arc::new(Mutex::new(CaptureState::default()));
                     let mut cmd_tx = None;
-                    let thread = spawn_capture(tab.capture_state.clone(), &mut cmd_tx, tab.dump_packets);
+                    let thread =
+                        spawn_capture(tab.capture_state.clone(), &mut cmd_tx, tab.dump_packets);
                     tab.handle = Some(CaptureHandle {
                         _thread: thread,
                         cmd_tx: cmd_tx.unwrap(),
@@ -309,7 +296,7 @@ fn action_bar(
                     tab.phase = Phase::Initializing;
                 }
             });
-        }
+        },
 
         Phase::Initializing => {
             ui.horizontal(|ui| {
@@ -326,7 +313,7 @@ fn action_bar(
                     "Initializing (downloading data cache)...",
                 ));
             });
-        }
+        },
 
         Phase::Waiting => {
             ui.horizontal(|ui| {
@@ -339,10 +326,7 @@ fn action_bar(
                 }
                 ui.colored_label(
                     egui::Color32::from_rgb(100, 200, 100),
-                    l.t(
-                        "● 正在等待游戏数据...",
-                        "● Waiting for game data...",
-                    ),
+                    l.t("● 正在等待游戏数据...", "● Waiting for game data..."),
                 );
             });
 
@@ -366,48 +350,37 @@ fn action_bar(
                     }
                     if cs.has_items {
                         parts.push(match l {
-                            Lang::Zh => format!(
-                                "武器: {}, 圣遗物: {}",
-                                cs.weapon_count, cs.artifact_count
-                            ),
+                            Lang::Zh => {
+                                format!("武器: {}, 圣遗物: {}", cs.weapon_count, cs.artifact_count)
+                            },
                             Lang::En => format!(
                                 "Weapons: {}, Artifacts: {}",
                                 cs.weapon_count, cs.artifact_count
                             ),
                         });
                     }
-                    ui.colored_label(
-                        egui::Color32::from_rgb(100, 200, 100),
-                        parts.join("  |  "),
-                    );
+                    ui.colored_label(egui::Color32::from_rgb(100, 200, 100), parts.join("  |  "));
 
                     let missing = match (cs.has_characters, cs.has_items) {
-                        (true, false) => Some(l.t(
-                            "等待物品数据...",
-                            "Waiting for item data...",
-                        )),
-                        (false, true) => Some(l.t(
-                            "等待角色数据...",
-                            "Waiting for character data...",
-                        )),
+                        (true, false) => Some(l.t("等待物品数据...", "Waiting for item data...")),
+                        (false, true) => {
+                            Some(l.t("等待角色数据...", "Waiting for character data..."))
+                        },
                         _ => None,
                     };
                     if let Some(hint) = missing {
-                        ui.colored_label(
-                            egui::Color32::from_rgb(255, 200, 50),
-                            hint,
-                        );
+                        ui.colored_label(egui::Color32::from_rgb(255, 200, 50), hint);
                     }
                 }
             }
-        }
+        },
 
         Phase::Exporting => {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.label(l.t("正在导出...", "Exporting..."));
             });
-        }
+        },
 
         Phase::Done { summary, path } => {
             let summary = summary.clone();
@@ -417,17 +390,10 @@ fn action_bar(
                     tab.phase = Phase::Idle;
                     tab.handle = None;
                 }
-                ui.colored_label(
-                    egui::Color32::from_rgb(100, 200, 100),
-                    &summary,
-                );
+                ui.colored_label(egui::Color32::from_rgb(100, 200, 100), &summary);
             });
-            ui.label(
-                egui::RichText::new(format!("→ {}", path))
-                    .size(11.0)
-                    .weak(),
-            );
-        }
+            ui.label(egui::RichText::new(format!("→ {}", path)).size(11.0).weak());
+        },
 
         Phase::Failed(msg) => {
             let msg = msg.clone();
@@ -436,12 +402,9 @@ fn action_bar(
                     tab.phase = Phase::Idle;
                     tab.handle = None;
                 }
-                ui.colored_label(
-                    egui::Color32::from_rgb(255, 100, 100),
-                    &msg,
-                );
+                ui.colored_label(egui::Color32::from_rgb(255, 100, 100), &msg);
             });
-        }
+        },
     }
 }
 
@@ -451,7 +414,7 @@ fn update_phase(tab: &mut CaptureTabState, l: Lang) {
     if let Some(ref mut pending) = tab.pending_export {
         match pending.rx.try_recv() {
             Ok(Ok(export)) => {
-                let timestamp = yas_genshin::cli::chrono_timestamp();
+                let timestamp = genshin_scanner::cli::chrono_timestamp();
                 let filename = format!("genshin_export_{}.json", timestamp);
                 let path = std::path::Path::new(&tab.output_dir).join(&filename);
                 match serde_json::to_string_pretty(&export) {
@@ -461,32 +424,27 @@ fn update_phase(tab: &mut CaptureTabState, l: Lang) {
                             let wc = export.weapons.as_ref().map_or(0, |v| v.len());
                             let ac = export.artifacts.as_ref().map_or(0, |v| v.len());
                             let summary = match l {
-                                Lang::Zh => format!(
-                                    "已导出: {} 角色, {} 武器, {} 圣遗物",
-                                    cc, wc, ac
-                                ),
+                                Lang::Zh => {
+                                    format!("已导出: {} 角色, {} 武器, {} 圣遗物", cc, wc, ac)
+                                },
                                 Lang::En => format!(
                                     "Exported: {} characters, {} weapons, {} artifacts",
                                     cc, wc, ac
                                 ),
                             };
-                            yas::log_info!(
-                                "{} → {}",
-                                "{} → {}",
-                                summary, path.display()
-                            );
+                            yas::log_info!("{} → {}", "{} → {}", summary, path.display());
                             tab.phase = Phase::Done {
                                 summary,
                                 path: path.display().to_string(),
                             };
-                        }
+                        },
                         Err(e) => {
                             tab.phase = Phase::Failed(format!(
                                 "{}: {}",
                                 l.t("写入文件失败", "Failed to write file"),
                                 e
                             ));
-                        }
+                        },
                     },
                     Err(e) => {
                         tab.phase = Phase::Failed(format!(
@@ -494,30 +452,24 @@ fn update_phase(tab: &mut CaptureTabState, l: Lang) {
                             l.t("序列化失败", "Serialization failed"),
                             e
                         ));
-                    }
+                    },
                 }
                 tab.pending_export = None;
                 return;
-            }
+            },
             Ok(Err(e)) => {
-                tab.phase = Phase::Failed(format!(
-                    "{}: {}",
-                    l.t("导出失败", "Export failed"),
-                    e
-                ));
+                tab.phase = Phase::Failed(format!("{}: {}", l.t("导出失败", "Export failed"), e));
                 tab.pending_export = None;
                 return;
-            }
+            },
             Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
                 return; // still waiting
-            }
+            },
             Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                tab.phase = Phase::Failed(
-                    l.t("导出通道关闭", "Export channel closed").into(),
-                );
+                tab.phase = Phase::Failed(l.t("导出通道关闭", "Export channel closed").into());
                 tab.pending_export = None;
                 return;
-            }
+            },
         }
     }
 
@@ -565,7 +517,10 @@ fn update_phase(tab: &mut CaptureTabState, l: Lang) {
             };
             let (tx, rx) = tokio::sync::oneshot::channel();
             if let Some(ref h) = tab.handle {
-                h.send(CaptureCommand::Export { settings, reply: tx });
+                h.send(CaptureCommand::Export {
+                    settings,
+                    reply: tx,
+                });
                 tab.pending_export = Some(PendingExport { rx });
                 tab.phase = Phase::Exporting;
             }

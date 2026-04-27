@@ -18,11 +18,11 @@ use yas::cancel::CancelToken;
 use yas::game_info::GameInfoBuilder;
 use yas::utils;
 
-use yas_genshin::cli::load_config_or_default;
-use yas_genshin::manager::models::EquipRequest;
-use yas_genshin::manager::orchestrator::ArtifactManager;
-use yas_genshin::scanner::common::game_controller::GenshinGameController;
-use yas_genshin::scanner::common::mappings::MappingManager;
+use genshin_scanner::cli::load_config_or_default;
+use genshin_scanner::manager::models::EquipRequest;
+use genshin_scanner::manager::orchestrator::ArtifactManager;
+use genshin_scanner::scanner::common::game_controller::GenshinGameController;
+use genshin_scanner::scanner::common::mappings::MappingManager;
 
 fn main() -> Result<()> {
     env_logger::Builder::from_env(
@@ -98,8 +98,8 @@ fn main() -> Result<()> {
 
     // Print failures
     for r in &result.results {
-        if r.status != yas_genshin::manager::models::InstructionStatus::Success
-            && r.status != yas_genshin::manager::models::InstructionStatus::AlreadyCorrect
+        if r.status != genshin_scanner::manager::models::InstructionStatus::Success
+            && r.status != genshin_scanner::manager::models::InstructionStatus::AlreadyCorrect
         {
             info!("  {} => {:?}", r.id, r.status);
         }

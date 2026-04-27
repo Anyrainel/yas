@@ -15,8 +15,8 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use yas::ocr::ImageToText;
-use yas_genshin::scanner::common::ocr_factory::create_ocr_model;
-use yas_genshin::scanner::common::stat_parser;
+use genshin_scanner::scanner::common::ocr_factory::create_ocr_model;
+use genshin_scanner::scanner::common::stat_parser;
 
 // ─── Data structures ────────────────────────────────────────────────────────
 

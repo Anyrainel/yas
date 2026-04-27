@@ -11,7 +11,9 @@ pub fn show_with(ui: &mut egui::Ui, l: Lang, log_lines: &Arc<Mutex<Vec<LogEntry>
         let lines = log_lines.lock().unwrap();
         let mut s = String::new();
         for entry in lines.iter() {
-            if !s.is_empty() { s.push('\n'); }
+            if !s.is_empty() {
+                s.push('\n');
+            }
             s.push_str(&format!("{} {}", entry.timestamp, entry.message));
         }
         (lines.len(), s)

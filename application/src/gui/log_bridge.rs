@@ -8,7 +8,7 @@ use super::state::{LogEntry, LogSource};
 thread_local! {
     /// Per-thread override for log routing. When set, logs on this thread
     /// (regardless of module path) are routed to the specified source.
-    /// Used by `worker::spawn_server` so that logs emitted from `yas_genshin::cli`
+    /// Used by `worker::spawn_server` so that logs emitted from `genshin_scanner::cli`
     /// during server startup are classified as Manager.
     static LOG_SOURCE_OVERRIDE: Cell<Option<LogSource>> = const { Cell::new(None) };
 }
@@ -20,7 +20,11 @@ pub fn set_thread_log_source(src: LogSource) {
 
 /// Update the global log level filter (call when verbose checkbox toggles).
 pub fn set_verbose(verbose: bool) {
-    let level = if verbose { LevelFilter::Debug } else { LevelFilter::Info };
+    let level = if verbose {
+        LevelFilter::Debug
+    } else {
+        LevelFilter::Info
+    };
     log::set_max_level(level);
 }
 
@@ -30,11 +34,11 @@ fn classify(record: &Record) -> LogSource {
     }
     match record.module_path() {
         Some(p)
-            if p.starts_with("yas_genshin::manager")
-                || p.starts_with("yas_genshin::server") =>
+            if p.starts_with("genshin_scanner::manager")
+                || p.starts_with("genshin_scanner::server") =>
         {
             LogSource::Manager
-        }
+        },
         _ => LogSource::Scanner,
     }
 }
@@ -62,12 +66,21 @@ impl GuiLogger {
                 std::fs::File::create(format!("log/run_{}.log", ts)).ok()
             })
             .map(Mutex::new);
-        Self { scanner, manager, max_lines, log_file }
+        Self {
+            scanner,
+            manager,
+            max_lines,
+            log_file,
+        }
     }
 
     pub fn init(self, verbose: bool) {
         log::set_boxed_logger(Box::new(self)).unwrap();
-        let level = if verbose { LevelFilter::Debug } else { LevelFilter::Info };
+        let level = if verbose {
+            LevelFilter::Debug
+        } else {
+            LevelFilter::Info
+        };
         log::set_max_level(level);
     }
 }
@@ -85,11 +98,10 @@ impl Log for GuiLogger {
             Level::Info | Level::Debug => {
                 matches!(metadata.target(),
                     t if t.starts_with("yas")
-                        || t.starts_with("yas_genshin")
-                        || t.starts_with("yas_scanner_genshin")
-                        || t.starts_with("yas_application")
+                        || t.starts_with("genshin_scanner")
+                        || t.starts_with("good_tools_app")
                         || t.starts_with("yas_core"))
-            }
+            },
             Level::Trace => false,
         }
     }

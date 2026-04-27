@@ -14,10 +14,10 @@
 //! --reprocess mode: re-runs artifact scanner on dumped full.png images, outputs GOOD JSON.
 
 use anyhow::Result;
-use yas_genshin::scanner::common::equip_parser;
-use yas_genshin::scanner::common::fuzzy_match::fuzzy_match_map;
-use yas_genshin::scanner::common::ocr_factory::create_ocr_model;
-use yas_genshin::scanner::common::mappings::{MappingManager, NameOverrides};
+use genshin_scanner::scanner::common::equip_parser;
+use genshin_scanner::scanner::common::fuzzy_match::fuzzy_match_map;
+use genshin_scanner::scanner::common::ocr_factory::create_ocr_model;
+use genshin_scanner::scanner::common::mappings::{MappingManager, NameOverrides};
 
 fn main() -> Result<()> {
     env_logger::Builder::new()
@@ -120,8 +120,8 @@ fn run_ocr_test(args: &[String]) -> Result<()> {
     println!("ppocrv5: {:?}", result_v5);
 
     // Also try stat parsing
-    let parsed_v4 = yas_genshin::scanner::common::stat_parser::parse_stat_from_text(result_v4.trim());
-    let parsed_v5 = yas_genshin::scanner::common::stat_parser::parse_stat_from_text(result_v5.trim());
+    let parsed_v4 = genshin_scanner::scanner::common::stat_parser::parse_stat_from_text(result_v4.trim());
+    let parsed_v5 = genshin_scanner::scanner::common::stat_parser::parse_stat_from_text(result_v5.trim());
 
     println!();
     if let Some(p) = &parsed_v4 {
@@ -141,8 +141,8 @@ fn run_ocr_test(args: &[String]) -> Result<()> {
 /// Test selection view OCR on full screen captures.
 /// Crops each region, binarizes, and OCRs. Also runs solver validation.
 fn run_sel_ocr(path: &str) -> Result<()> {
-    use yas_genshin::scanner::common::stat_parser;
-    use yas_genshin::scanner::common::roll_solver::{self, OcrCandidate, SolverInput};
+    use genshin_scanner::scanner::common::stat_parser;
+    use genshin_scanner::scanner::common::roll_solver::{self, OcrCandidate, SolverInput};
 
     // Selection view crop regions (base 1920x1080)
     const MAIN_STAT: (f64, f64, f64, f64) = (1440.0, 217.0, 250.0, 30.0);
@@ -309,9 +309,9 @@ fn run_sel_ocr(path: &str) -> Result<()> {
 
 /// OCR each screenshot, build a GoodArtifact, and verify against ground truth export.
 fn run_sel_verify(dir: &str, json_path: &str) -> Result<()> {
-    use yas_genshin::scanner::common::stat_parser;
-    use yas_genshin::scanner::common::roll_solver::{self, OcrCandidate, SolverInput};
-    use yas_genshin::scanner::common::models::{GoodArtifact, GoodSubStat, GoodExport};
+    use genshin_scanner::scanner::common::stat_parser;
+    use genshin_scanner::scanner::common::roll_solver::{self, OcrCandidate, SolverInput};
+    use genshin_scanner::scanner::common::models::{GoodArtifact, GoodSubStat, GoodExport};
 
     // Selection view crop regions (base 1920x1080)
     const LEVEL: (f64, f64, f64, f64) = (1443.0, 310.0, 100.0, 26.0);
@@ -550,11 +550,11 @@ fn run_sel_verify(dir: &str, json_path: &str) -> Result<()> {
 }
 
 fn run_reprocess(images_dir: &str, output_path: Option<&str>) -> Result<()> {
-    use yas_genshin::scanner::artifact::{
+    use genshin_scanner::scanner::artifact::{
         GoodArtifactScanner, ArtifactOcrRegions, ArtifactScanResult, GoodArtifactScannerConfig,
     };
-    use yas_genshin::scanner::common::coord_scaler::CoordScaler;
-    use yas_genshin::scanner::common::models::GoodExport;
+    use genshin_scanner::scanner::common::coord_scaler::CoordScaler;
+    use genshin_scanner::scanner::common::models::GoodExport;
 
     // Discover NNNN/full.png entries
     let mut entries: Vec<(usize, std::path::PathBuf)> = Vec::new();

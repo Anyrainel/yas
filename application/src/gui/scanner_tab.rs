@@ -61,7 +61,7 @@ pub fn show(
             .show(ui, |ui| {
                 ui.add_enabled_ui(!is_scanning, |ui| {
                     // Two delay groups side by side: Character and Inventory
-                    let defaults = yas_genshin::cli::GoodUserConfig::default();
+                    let defaults = genshin_scanner::cli::GoodUserConfig::default();
                     ui.columns(2, |cols| {
                         widgets::delay_group(&mut cols[0], "char_delays", l.t("角色", "Character"), l, &mut [
                             (l.t("打开界面", "Open screen"), &mut state.user_config.char_open_delay, defaults.char_open_delay,
@@ -133,7 +133,7 @@ pub fn show(
                         )).clicked() {
                             state.mappings_refresh = RefreshState::Running(
                                 std::thread::spawn(|| {
-                                    yas_genshin::scanner::common::mappings::force_refresh()
+                                    genshin_scanner::scanner::common::mappings::force_refresh()
                                         .map_err(|e| format!("{}", e))
                                 }),
                             );
@@ -178,9 +178,7 @@ fn action_bar(
 
     ui.horizontal(|ui| {
         if is_scanning {
-            let is_stopping = scan_handle
-                .as_ref()
-                .map_or(false, |h| h.is_stopping());
+            let is_stopping = scan_handle.as_ref().map_or(false, |h| h.is_stopping());
             let label = if is_stopping {
                 l.t("⏳ 正在停止...", "⏳ Stopping...")
             } else {
@@ -200,11 +198,13 @@ fn action_bar(
                 ui.label(phase);
             }
         } else {
-            let any_selected =
-                state.scan_characters || state.scan_weapons || state.scan_artifacts;
+            let any_selected = state.scan_characters || state.scan_weapons || state.scan_artifacts;
             let can_scan = any_selected && !game_busy;
             if ui
-                .add_enabled(can_scan, egui::Button::new(l.t("▶ 开始扫描", "▶ Start Scan")))
+                .add_enabled(
+                    can_scan,
+                    egui::Button::new(l.t("▶ 开始扫描", "▶ Start Scan")),
+                )
                 .clicked()
             {
                 let required_missing = state.user_config.traveler_name.trim().is_empty()
@@ -220,7 +220,7 @@ fn action_bar(
                 } else {
                     state.names_need_attention = false;
                     // Force immediate save before scanning (don't wait for debounce)
-                    if let Err(e) = yas_genshin::cli::save_config(&state.user_config) {
+                    if let Err(e) = genshin_scanner::cli::save_config(&state.user_config) {
                         yas::log_warn!("配置保存失败: {}", "Config save failed: {}", e);
                     }
                     state.config_dirty_since = None;
@@ -234,27 +234,18 @@ fn action_bar(
     match status {
         TaskStatus::Completed(ref msg) => {
             ui.colored_label(egui::Color32::from_rgb(100, 200, 100), msg);
-        }
+        },
         TaskStatus::Failed(ref msg) => {
             ui.colored_label(egui::Color32::from_rgb(255, 100, 100), msg);
-        }
-        _ => {}
+        },
+        _ => {},
     }
 }
 
 fn max_count_field(ui: &mut egui::Ui, value: &mut usize) {
-    ui.add(
-        egui::DragValue::new(value)
-            .range(0..=2000)
-            .speed(0.0),
-    );
+    ui.add(egui::DragValue::new(value).range(0..=2000).speed(0.0));
 }
 
 fn pool_size_field(ui: &mut egui::Ui, value: &mut usize) {
-    ui.add(
-        egui::DragValue::new(value)
-            .range(0..=8)
-            .speed(0.0),
-    );
+    ui.add(egui::DragValue::new(value).range(0..=8).speed(0.0));
 }
-

@@ -1,14 +1,14 @@
-pub mod state;
-pub mod log_bridge;
-pub mod worker;
-pub mod widgets;
-pub mod scanner_tab;
-pub mod manager_tab;
 #[cfg(feature = "capture")]
 pub mod capture_tab;
-pub mod log_panel;
 pub mod credits;
+pub mod log_bridge;
+pub mod log_panel;
+pub mod manager_tab;
+pub mod scanner_tab;
+pub mod state;
 pub mod update_banner;
+pub mod widgets;
+pub mod worker;
 
 use eframe::egui;
 use state::{AppState, Lang, UpdateState};
@@ -17,7 +17,7 @@ use worker::TaskHandle;
 /// Launch the GUI application.
 pub fn run_gui() {
     // Clean up leftover .old exe from a previous update
-    yas_genshin::updater::cleanup_old_exe();
+    genshin_scanner::updater::cleanup_old_exe();
 
     // Install global SEH handler early — protects ALL threads including main.
     #[cfg(target_os = "windows")]
@@ -42,17 +42,14 @@ pub fn run_gui() {
     install_panic_hook();
 
     // Kick off background update check
-    update_banner::spawn_check(
-        yas_genshin::updater::ASSET_SCANNER,
-        &state.update_state,
-    );
+    update_banner::spawn_check(genshin_scanner::updater::ASSET_SCANNER, &state.update_state);
 
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon_64.png"))
         .expect("Failed to load window icon");
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([720.0, 600.0])
+            .with_inner_size([720.0, 800.0])
             .with_min_inner_size([600.0, 400.0])
             .with_icon(std::sync::Arc::new(icon)),
         ..Default::default()
@@ -196,45 +193,49 @@ impl eframe::App for GuiApp {
             });
 
         // Check cross-tab running states for mutual exclusion
-        let is_scan_running = self.scan_handle.as_ref().map_or(false, |h| !h.is_finished());
-        let is_server_running = self.server_handle.as_ref().map_or(false, |h| !h.is_finished());
+        let is_scan_running = self
+            .scan_handle
+            .as_ref()
+            .map_or(false, |h| !h.is_finished());
+        let is_server_running = self
+            .server_handle
+            .as_ref()
+            .map_or(false, |h| !h.is_finished());
         #[cfg(feature = "capture")]
         let is_capture_busy = self.capture_tab.is_busy();
         #[cfg(not(feature = "capture"))]
         let is_capture_busy = false;
 
         // Central panel: active tab content
-        egui::CentralPanel::default().show(ctx, |ui| {
-            match self.active_tab {
-                ActiveTab::Scanner => {
-                    scanner_tab::show(
-                        ui,
-                        &mut self.state,
-                        &mut self.scan_handle,
-                        is_server_running,
-                    );
-                }
-                ActiveTab::Manager => {
-                    manager_tab::show(
-                        ui,
-                        &mut self.state,
-                        &mut self.server_handle,
-                        is_scan_running,
-                    );
-                }
-                #[cfg(feature = "capture")]
-                ActiveTab::Capture => {
-                    capture_tab::show(
-                        ui,
-                        self.state.lang,
-                        &mut self.capture_tab,
-                        is_scan_running || is_server_running,
-                    );
-                }
-                ActiveTab::Credits => {
-                    credits::show(ui, l, credits::CreditSet::Scanner);
-                }
-            }
+        egui::CentralPanel::default().show(ctx, |ui| match self.active_tab {
+            ActiveTab::Scanner => {
+                scanner_tab::show(
+                    ui,
+                    &mut self.state,
+                    &mut self.scan_handle,
+                    is_server_running,
+                );
+            },
+            ActiveTab::Manager => {
+                manager_tab::show(
+                    ui,
+                    &mut self.state,
+                    &mut self.server_handle,
+                    is_scan_running,
+                );
+            },
+            #[cfg(feature = "capture")]
+            ActiveTab::Capture => {
+                capture_tab::show(
+                    ui,
+                    self.state.lang,
+                    &mut self.capture_tab,
+                    is_scan_running || is_server_running,
+                );
+            },
+            ActiveTab::Credits => {
+                credits::show(ui, l, credits::CreditSet::Scanner);
+            },
         });
 
         // Request repaint while tasks or update check are in progress
@@ -242,8 +243,7 @@ impl eframe::App for GuiApp {
             *self.state.update_state.lock().unwrap(),
             UpdateState::Checking | UpdateState::Downloading | UpdateState::ShowingDialog,
         );
-        let any_running =
-            is_scan_running || is_server_running || is_capture_busy || update_busy;
+        let any_running = is_scan_running || is_server_running || is_capture_busy || update_busy;
         if any_running {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }

@@ -6,17 +6,19 @@ use super::state::{AppState, Lang};
 
 /// Numeric input for u64 values (clamped to 5000).
 pub fn num_input_u64(ui: &mut egui::Ui, value: &mut u64, _width: f32) {
-    ui.add(
-        egui::DragValue::new(value)
-            .range(0..=5000)
-            .speed(1.0),
-    );
+    ui.add(egui::DragValue::new(value).range(0..=5000).speed(1.0));
 }
 
 /// A labeled group of delay fields rendered in a 2-column grid.
 /// Each field is `(label, value, default, tooltip)`. Values below their default get a
 /// warning asterisk, and a footnote is shown underneath when any field is below default.
-pub fn delay_group(ui: &mut egui::Ui, id: &str, category: &str, l: Lang, fields: &mut [(&str, &mut u64, u64, &str)]) {
+pub fn delay_group(
+    ui: &mut egui::Ui,
+    id: &str,
+    category: &str,
+    l: Lang,
+    fields: &mut [(&str, &mut u64, u64, &str)],
+) {
     ui.strong(category);
     let mut any_below = false;
     let warn_color = egui::Color32::from_rgb(255, 200, 50);
@@ -50,7 +52,10 @@ pub fn delay_group(ui: &mut egui::Ui, id: &str, category: &str, l: Lang, fields:
     if any_below {
         ui.colored_label(
             warn_color,
-            l.t("* 低于默认值，可能导致扫描不稳定", "* Below default — may cause unreliable scans"),
+            l.t(
+                "* 低于默认值，可能导致扫描不稳定",
+                "* Below default — may cause unreliable scans",
+            ),
         );
     }
 }
@@ -131,7 +136,7 @@ pub fn character_names_section(ui: &mut egui::Ui, state: &mut AppState, enabled:
 /// Inventory delay fields — shared between scanner and manager tabs.
 /// Renders as a delay_group with the 7 inventory timing fields.
 pub fn inventory_delays(ui: &mut egui::Ui, state: &mut AppState, l: Lang) {
-    let defaults = yas_genshin::cli::GoodUserConfig::default();
+    let defaults = genshin_scanner::cli::GoodUserConfig::default();
     delay_group(ui, "inv_delays", l.t("背包", "Inventory"), l, &mut [
         (l.t("打开背包", "Open backpack"), &mut state.user_config.inv_open_delay, defaults.inv_open_delay,
             l.t("按下快捷键后等待背包界面完全加载的时间", "Wait time after pressing hotkey for backpack to fully load")),

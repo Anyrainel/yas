@@ -9,22 +9,22 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 
-use yas_application::gui::capture_tab::CaptureTabState;
-use yas_application::gui::log_bridge;
-use yas_application::gui::log_panel;
-use yas_application::gui::state::{Lang, LogEntry, UpdateState};
-use yas_application::gui::{capture_tab, credits, state, update_banner};
+use good_tools_app::gui::capture_tab::CaptureTabState;
+use good_tools_app::gui::log_bridge;
+use good_tools_app::gui::log_panel;
+use good_tools_app::gui::state::{Lang, LogEntry, UpdateState};
+use good_tools_app::gui::{capture_tab, credits, state, update_banner};
 
 fn main() {
     // Clean up leftover .old exe from a previous update
-    yas_genshin::updater::cleanup_old_exe();
+    genshin_scanner::updater::cleanup_old_exe();
 
     // Install global SEH handler early — protects all threads.
     #[cfg(target_os = "windows")]
-    yas_application::gui::worker::install_seh_handler();
+    good_tools_app::gui::worker::install_seh_handler();
 
     let lang = {
-        let cfg = yas_genshin::cli::load_config_or_default();
+        let cfg = genshin_scanner::cli::load_config_or_default();
         state::Lang::from_str(&cfg.lang)
     };
     yas::lang::set_lang(lang.to_str());
@@ -52,7 +52,7 @@ fn main() {
     // Kick off background update check
     let update_state = Arc::new(Mutex::new(UpdateState::Checking));
     update_banner::spawn_check(
-        yas_genshin::updater::ASSET_CAPTURE,
+        genshin_scanner::updater::ASSET_CAPTURE,
         &update_state,
     );
 
@@ -67,7 +67,7 @@ fn main() {
         ..Default::default()
     };
 
-    let output_dir = yas_genshin::cli::exe_dir().display().to_string();
+    let output_dir = genshin_scanner::cli::exe_dir().display().to_string();
 
     eframe::run_native(
         "GOOD Capture",
