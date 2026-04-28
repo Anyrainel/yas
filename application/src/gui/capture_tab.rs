@@ -8,6 +8,9 @@ use genshin_scanner::capture::monitor::{CaptureCommand, CaptureState};
 use genshin_scanner::capture::player_data::CaptureExportSettings;
 use genshin_scanner::scanner::common::models::GoodExport;
 
+const CAPTURE_EXPORT_PREFIX: &str = "genshin_export_";
+const CAPTURE_EXPORT_SUFFIX: &str = ".json";
+
 /// Handle to the capture monitor running on a background tokio runtime.
 pub struct CaptureHandle {
     _thread: std::thread::JoinHandle<()>,
@@ -61,6 +64,7 @@ pub struct CaptureTabState {
 
     // Advanced
     pub dump_packets: bool,
+    pub only_keep_latest_dump: bool,
     pub data_cache_refresh: state::RefreshState,
 }
 
@@ -76,6 +80,7 @@ impl CaptureTabState {
             include_artifacts: true,
             output_dir,
             dump_packets: false,
+            only_keep_latest_dump: false,
             data_cache_refresh: state::RefreshState::Idle,
         }
     }
@@ -208,16 +213,20 @@ pub fn show(ui: &mut egui::Ui, l: Lang, tab: &mut CaptureTabState, game_busy: bo
                     ui.checkbox(
                         &mut tab.dump_packets,
                         l.t(
-                            "转储所有解密数据包 → debug_capture/",
+                            "保存所有数据包 → debug_capture/",
                             "Dump all decrypted packets → debug_capture/",
                         ),
+                    );
+                    ui.checkbox(
+                        &mut tab.only_keep_latest_dump,
+                        l.t("仅保留最新导出", "Only keep latest dump"),
                     );
 
                     tab.data_cache_refresh.poll();
                     ui.horizontal(|ui| {
                         let busy = tab.data_cache_refresh.is_running();
                         if ui.add_enabled(!busy, egui::Button::new(
-                            l.t("刷新游戏数据缓存", "Refresh game data"),
+                            l.t("刷新游戏数据", "Refresh game data"),
                         )).clicked() {
                             tab.data_cache_refresh = state::RefreshState::Running(
                                 std::thread::spawn(|| {
@@ -422,8 +431,33 @@ fn update_phase(tab: &mut CaptureTabState, _l: Lang) {
         match pending.rx.try_recv() {
             Ok(Ok(export)) => {
                 let timestamp = genshin_scanner::cli::chrono_timestamp();
-                let filename = format!("genshin_export_{}.json", timestamp);
+                let filename = format!(
+                    "{}{}{}",
+                    CAPTURE_EXPORT_PREFIX, timestamp, CAPTURE_EXPORT_SUFFIX
+                );
                 let path = std::path::Path::new(&tab.output_dir).join(&filename);
+                if tab.only_keep_latest_dump {
+                    match remove_previous_capture_exports(std::path::Path::new(&tab.output_dir)) {
+                        Ok(removed) => {
+                            if removed > 0 {
+                                yas::log_info!(
+                                    "仅保留最新导出：已删除 {} 个旧导出",
+                                    "Only keep latest dump: removed {} old export(s)",
+                                    removed
+                                );
+                            }
+                        },
+                        Err(e) => {
+                            tab.phase = Phase::Failed(UiText::with_error(
+                                "清理旧导出失败",
+                                "Failed to remove old exports",
+                                e,
+                            ));
+                            tab.pending_export = None;
+                            return;
+                        },
+                    }
+                }
                 match serde_json::to_string_pretty(&export) {
                     Ok(json) => match std::fs::write(&path, &json) {
                         Ok(_) => {
@@ -530,5 +564,97 @@ fn update_phase(tab: &mut CaptureTabState, _l: Lang) {
                 tab.phase = Phase::Exporting;
             }
         }
+    }
+}
+
+fn remove_previous_capture_exports(output_dir: &std::path::Path) -> anyhow::Result<usize> {
+    let mut removed = 0;
+    for entry in std::fs::read_dir(output_dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if is_generated_capture_export_filename(file_name) {
+            std::fs::remove_file(entry.path())?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+fn is_generated_capture_export_filename(file_name: &str) -> bool {
+    if !file_name.starts_with(CAPTURE_EXPORT_PREFIX) || !file_name.ends_with(CAPTURE_EXPORT_SUFFIX)
+    {
+        return false;
+    }
+
+    let timestamp =
+        &file_name[CAPTURE_EXPORT_PREFIX.len()..file_name.len() - CAPTURE_EXPORT_SUFFIX.len()];
+    is_capture_export_timestamp(timestamp)
+}
+
+fn is_capture_export_timestamp(timestamp: &str) -> bool {
+    let bytes = timestamp.as_bytes();
+    if bytes.len() != 19 {
+        return false;
+    }
+    for (idx, byte) in bytes.iter().enumerate() {
+        let expected_separator = matches!(idx, 4 | 7 | 13 | 16);
+        if expected_separator {
+            if *byte != b'-' {
+                return false;
+            }
+        } else if idx == 10 {
+            if *byte != b'_' {
+                return false;
+            }
+        } else if !byte.is_ascii_digit() {
+            return false;
+        }
+    }
+
+    let month = parse_two_digits(&bytes[5..7]);
+    let day = parse_two_digits(&bytes[8..10]);
+    let hour = parse_two_digits(&bytes[11..13]);
+    let minute = parse_two_digits(&bytes[14..16]);
+    let second = parse_two_digits(&bytes[17..19]);
+
+    (1..=12).contains(&month)
+        && (1..=31).contains(&day)
+        && hour <= 23
+        && minute <= 59
+        && second <= 59
+}
+
+fn parse_two_digits(bytes: &[u8]) -> u8 {
+    (bytes[0] - b'0') * 10 + (bytes[1] - b'0')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_generated_capture_export_filename;
+
+    #[test]
+    fn matches_generated_capture_exports_only() {
+        assert!(is_generated_capture_export_filename(
+            "genshin_export_2026-04-27_13-45-09.json"
+        ));
+        assert!(!is_generated_capture_export_filename(
+            "genshin_export_2026-04-27_13-45.json"
+        ));
+        assert!(!is_generated_capture_export_filename(
+            "genshin_export_latest.json"
+        ));
+        assert!(!is_generated_capture_export_filename(
+            "genshin_export_2026-13-27_13-45-09.json"
+        ));
+        assert!(!is_generated_capture_export_filename(
+            "good_export_2026-04-27_13-45-09.json"
+        ));
     }
 }

@@ -53,6 +53,7 @@ pub fn show(
                                 "Update inventory after scan",
                             ),
                         );
+                        ui.checkbox(&mut state.hdr_mode, l.t("我的原神在使用HDR", "HDR mode"));
                     });
                 });
 
@@ -99,9 +100,8 @@ pub fn show(
                     ui.add_enabled_ui(!is_server_running, |ui| {
                         ui.horizontal_wrapped(|ui| {
                             ui.checkbox(&mut state.verbose, l.t("详细信息", "Verbose"));
-                            ui.checkbox(&mut state.dump_images, l.t("保存OCR截图", "Dump OCR images"));
-                            ui.checkbox(&mut state.hdr_mode, l.t("HDR模式", "HDR mode"));
-                            ui.checkbox(&mut state.dump_job_data, l.t("保存任务数据", "Dump job data"));
+                            ui.checkbox(&mut state.dump_images, l.t("保存OCR截图 → debug_images/", "Dump OCR images → debug_images/"));
+                            ui.checkbox(&mut state.dump_job_data, l.t("保存请求数据", "Dump request data"));
                         });
 
                         ui.add_space(4.0);
@@ -109,7 +109,7 @@ pub fn show(
                         ui.horizontal(|ui| {
                             let busy = state.mappings_refresh.is_running();
                             if ui.add_enabled(!busy, egui::Button::new(
-                                l.t("刷新游戏数据映射", "Refresh game data"),
+                                l.t("刷新游戏数据", "Refresh game data"),
                             )).clicked() {
                                 state.mappings_refresh = RefreshState::Running(
                                     std::thread::spawn(|| {

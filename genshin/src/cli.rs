@@ -1169,6 +1169,7 @@ pub fn run_server_core(
         scan_weapons: true,
         scan_artifacts: true,
         dump_images,
+        hdr_mode: user_config.hdr_mode,
         ocr_backend: ocr_backend.map(|s| s.to_string()),
         artifact_substat_ocr: artifact_substat_ocr.to_string(),
         ..ScanCoreConfig::default()
@@ -1219,6 +1220,7 @@ pub fn run_manage_json(
     artifact_substat_ocr: &str,
     cancel_token: Option<yas::cancel::CancelToken>,
 ) -> Result<crate::manager::models::ManageResult> {
+    crate::scanner::common::pixel_profile::set_hdr_mode(user_config.hdr_mode);
     #[cfg(target_os = "windows")]
     {
         yas::utils::ensure_admin()?;
